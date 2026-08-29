@@ -1,0 +1,288 @@
+(footprint "XDCR_2450AT18A100"
+	(version 20260206)
+	(generator "pcbnew")
+	(generator_version "10.0")
+	(layer "F.Cu")
+	(descr "Johanson Technology 2450AT18A0100001E (legacy P/N 2450AT18A100) 2.4 GHz LTCC chip antenna, 3.2 x 1.6 x 1.3 mm. Land pattern per datasheet Doc# 36S0021A Rev 4.0: two 0.8 x 1.6 mm pads, 2.6 mm gap, 4.2 mm overall. Pin 1 = Feed, Pin 2 = NC (must still be soldered for mechanical anchoring). Includes the 6.5 x 6.5 mm ground clearance from EVB 2450AT18A0100001CE1 as keepout zones on F.Cu / In1.Cu / In2.Cu / B.Cu. Corner mount: board edges belong at +X (past the NC end) and -Y. Requires an external series-shunt-series (tee) matching network; EVB values are 1.0 pF / 2.7 nH / 3.9 nH and will differ on your board.")
+	(tags "antenna 2.4GHz 2450MHz chip LTCC johanson thread zigbee ble 802.15.4")
+	(property "Reference" "REF**"
+		(at 0 2.9 0)
+		(unlocked yes)
+		(layer "F.SilkS")
+		(uuid "3a1c7e02-9b44-4f18-8d31-6c0a2f5b7d10")
+		(effects
+			(font
+				(size 1 1)
+				(thickness 0.15)
+			)
+		)
+	)
+	(property "Value" "XDCR_2450AT18A100"
+		(at 0 4.1 0)
+		(unlocked yes)
+		(layer "F.Fab")
+		(uuid "7d2b4f61-05ac-4e93-b7d8-1e94c3a6f822")
+		(effects
+			(font
+				(size 1 1)
+				(thickness 0.15)
+			)
+		)
+	)
+	(property "Datasheet" "https://www.johansontechnology.com/docs/3827/Antenna-2450AT18A0100001E-Rev4.0.pdf"
+		(at 0 0 0)
+		(layer "F.Fab")
+		(hide yes)
+		(uuid "b9e05c33-7a18-4d26-93f5-2c8b0de41a97")
+		(effects
+			(font
+				(size 1.27 1.27)
+			)
+		)
+	)
+	(property "Description" "2.4 GHz LTCC chip antenna, 3.2x1.6mm, 74% avg radiated efficiency"
+		(at 0 0 0)
+		(layer "F.Fab")
+		(hide yes)
+		(uuid "1f6a8d40-c2b7-4e05-8a19-53d7be2c0f64")
+		(effects
+			(font
+				(size 1.27 1.27)
+			)
+		)
+	)
+	(attr smd)
+	(duplicate_pad_numbers_are_jumpers no)
+
+	(fp_line
+		(start -2.1 -1)
+		(end 2.1 -1)
+		(stroke
+			(width 0.12)
+			(type solid)
+		)
+		(layer "F.SilkS")
+		(uuid "0c4e91a7-3d58-4b62-9f07-8e1a5c60b3d2")
+	)
+	(fp_line
+		(start -2.1 1)
+		(end 2.1 1)
+		(stroke
+			(width 0.12)
+			(type solid)
+		)
+		(layer "F.SilkS")
+		(uuid "5b83d20e-6f41-4a97-b1c5-0d29e7f483a6")
+	)
+	(fp_circle
+		(center -2.55 0)
+		(end -2.45 0)
+		(stroke
+			(width 0.2)
+			(type solid)
+		)
+		(fill yes)
+		(layer "F.SilkS")
+		(uuid "e412a97b-8c30-4d15-a6f8-92b407e5c1d3")
+	)
+
+	(fp_line
+		(start -1.6 -0.8)
+		(end 1.6 -0.8)
+		(stroke
+			(width 0.1)
+			(type solid)
+		)
+		(layer "F.Fab")
+		(uuid "a7f31c05-2e94-4b78-8d60-4c1a9e35b2f7")
+	)
+	(fp_line
+		(start 1.6 -0.8)
+		(end 1.6 0.8)
+		(stroke
+			(width 0.1)
+			(type solid)
+		)
+		(layer "F.Fab")
+		(uuid "d05b7e92-4a16-4c83-9f27-6b8e1042a5c9")
+	)
+	(fp_line
+		(start 1.6 0.8)
+		(end -1.6 0.8)
+		(stroke
+			(width 0.1)
+			(type solid)
+		)
+		(layer "F.Fab")
+		(uuid "62c8a410-7d39-4e5b-b096-8f24c1e705ab")
+	)
+	(fp_line
+		(start -1.6 0.8)
+		(end -1.6 -0.8)
+		(stroke
+			(width 0.1)
+			(type solid)
+		)
+		(layer "F.Fab")
+		(uuid "9e17b40c-5b28-4a63-8c71-03df6a29e548")
+	)
+	(fp_circle
+		(center -2.55 0)
+		(end -2.45 0)
+		(stroke
+			(width 0.1)
+			(type solid)
+		)
+		(fill no)
+		(layer "F.Fab")
+		(uuid "4c9d3e18-6a75-42b0-95fc-1e83b7024da6")
+	)
+
+	(fp_line
+		(start -4.1 -1.7)
+		(end 2.4 -1.7)
+		(stroke
+			(width 0.05)
+			(type solid)
+		)
+		(layer "F.CrtYd")
+		(uuid "8b26f503-1c47-4d9e-a835-70e2c4915bf1")
+	)
+	(fp_line
+		(start 2.4 -1.7)
+		(end 2.4 4.8)
+		(stroke
+			(width 0.05)
+			(type solid)
+		)
+		(layer "F.CrtYd")
+		(uuid "f30a5c81-9b62-4e17-8d04-a5c73e1206b9")
+	)
+	(fp_line
+		(start 2.4 4.8)
+		(end -4.1 4.8)
+		(stroke
+			(width 0.05)
+			(type solid)
+		)
+		(layer "F.CrtYd")
+		(uuid "27e94b06-3f81-4a5d-9c28-6b0de5a13f74")
+	)
+	(fp_line
+		(start -4.1 4.8)
+		(end -4.1 -1.7)
+		(stroke
+			(width 0.05)
+			(type solid)
+		)
+		(layer "F.CrtYd")
+		(uuid "c58d0cf1-0d34-4b96-8e27-91a4f6b3520e")
+	)
+
+	(fp_line
+		(start 2.4 -1.7)
+		(end 2.4 4.8)
+		(stroke
+			(width 0.15)
+			(type dash)
+		)
+		(layer "Dwgs.User")
+		(uuid "6a0f2d73-8e45-41c9-bd41-3f0e5c81742a")
+	)
+	(fp_line
+		(start -4.1 -1.7)
+		(end 2.4 -1.7)
+		(stroke
+			(width 0.15)
+			(type dash)
+		)
+		(layer "Dwgs.User")
+		(uuid "e83b4079-2c16-4f5a-90d8-b47e15c30926")
+	)
+	(fp_text user "BOARD EDGE"
+		(at -0.85 -1.35 0)
+		(layer "Dwgs.User")
+		(uuid "35d1c86f-4079-42be-8a13-9f0c26e574db")
+		(effects
+			(font
+				(size 0.5 0.5)
+				(thickness 0.08)
+			)
+		)
+	)
+
+	(pad "1" smd rect
+		(at -1.7 0)
+		(size 0.8 1.6)
+		(layers "F.Cu" "F.Mask" "F.Paste")
+		(uuid "0d5e7a14-9c38-4b62-85f7-2a4109de63c8")
+	)
+	(pad "2" smd rect
+		(at 1.7 0)
+		(size 0.8 1.6)
+		(layers "F.Cu" "F.Mask" "F.Paste")
+		(uuid "b4172fc9-5a80-4e36-91d2-7c063be48a05")
+	)
+
+	(zone
+		(layer "F.Cu")
+		(uuid "7f3e0b52-46a1-4c98-b52d-8039ea6c1247")
+		(hatch full 0.508)
+		(connect_pads
+			(clearance 0)
+		)
+		(min_thickness 0.01)
+		(keepout
+			(tracks allowed)
+			(vias not_allowed)
+			(pads allowed)
+			(copperpour not_allowed)
+			(footprints allowed)
+		)
+		(placement
+			(enabled no)
+			(sheetname "")
+		)
+		(fill
+			(thermal_gap 0.508)
+			(thermal_bridge_width 0.508)
+			(island_removal_mode 0)
+		)
+		(polygon
+			(pts
+				(xy -4.1 -1.7) (xy 2.4 -1.7) (xy 2.4 4.8) (xy -4.1 4.8)
+			)
+		)
+	)
+	(zone
+		(layers "In1.Cu" "In2.Cu" "B.Cu")
+		(uuid "a260d4e8-1b73-4f05-9c86-3e5710bad9f2")
+		(hatch full 0.508)
+		(connect_pads
+			(clearance 0)
+		)
+		(min_thickness 0.01)
+		(keepout
+			(tracks not_allowed)
+			(vias not_allowed)
+			(pads not_allowed)
+			(copperpour not_allowed)
+			(footprints allowed)
+		)
+		(placement
+			(enabled no)
+			(sheetname "")
+		)
+		(fill
+			(thermal_gap 0.508)
+			(thermal_bridge_width 0.508)
+			(island_removal_mode 0)
+		)
+		(polygon
+			(pts
+				(xy -4.1 -1.7) (xy 2.4 -1.7) (xy 2.4 4.8) (xy -4.1 4.8)
+			)
+		)
+	)
+	(embedded_fonts no)
+)

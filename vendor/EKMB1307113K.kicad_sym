@@ -91,10 +91,10 @@
 					)
 				)
 			)
-			(pin power_in line
-				(at -8.89 -5.08 0)
+			(pin output line
+				(at 8.89 -3.81 180)
 				(length 2.54)
-				(name "GND"
+				(name "out"
 					(effects
 						(font
 							(size 1.27 1.27)
@@ -109,10 +109,10 @@
 					)
 				)
 			)
-			(pin output line
-				(at 8.89 -3.81 180)
+			(pin power_in line
+				(at -8.89 -5.08 0)
 				(length 2.54)
-				(name "out"
+				(name "GND"
 					(effects
 						(font
 							(size 1.27 1.27)
