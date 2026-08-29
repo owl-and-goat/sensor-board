@@ -8,7 +8,7 @@
       "internal_id": "",
       "mfg": "",
       "mpn": "",
-      "sch_revision": ""
+      "sch_revision": "0"
     },
     "layer_pairs": [],
     "layer_presets": [],
@@ -252,7 +252,9 @@
     }
   },
   "libraries": {
-    "pinned_footprint_libs": [],
+    "pinned_footprint_libs": [
+      "vendor"
+    ],
     "pinned_symbol_libs": []
   },
   "meta": {
@@ -423,7 +425,7 @@
         "uuid": "51c2f14d-61ea-40ae-9b85-8b2a49be52ac"
       }
     ],
-    "used_designators": "L2-3,AE1,C1-2,C14-21,BT1,JP1-2,R1-2,R4-13,Y1-2,#PWR1-7,#PWR23-48,J1-5,Q1,U1-5",
+    "used_designators": "#FLG1-3,MIC1,Q1-2,K1,J1-10,#PWR1-76,Y1-2,R1-17,JP1-2,TP1-13,BT1,C1-34,SW1-2,AE1,U1-11,D1-2,L1-6",
     "variants": []
   },
   "sheets": [

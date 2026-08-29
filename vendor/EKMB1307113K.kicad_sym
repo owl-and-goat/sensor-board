@@ -2,14 +2,14 @@
 	(version 20251024)
 	(generator "kicad_symbol_editor")
 	(generator_version "10.0")
-	(symbol "CLS16D24-44"
+	(symbol "EKMB1307113K"
 		(exclude_from_sim no)
 		(in_bom yes)
 		(on_board yes)
 		(in_pos_files yes)
 		(duplicate_pin_numbers_are_jumpers no)
 		(property "Reference" "U"
-			(at 0 0 0)
+			(at 0 3.048 0)
 			(show_name no)
 			(do_not_autoplace no)
 			(effects
@@ -18,8 +18,8 @@
 				)
 			)
 		)
-		(property "Value" ""
-			(at 0 0 0)
+		(property "Value" "EKMB130711"
+			(at 0 1.27 0)
 			(show_name no)
 			(do_not_autoplace no)
 			(effects
@@ -39,8 +39,8 @@
 				)
 			)
 		)
-		(property "Datasheet" ""
-			(at 0 0 0)
+		(property "Datasheet" "https://industrial.panasonic.com/cdbs/www-data/pdf/EWAhttps://industrial.panasonic.com/cdbs/www-data/pdf/EWA0000/ast-ind-250613.pdf0000/ast-ind-250613.pdf"
+			(at 0.508 6.096 0)
 			(show_name no)
 			(do_not_autoplace no)
 			(hide yes)
@@ -61,10 +61,10 @@
 				)
 			)
 		)
-		(symbol "CLS16D24-44_1_1"
+		(symbol "EKMB1307113K_1_1"
 			(rectangle
-				(start -11.43 6.35)
-				(end -1.27 -6.35)
+				(start -6.35 0)
+				(end 6.35 -7.62)
 				(stroke
 					(width 0.254)
 					(type solid)
@@ -74,9 +74,27 @@
 				)
 			)
 			(pin power_in line
-				(at -5.08 8.89 270)
+				(at -8.89 -2.54 0)
 				(length 2.54)
-				(name "vdd"
+				(name "VDD"
+					(effects
+						(font
+							(size 1.27 1.27)
+						)
+					)
+				)
+				(number "1"
+					(effects
+						(font
+							(size 1.27 1.27)
+						)
+					)
+				)
+			)
+			(pin power_in line
+				(at -8.89 -5.08 0)
+				(length 2.54)
+				(name "GND"
 					(effects
 						(font
 							(size 1.27 1.27)
@@ -91,10 +109,10 @@
 					)
 				)
 			)
-			(pin power_in line
-				(at -5.08 -8.89 90)
+			(pin output line
+				(at 8.89 -3.81 180)
 				(length 2.54)
-				(name "gnd"
+				(name "out"
 					(effects
 						(font
 							(size 1.27 1.27)
@@ -102,60 +120,6 @@
 					)
 				)
 				(number "3"
-					(effects
-						(font
-							(size 1.27 1.27)
-						)
-					)
-				)
-			)
-			(pin input line
-				(at -13.97 2.54 0)
-				(length 2.54)
-				(name "scl"
-					(effects
-						(font
-							(size 1.27 1.27)
-						)
-					)
-				)
-				(number "5"
-					(effects
-						(font
-							(size 1.27 1.27)
-						)
-					)
-				)
-			)
-			(pin input line
-				(at -13.97 0 0)
-				(length 2.54)
-				(name "sda"
-					(effects
-						(font
-							(size 1.27 1.27)
-						)
-					)
-				)
-				(number "6"
-					(effects
-						(font
-							(size 1.27 1.27)
-						)
-					)
-				)
-			)
-			(pin input line
-				(at -13.97 -2.54 0)
-				(length 2.54)
-				(name "int"
-					(effects
-						(font
-							(size 1.27 1.27)
-						)
-					)
-				)
-				(number "7"
 					(effects
 						(font
 							(size 1.27 1.27)
