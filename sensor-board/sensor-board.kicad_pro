@@ -531,24 +531,6 @@
         "via_diameter": 0.6,
         "via_drill": 0.3,
         "wire_width": 6
-      },
-      {
-        "clearance": 1.0,
-        "name": "50R",
-        "pcb_color": "rgba(0, 0, 0, 0.000)",
-        "priority": 1,
-        "schematic_color": "rgba(0, 0, 0, 0.000)",
-        "track_width": 0.37,
-        "tuning_profile": ""
-      },
-      {
-        "clearance": 0.75,
-        "name": "62R",
-        "pcb_color": "rgba(0, 0, 0, 0.000)",
-        "priority": 0,
-        "schematic_color": "rgba(0, 0, 0, 0.000)",
-        "track_width": 0.24,
-        "tuning_profile": ""
       }
     ],
     "meta": {
@@ -693,7 +675,7 @@
         "uuid": "51c2f14d-61ea-40ae-9b85-8b2a49be52ac"
       }
     ],
-    "used_designators": "#PWR1-81,Y1-2,J1-11,K1,TP1-13,JP1-2,R1-17,SW1-2,AE1,C1-35,BT1,L1-8,D1-2,U1-11,Q1-2,#FLG1-3,MIC1",
+    "used_designators": "#PWR1-81,Y1-2,J1-11,K1,TP1-13,JP1-2,R1-17,SW1-2,AE1,C1-35,BT1,L1-8,D1-2,U1-11,Q1-3,#FLG1-3,MIC1",
     "variants": []
   },
   "sheets": [
