@@ -528,8 +528,8 @@
         "schematic_color": "rgba(0, 0, 0, 0.000)",
         "track_width": 0.2,
         "tuning_profile": "",
-        "via_diameter": 0.6,
-        "via_drill": 0.3,
+        "via_diameter": 0.25,
+        "via_drill": 0.15,
         "wire_width": 6
       }
     ],
@@ -538,6 +538,12 @@
     },
     "net_colors": null,
     "netclass_assignments": {
+      "/antenna-rf": [
+        "50R"
+      ],
+      "/board rf": [
+        "62R"
+      ],
       "Net-(AE1-A)": [
         "50R"
       ],
@@ -675,7 +681,7 @@
         "uuid": "51c2f14d-61ea-40ae-9b85-8b2a49be52ac"
       }
     ],
-    "used_designators": "#PWR1-81,Y1-2,J1-11,K1,TP1-13,JP1-2,R1-17,SW1-2,AE1,C1-35,BT1,L1-8,D1-2,U1-11,Q1-3,#FLG1-3,MIC1",
+    "used_designators": "JP1-2,TP1-13,K1,J1-11,C1-35,AE1,SW1-2,R1-17,L1-8,BT1,D1-2,U1-11,Q1-3,MIC1,#FLG1-3,#PWR1-81,Y1-2",
     "variants": []
   },
   "sheets": [
