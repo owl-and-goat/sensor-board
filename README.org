@@ -1,0 +1,7 @@
+#+title: sensor board
+
+* stackup & antenna
+see https://jlcpcb.com/impedance; stackup is currently set to 1.6 mm, controlled
+impedance, 1 oz copper on all layers, which gives 0.203 mm / 0.008" outer
+prepreg thickness for the "no requirement" stackup. board thickness is 1.6 mm ≈
+0.062", so we'll be using the first of [[https://www.silabs.com/documents/public/application-notes/an1088-designing-with-pcb-antenna.pdf][these]] reference layouts.
