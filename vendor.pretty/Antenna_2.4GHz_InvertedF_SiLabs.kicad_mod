@@ -1,0 +1,322 @@
+(footprint "Antenna_2.4GHz_InvertedF_SiLabs"
+	(version 20260206)
+	(generator "pcbnew")
+	(generator_version "10.0")
+	(layer "F.Cu")
+	(tags "antenna 2.4GHz")
+	(property "Reference" "REF**"
+		(at -0.635 -6.35 90)
+		(unlocked yes)
+		(layer "F.SilkS")
+		(hide yes)
+		(uuid "086cd172-a6af-4d77-9610-ece0f4c0bf65")
+		(effects
+			(font
+				(size 1 1)
+				(thickness 0.1)
+			)
+		)
+	)
+	(property "Value" "Antenna_2.4GHz_InvertedF_SiLabs"
+		(at -4.445 -6.35 90)
+		(unlocked yes)
+		(layer "F.Fab")
+		(uuid "8eb37499-b6a6-4d02-b7fa-0dca16adcfa8")
+		(effects
+			(font
+				(size 1 1)
+				(thickness 0.15)
+			)
+		)
+	)
+	(property "Datasheet" "https://www.silabs.com/documents/public/application-notes/an1088-designing-with-pcb-antenna.pdf"
+		(at 0 0 0)
+		(unlocked yes)
+		(layer "F.Fab")
+		(hide yes)
+		(uuid "d0d9294e-a2c9-4be8-9f86-9303af92e099")
+		(effects
+			(font
+				(size 1 1)
+				(thickness 0.15)
+			)
+		)
+	)
+	(property "Description" "inverted-F antenna from Silicon Labs, 0.062\" / 1.6 mm stackup"
+		(at 0 0 0)
+		(unlocked yes)
+		(layer "F.Fab")
+		(hide yes)
+		(uuid "4999d71e-d15e-4041-bf29-1d87a0448cb8")
+		(effects
+			(font
+				(size 1 1)
+				(thickness 0.15)
+			)
+		)
+	)
+	(zone_connect 2)
+	(attr exclude_from_pos_files exclude_from_bom)
+	(duplicate_pad_numbers_are_jumpers no)
+	(fp_poly
+		(pts
+			(xy 4.4776 0.508) (xy 4.8006 0) (xy 3.7846 0) (xy 4.1076 0.508)
+		)
+		(stroke
+			(width 0)
+			(type solid)
+		)
+		(fill yes)
+		(layer "F.Cu")
+		(uuid "9e49c4fb-f705-4010-b21f-ea4aeb74e277")
+	)
+	(fp_poly
+		(pts
+			(xy 0 0) (xy 0 -9.2964) (xy 19.8628 -9.2964) (xy 19.8628 -8.3058) (xy 4.8006 -8.3058) (xy 4.8006 0)
+			(xy 3.7846 0) (xy 3.7846 -8.3058) (xy 1.016 -8.3058) (xy 1.016 0)
+		)
+		(stroke
+			(width 0)
+			(type solid)
+		)
+		(fill yes)
+		(layer "F.Cu")
+		(uuid "a3239047-c52d-408d-ac8f-fed953c0026f")
+	)
+	(fp_line
+		(start 0 -9.2964)
+		(end 0 0)
+		(stroke
+			(width 0)
+			(type default)
+		)
+		(layer "Dwgs.User")
+		(uuid "1843ba7a-c660-48e3-b309-bc7bdfea5d99")
+	)
+	(fp_line
+		(start 0 0)
+		(end 1.016 0)
+		(stroke
+			(width 0)
+			(type default)
+		)
+		(layer "Dwgs.User")
+		(uuid "4556aa36-a4d4-47b5-98ce-5d13183d6512")
+	)
+	(fp_line
+		(start 1.016 -8.3058)
+		(end 3.7846 -8.3058)
+		(stroke
+			(width 0)
+			(type default)
+		)
+		(layer "Dwgs.User")
+		(uuid "7816543b-e3d9-4129-8dfa-812b37a8f8e0")
+	)
+	(fp_line
+		(start 1.016 0)
+		(end 1.016 -8.3058)
+		(stroke
+			(width 0)
+			(type default)
+		)
+		(layer "Dwgs.User")
+		(uuid "7425c0ce-19dc-4402-b59c-df3adffd98e7")
+	)
+	(fp_line
+		(start 3.7846 -8.3058)
+		(end 3.7846 0)
+		(stroke
+			(width 0)
+			(type default)
+		)
+		(layer "Dwgs.User")
+		(uuid "7721f260-d29d-4616-a57a-0044069fcec9")
+	)
+	(fp_line
+		(start 3.7846 0)
+		(end 4.1076 0.508)
+		(stroke
+			(width 0)
+			(type default)
+		)
+		(layer "Dwgs.User")
+		(uuid "33fb4085-a7f5-4504-bdd4-2a07f519f018")
+	)
+	(fp_line
+		(start 4.1076 0.508)
+		(end 4.4776 0.508)
+		(stroke
+			(width 0)
+			(type default)
+		)
+		(layer "Dwgs.User")
+		(uuid "2a43c34f-7da4-436e-867e-1849298261b7")
+	)
+	(fp_line
+		(start 4.4776 0.508)
+		(end 4.8006 0)
+		(stroke
+			(width 0)
+			(type default)
+		)
+		(layer "Dwgs.User")
+		(uuid "bac9e1b1-defc-407b-be23-6272519cf174")
+	)
+	(fp_line
+		(start 4.8006 -8.3058)
+		(end 19.8628 -8.3058)
+		(stroke
+			(width 0)
+			(type default)
+		)
+		(layer "Dwgs.User")
+		(uuid "4abcebe7-d636-40ce-afa1-7ff7fce579cc")
+	)
+	(fp_line
+		(start 4.8006 0)
+		(end 4.8006 -8.3058)
+		(stroke
+			(width 0)
+			(type default)
+		)
+		(layer "Dwgs.User")
+		(uuid "570c93ed-d000-4248-9a21-021812e8456d")
+	)
+	(fp_line
+		(start 19.8628 -9.2964)
+		(end 0 -9.2964)
+		(stroke
+			(width 0)
+			(type default)
+		)
+		(layer "Dwgs.User")
+		(uuid "2d748602-33d9-47cb-a4c0-82e0ef113613")
+	)
+	(fp_line
+		(start 19.8628 -8.3058)
+		(end 19.8628 -9.2964)
+		(stroke
+			(width 0)
+			(type default)
+		)
+		(layer "Dwgs.User")
+		(uuid "742508be-366c-4b0a-ab25-5e82972fde89")
+	)
+	(fp_line
+		(start -1.016 -9.8044)
+		(end 24.384 -9.8044)
+		(stroke
+			(width 0.05)
+			(type default)
+		)
+		(layer "Edge.Cuts")
+		(uuid "a5022714-d11b-4fd4-8425-435a06faac59")
+	)
+	(fp_line
+		(start -1.016 0)
+		(end -1.016 -9.8044)
+		(stroke
+			(width 0.05)
+			(type default)
+		)
+		(layer "Edge.Cuts")
+		(uuid "134b63ed-0b24-4c9d-969a-633b6cd9b732")
+	)
+	(fp_line
+		(start 24.384 -9.8044)
+		(end 24.384 0)
+		(stroke
+			(width 0.05)
+			(type default)
+		)
+		(layer "Edge.Cuts")
+		(uuid "adbc5a1e-459b-437c-bbeb-b7501ceca828")
+	)
+	(fp_text user "${REFERENCE}"
+		(at -4.445 -6.35 90)
+		(unlocked yes)
+		(layer "F.Fab")
+		(uuid "8b8d9447-75ef-4323-a9db-c2338d3ef951")
+		(effects
+			(font
+				(size 1 1)
+				(thickness 0.15)
+			)
+		)
+	)
+	(pad "1" smd rect
+		(at 4.2926 0.3048)
+		(size 0.37 0.37)
+		(layers "F.Cu" "F.Mask" "F.Paste")
+		(uuid "8e1e9d8e-79ca-461e-a1b7-4fa6f8ebad9b")
+	)
+	(pad "2" thru_hole circle
+		(at 0.127 0.381)
+		(size 0.5 0.5)
+		(drill 0.2)
+		(layers "*.Cu" "*.Mask")
+		(remove_unused_layers no)
+		(uuid "a0d96f41-14de-44f7-8d21-081934173ff8")
+	)
+	(pad "2" smd rect
+		(at 0.508 0.381)
+		(size 1.524 0.762)
+		(layers "F.Cu" "F.Mask" "F.Paste")
+		(uuid "cdc3d90c-fc3d-439c-87f4-292533fec0be")
+	)
+	(pad "2" thru_hole circle
+		(at 0.889 0.381)
+		(size 0.5 0.5)
+		(drill 0.2)
+		(layers "*.Cu" "*.Mask")
+		(remove_unused_layers no)
+		(uuid "dfa86b08-8661-4708-94f5-b58daa5959b4")
+	)
+	(zone
+		(layers "F.Cu" "B.Cu" "In1.Cu" "In2.Cu" "In3.Cu" "In4.Cu" "In5.Cu" "In6.Cu"
+			"In7.Cu" "In8.Cu" "In9.Cu" "In10.Cu" "In11.Cu" "In12.Cu" "In13.Cu" "In14.Cu"
+			"In15.Cu" "In16.Cu" "In17.Cu" "In18.Cu" "In19.Cu" "In20.Cu" "In21.Cu"
+			"In22.Cu" "In23.Cu" "In24.Cu" "In25.Cu" "In26.Cu" "In27.Cu" "In28.Cu"
+			"In29.Cu" "In30.Cu"
+		)
+		(uuid "12a7b88b-830f-4718-aac9-dc219b0e9a69")
+		(hatch edge 0.5)
+		(connect_pads
+			(clearance 0)
+		)
+		(min_thickness 0.25)
+		(keepout
+			(tracks not_allowed)
+			(vias not_allowed)
+			(pads not_allowed)
+			(copperpour not_allowed)
+			(footprints allowed)
+		)
+		(placement
+			(enabled no)
+			(sheetname "")
+		)
+		(fill
+			(thermal_gap 0.5)
+			(thermal_bridge_width 0.5)
+			(island_removal_mode 0)
+		)
+		(polygon
+			(pts
+				(xy -1.016 0) (xy -1.016 -9.8044) (xy 24.384 -9.8044) (xy 24.384 0)
+			)
+		)
+	)
+	(group ""
+		(uuid "5206f3d9-b6e5-4354-8100-d89836b7c372")
+		(members "1843ba7a-c660-48e3-b309-bc7bdfea5d99" "2a43c34f-7da4-436e-867e-1849298261b7"
+			"2d748602-33d9-47cb-a4c0-82e0ef113613" "33fb4085-a7f5-4504-bdd4-2a07f519f018"
+			"4556aa36-a4d4-47b5-98ce-5d13183d6512" "4abcebe7-d636-40ce-afa1-7ff7fce579cc"
+			"570c93ed-d000-4248-9a21-021812e8456d" "742508be-366c-4b0a-ab25-5e82972fde89"
+			"7425c0ce-19dc-4402-b59c-df3adffd98e7" "7721f260-d29d-4616-a57a-0044069fcec9"
+			"7816543b-e3d9-4129-8dfa-812b37a8f8e0" "bac9e1b1-defc-407b-be23-6272519cf174"
+		)
+	)
+	(embedded_fonts no)
+)
