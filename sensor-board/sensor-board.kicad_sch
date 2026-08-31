@@ -8766,12 +8766,6 @@
 		(uuid "e10cc71f-22ad-4ee3-bd11-6a68bc84082c")
 	)
 	(junction
-		(at 29.21 54.61)
-		(diameter 0)
-		(color 0 0 0 0)
-		(uuid "e278da29-c8f3-4928-990d-fa24dd2bc7dd")
-	)
-	(junction
 		(at 306.07 73.66)
 		(diameter 0)
 		(color 0 0 0 0)
@@ -8806,6 +8800,12 @@
 		(diameter 0)
 		(color 0 0 0 0)
 		(uuid "ef75414e-aed8-4f34-8e34-e59021fee31c")
+	)
+	(junction
+		(at 29.21 54.61)
+		(diameter 0)
+		(color 0 0 0 0)
+		(uuid "f1872989-5196-485f-a12c-88aedba904ec")
 	)
 	(junction
 		(at 332.74 43.18)
@@ -11019,6 +11019,16 @@
 	)
 	(wire
 		(pts
+			(xy 29.21 52.07) (xy 29.21 54.61)
+		)
+		(stroke
+			(width 0)
+			(type default)
+		)
+		(uuid "c6d27b2d-c4f9-44e6-b16b-d117a1a95765")
+	)
+	(wire
+		(pts
 			(xy 29.21 68.58) (xy 29.21 67.31)
 		)
 		(stroke
@@ -11617,6 +11627,16 @@
 		)
 		(uuid "0fd82bb8-dc41-4abf-b523-363312cc900d")
 	)
+	(label "lf_osc+"
+		(at 77.47 87.63 0)
+		(effects
+			(font
+				(size 1.27 1.27)
+			)
+			(justify left bottom)
+		)
+		(uuid "13223649-7e45-441f-9b92-f6dea29a6aeb")
+	)
 	(label "~{reset}"
 		(at 76.2 49.53 0)
 		(effects
@@ -11666,6 +11686,16 @@
 			(justify right bottom)
 		)
 		(uuid "aa9ed30f-165e-4c5d-9fe6-cd5e0355f8dd")
+	)
+	(label "lf_osc-"
+		(at 77.47 90.17 0)
+		(effects
+			(font
+				(size 1.27 1.27)
+			)
+			(justify left bottom)
+		)
+		(uuid "f9330d6e-48d4-4690-9324-3f0af6cac895")
 	)
 	(global_label "hp4"
 		(shape input)
@@ -18973,7 +19003,7 @@
 	)
 	(symbol
 		(lib_id "power:PWR_FLAG")
-		(at 29.21 54.61 0)
+		(at 29.21 52.07 0)
 		(unit 1)
 		(body_style 1)
 		(exclude_from_sim no)
@@ -18983,7 +19013,7 @@
 		(dnp no)
 		(uuid "78df6ec7-28d4-470f-b014-09ced5f96556")
 		(property "Reference" "#FLG01"
-			(at 29.21 52.705 0)
+			(at 29.21 50.165 0)
 			(hide yes)
 			(show_name no)
 			(do_not_autoplace no)
@@ -18994,7 +19024,7 @@
 			)
 		)
 		(property "Value" "PWR_FLAG"
-			(at 18.288 52.832 0)
+			(at 18.288 50.292 0)
 			(show_name no)
 			(do_not_autoplace no)
 			(effects
@@ -19005,7 +19035,7 @@
 			)
 		)
 		(property "Footprint" ""
-			(at 29.21 54.61 0)
+			(at 29.21 52.07 0)
 			(hide yes)
 			(show_name no)
 			(do_not_autoplace no)
@@ -19016,7 +19046,7 @@
 			)
 		)
 		(property "Datasheet" ""
-			(at 29.21 54.61 0)
+			(at 29.21 52.07 0)
 			(hide yes)
 			(show_name no)
 			(do_not_autoplace no)
@@ -19027,7 +19057,7 @@
 			)
 		)
 		(property "Description" "Special symbol for telling ERC where power comes from"
-			(at 29.21 54.61 0)
+			(at 29.21 52.07 0)
 			(hide yes)
 			(show_name no)
 			(do_not_autoplace no)
