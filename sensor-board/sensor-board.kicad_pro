@@ -40,8 +40,8 @@
         "other_text_upright": false,
         "pads": {
           "drill": 0.0,
-          "height": 0.8,
-          "width": 0.9
+          "height": 0.508,
+          "width": 0.3278
         },
         "silk_line_width": 0.1,
         "silk_text_italic": false,
@@ -211,6 +211,7 @@
       ],
       "track_widths": [
         0.0,
+        0.2,
         0.7
       ],
       "tuning_pattern_settings": {
@@ -515,7 +516,7 @@
     "classes": [
       {
         "bus_width": 12,
-        "clearance": 0.2,
+        "clearance": 0.1,
         "diff_pair_gap": 0.25,
         "diff_pair_via_gap": 0.25,
         "diff_pair_width": 0.2,
@@ -528,27 +529,54 @@
         "schematic_color": "rgba(0, 0, 0, 0.000)",
         "track_width": 0.2,
         "tuning_profile": "",
-        "via_diameter": 0.6,
-        "via_drill": 0.3,
+        "via_diameter": 0.25,
+        "via_drill": 0.15,
         "wire_width": 6
       },
       {
-        "clearance": 1.0,
         "name": "50R",
         "pcb_color": "rgba(0, 0, 0, 0.000)",
-        "priority": 1,
+        "priority": 4,
         "schematic_color": "rgba(0, 0, 0, 0.000)",
         "track_width": 0.37,
         "tuning_profile": ""
       },
       {
-        "clearance": 0.75,
         "name": "62R",
         "pcb_color": "rgba(0, 0, 0, 0.000)",
-        "priority": 0,
+        "priority": 3,
         "schematic_color": "rgba(0, 0, 0, 0.000)",
         "track_width": 0.24,
         "tuning_profile": ""
+      },
+      {
+        "diff_pair_gap": 0.2,
+        "diff_pair_width": 0.35,
+        "name": "USB",
+        "pcb_color": "rgba(0, 0, 0, 0.000)",
+        "priority": 2,
+        "schematic_color": "rgba(0, 0, 0, 0.000)",
+        "tuning_profile": ""
+      },
+      {
+        "name": "power",
+        "pcb_color": "rgba(0, 0, 0, 0.000)",
+        "priority": 1,
+        "schematic_color": "rgba(0, 0, 0, 0.000)",
+        "track_width": 0.4,
+        "tuning_profile": "",
+        "via_diameter": 0.4,
+        "via_drill": 0.3
+      },
+      {
+        "name": "relay",
+        "pcb_color": "rgba(0, 0, 0, 0.000)",
+        "priority": 0,
+        "schematic_color": "rgba(0, 0, 0, 0.000)",
+        "track_width": 0.7,
+        "tuning_profile": "",
+        "via_diameter": 0.7,
+        "via_drill": 0.5
       }
     ],
     "meta": {
@@ -565,11 +593,38 @@
       "Net-(AE1-A)": [
         "50R"
       ],
+      "Net-(BT1-+)": [
+        "power"
+      ],
+      "Net-(BT1--)": [
+        "power"
+      ],
+      "Net-(J7-Pin_1)": [
+        "relay"
+      ],
+      "Net-(J7-Pin_2)": [
+        "relay"
+      ],
       "Net-(U1-IN)": [
         "62R"
+      ],
+      "usb_d+": [
+        "USB"
+      ],
+      "usb_d-": [
+        "USB"
       ]
     },
-    "netclass_patterns": []
+    "netclass_patterns": [
+      {
+        "netclass": "power",
+        "pattern": "GND"
+      },
+      {
+        "netclass": "power",
+        "pattern": "\\+3V0"
+      }
+    ]
   },
   "pcbnew": {
     "last_paths": {
@@ -699,7 +754,7 @@
         "uuid": "51c2f14d-61ea-40ae-9b85-8b2a49be52ac"
       }
     ],
-    "used_designators": "Y1-2,#PWR1-81,#FLG1-3,MIC1,JP1-2,TP1-13,R1-17,K1,J1-11,C1-35,AE1-2,SW1-2,L1-8,BT1,D1-2,U1-11,Q1-2",
+    "used_designators": "Y1-2,#PWR1-81,BT1,JP1-2,R1-17,TP1-13,MIC1,#FLG1-3,J1-12,K1,L1-8,SW1-2,AE1,C1-35,U1-11,D1-2,Q1-3",
     "variants": []
   },
   "sheets": [
