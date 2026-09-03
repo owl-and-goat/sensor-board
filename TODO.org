@@ -1,0 +1,139 @@
+#+title: sensor board layout fixes
+#+todo: TODO(t) | DONE(d) WONTFIX(w)
+
+Findings from the 2026-09-02 layout review of =sensor-board.kicad_pcb=
+(commit d5e615f). Coordinates are board coordinates in mm. Priorities:
+[#A] fix before fab, [#B] should fix, [#C] nice to have / verify.
+
+* Grounding (fix before fab)                                        :ground:
+** DONE [#A] Add a via array to the MCU (U2) exposed pad
+CLOSED: [2026-09-02 Wed 22:45]
+Pin 49 is VSS and the RF ground return. It currently reaches ground through
+a single 0.4 mm F.Cu trace from the pad centre (174.49, 54.49) to the via at
+pin 22. Put 9-16 GND vias in the pad at 0.8-1.0 mm pitch.
+** TODO [#A] Add GND vias at the balun/filter (U1) ground pads A2, B1, B2, B3
+Nearest GND via is 1.6-2.6 mm away (the pin-22 VSSRF via at 171.06, 56.24),
+shared with the VDDRF decoupling. ~2 mm of trace is ~25 ohm at 2.4 GHz. One
+via per pad, directly at or under the pad.
+** TODO [#A] Add GND vias at the VDDRF decoupling caps C9 and C10 ground pads
+Pads at (168.85, 56.90) and (169.87, 56.90); they currently return via the
+same F.Cu GND trace to the pin-22 via.
+** TODO [#A] Give every GND pad its own via
+Only 8 of 81 SMD GND pads are within 1 mm of a GND via; 25 are >3 mm away;
+158 mm of GND is routed as F.Cu traces. Worst cases:
+- [ ] U9 (FDC2114) GND pins 3, 4 and thermal pad 17: 3.9-4.3 mm
+- [ ] U5 (VL53L1X) GND pins 2, 3, 4, 6, 12: 2.4-4.1 mm
+- [ ] C17, C20 (VL53L1X decoupling): 3.8 / 4.3 mm
+- [ ] C15: 4.3 mm
+- [ ] U2 pin 32 VSSSMPS: 2.8 mm
+- [ ] C1, C14, C6 (SMPS caps): 2.0-2.6 mm
+- [ ] C12: 3.1 mm; C23: 2.5 mm
+- [ ] U11 (DRV5032) GND: 5.9 mm
+- [ ] MIC1 GND pads: 1.9-3.9 mm
+- [ ] U8 (LIS2DE12) GND pads: 3.2-3.7 mm
+- [ ] U6 (TLV4082) GND: 2.4 mm
+- [ ] J1 (USB-C) shell/GND pads: 5-7 mm
+** TODO [#A] Add GND pours on F.Cu and B.Cu with stitching vias
+Exclude the antenna area (everything left of x = 167.1 for y < 61.06). Keep a
+generous clearance from the FDC2114 tank/electrode traces. Stitch to In1 at
+<= 2 mm spacing in the RF section (AN5165).
+
+* Signals routed on plane layers (fix before fab)                   :planes:
+** TODO [#A] Move VLXSMPS (SMPS switch node) off In1
+2.1 mm slot at x = 175.77, y 58.42-60.52, directly under C1 and C14. Re-place
+L1 and/or C1/C14 so pin 33 -> L1 is a short, direct F.Cu trace.
+** TODO [#A] Move SCL and SDA off In1
+Two ~6 mm diagonal slots under the MCU south-east quadrant:
+scl (175.26, 54.84) -> (179.68, 59.26); sda (174.74, 55.87) -> (179.07, 60.20).
+Crossed by usb_d+/usb_d-, sai1_d1, dist_int, dist_shut and the SMPS GND traces.
+** TODO [#A] Move water1 and water2 off In2
+13 mm and 12 mm on the +3V0 plane; together they wall off a 3V0 island under
+the MCU that is only fed through the F.Cu decoupling vias.
+** TODO [#A] Move hp1 and hp3 off In2
+hp1 slot (168.0, 57.23) -> (170.3, 54.2) passes directly under the balun U1.
+** TODO [#B] Remove the stray GND track segments on In2 near (169.3-169.5, 57.8-59.05)
+
+* Crystals                                                         :crystal:
+** DONE Local ground islands under Y1 and Y2 (AN2867 structure) - keep as is
+CORRECTION to the first review pass, which wrongly said there was no copper
+under the crystals. What is actually there: a filled GND =gr_rect= on In1
+under each crystal, isolated from the main In1 plane by the keepout gap, a
+GND guard ring of graphic lines on F.Cu, a via ring tying the top ring to the
+island, and a single-point tie to the rest of ground:
+- Y1: via (169.3, 59.05) -> In2 stub -> via (169.5, 58.47) -> main In1 plane
+  and B.Cu track to the U2 pin 22 (VSSRF) via.
+- Y2: via (178.9, 48.4) -> B.Cu track -> via (179.0, 47.5) -> main In1 plane.
+Only crystal-related grounds (Y1.2, C3.2, C5.2) land on the islands. The
+keepouts are what create the isolation gap; do not delete them.
+** TODO [#B] Connect Y1 pad 4 to the guard ring / island
+Pad 4 (171.6, 61.25) has no net; only one of the two case-ground pads is
+grounded. Needs a schematic change.
+** TODO [#B] Separate the LSE traces
+lf_osc+ and lf_osc- run side by side for 2.2 mm at 0.24 mm gap (y = 49.97 and
+50.42, x 176.9-179.1), outside the ring. Put a GND trace between them or
+spread them.
+** TODO [#B] Move the +3V0 traces to C2/C7 away from the LSE traces
++3V0 at (177.04-178.05, 49.47) and (177.24-178.31, 51.05) run 0.2 mm from the
+LSE traces where they leave the ring.
+** TODO [#C] Relax the via ring pitch to a DRC-legal hole-to-hole spacing
+Currently 0.38 mm; this is the source of most hole_to_hole warnings. 0.6-1.0
+mm pitch loses nothing for a guard ring.
+** TODO [#C] Consider landing the Y2 island tie at an MCU VSS pin
+AN2867 wants the local ground tied to the nearest MCU ground pin; the Y2 tie
+currently lands on the main plane at (179.0, 47.5). Y1's tie already reaches
+pin 22. Low priority once the U2 exposed pad has its via array.
+** TODO [#C] Move C3/C5 (LSE load caps) between the crystal and the MCU
+They are on the far side of Y2 at x = 182.0, inside the ring. Optional;
+would need the ring reshaped.
+** Note: no In2 (+3V0) copper under either island
+Y2 by the 4-layer keepout, Y1 because the ring via antipads island the In2
+fill and it is removed. Harmless for the crystals (the In1 island shields
+them); it just leaves a ~4x4 mm hole in the 3V0 plane. No action.
+
+* Antenna / RF                                                          :rf:
+** TODO [#B] Reroute color_int away from the antenna base
+F.Cu at x = 168.06 from y 56.56 to 60.50, between the feed pad and the
+shorting-arm pads; its via at (168.2, 56.5) is 0.45 mm below the 50 ohm feed.
+Take it up on B.Cu from U2 pin 19 instead.
+** TODO [#B] Make In2 GND (not +3V0) in the antenna base / RF section
+AN1088 wants ground on layers 2 and 4 next to the antenna. Cut the 3V0 plane
+back from the antenna base and RF section, fill with GND, stitch to In1.
+** TODO [#C] Check the coin cell (BT1) body clearance from the antenna arm
+Holder pads at (183.98, 37.34) near the top edge; the arm runs x ~ 158.7,
+y 40.7-60.6. Any large metal within ~5-10 mm of the arm will detune it.
+** TODO [#C] Convert the antenna radiator polygon into pad 2
+Still a netless F.Cu graphic; produces the shorting_items DRC error against
+pad 2 (GND). Fine as fabricated, but the pad form removes the error.
+** DONE 50 ohm feed: 0.37 mm on 0.203 mm prepreg computes to ~51 ohm; OK
+** DONE Shorting arm has two THT GND pads at the base; OK
+** DONE No copper on any layer under the antenna; plane edge at the base; OK
+
+* SMPS                                                                :smps:
+** TODO [#B] Tighten the SMPS loop after moving VLX back to F.Cu
+L2 is 3 mm from Y1. Keep VLX short, keep C1/C14 GND on their own vias, give
+pin 32 (VSSSMPS) its own via.
+
+* Sensor and analog nets                                            :sensor:
+** TODO [#B] Separate the FDC2114 channel 3 B trace from the channel 2 electrode net
+IN3B runs ~10 mm on B.Cu at the 0.1 mm minimum gap from Net-(J10-Pin_1)
+(channel 2 electrode). Channel-to-channel crosstalk on the most sensitive node.
+** TODO [#B] Separate the channel 3 electrode net from SCL
+Net-(J11-Pin_1) runs 1.9 mm at 0.1 mm gap from scl on B.Cu.
+** TODO [#B] Bundle each FDC channel's A/B pair together, away from other channels and I2C
+** TODO [#C] Shorten / match the FDC sensor trace lengths
+Per-channel totals: ch0 ~16 mm, ch1 ~18 mm, ch2 ~23 mm, ch3 ~33 mm. TI:
+short traces, matched if matched channel response is needed.
+** TODO [#B] Move the relay GPIO trace away from the comparator input U6 IN2
+relay on B.Cu runs at x = 173.18 and x = 173.78 on both sides of the 1 Mohm
+U6-IN2 node at x = 173.48 (y 65-67.7), 0.3 mm pitch; hp4 also runs 3.5 mm
+alongside it on F.Cu. Relay edges will fire false water events.
+** TODO [#C] Reroute motion (B.Cu, x = 175.25) so it does not run over the water2 slot
+Moot once water2 leaves In2.
+
+* Board / DRC housekeeping                                           :drc:
+** TODO [#A] Close the board outline
+Top-right corner: top edge ends at (190.50, 35.66), right edge starts at
+(190.53, 35.69). JLCPCB will query an open outline.
+** TODO [#C] Fix the vendor footprint courtyards (U1, MIC1, U8) so DRC is readable
+** TODO [#C] Clean up the co-located / too-close vias flagged by hole_to_hole
+Mostly the Y1 ring; also water1/water2, hp2/hp3, sda/scl, JP1 pairs.
