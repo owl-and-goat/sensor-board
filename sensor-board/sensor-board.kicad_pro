@@ -82,14 +82,6 @@
           ""
         ],
         [
-          "clearance|176911000|43991800|75e77e84-bc54-497e-b6f0-43ff84688958|9bd5c5b0-2ece-4acb-b749-3a9190e2f148",
-          ""
-        ],
-        [
-          "hole_clearance|171600000|61250000|bd70f4ee-9ae6-4626-9ba4-20f0d4c77c12|f01247a0-0cb9-415b-9fb0-6c680cc32b1e",
-          ""
-        ],
-        [
           "hole_clearance|183258000|57912000|5091a033-9fff-4a10-aaf8-389d3b4e25ac|a63a19d3-7424-4532-884d-7c08c4f9eba0",
           ""
         ],
@@ -106,27 +98,11 @@
           ""
         ],
         [
-          "hole_to_hole|172244000|51054000|235a66e9-80a8-4e8b-8508-68fafc9c5c8b|8b60edd1-eb72-456b-a049-8951a5fce51b",
+          "hole_to_hole|175244000|51054000|1299eecc-e404-4b10-a4dc-bc34119deda0|36b3315c-f621-4969-a729-55abc97c4fb0",
           ""
         ],
         [
-          "hole_to_hole|173244000|51054000|235a66e9-80a8-4e8b-8508-68fafc9c5c8b|3cc780ef-4c80-4e67-a407-eac372828b45",
-          ""
-        ],
-        [
-          "hole_to_hole|173244000|57929000|7b8f8ae8-fa64-46be-ad67-2c901b327479|ac54a3bb-aff7-4229-94b5-d1afc0ea2c93",
-          ""
-        ],
-        [
-          "hole_to_hole|175744000|51054000|1299eecc-e404-4b10-a4dc-bc34119deda0|36b3315c-f621-4969-a729-55abc97c4fb0",
-          ""
-        ],
-        [
-          "hole_to_hole|177931500|52741500|837c8ac8-a470-46b5-b47f-c792da1b1dc1|bdb6985f-52f0-4877-9898-e49961a79e94",
-          ""
-        ],
-        [
-          "items_not_allowed|171323000|42024300|e87c735c-925c-470a-b809-888bc3a707ce|00000000-0000-0000-0000-000000000000",
+          "items_not_allowed|170446700|39878000|e87c735c-925c-470a-b809-888bc3a707ce|00000000-0000-0000-0000-000000000000",
           ""
         ],
         [
@@ -142,55 +118,11 @@
           ""
         ],
         [
-          "shorting_items|171450000|61250000|1d081655-bc5e-43db-ad5f-1f46414e869a|bd70f4ee-9ae6-4626-9ba4-20f0d4c77c12",
-          ""
-        ],
-        [
-          "shorting_items|171600000|61050000|bd70f4ee-9ae6-4626-9ba4-20f0d4c77c12|f01247a0-0cb9-415b-9fb0-6c680cc32b1e",
-          ""
-        ],
-        [
-          "shorting_items|171600000|61250000|03851b01-30f4-46a2-bff3-2ff45e418467|bd70f4ee-9ae6-4626-9ba4-20f0d4c77c12",
-          ""
-        ],
-        [
           "shorting_items|175006000|42926000|3ac46759-ba94-4c92-8548-13a2de2283ca|7b4bd984-9a62-4fe6-b571-caa0ef8ac2dd",
           ""
         ],
         [
           "shorting_items|175006000|42926000|3ac46759-ba94-4c92-8548-13a2de2283ca|c9fe78f8-5076-4b83-9b91-b2d5981cb46b",
-          ""
-        ],
-        [
-          "solder_mask_bridge|171450000|61250000|1d081655-bc5e-43db-ad5f-1f46414e869a|bd70f4ee-9ae6-4626-9ba4-20f0d4c77c12",
-          ""
-        ],
-        [
-          "solder_mask_bridge|171600000|61050000|f01247a0-0cb9-415b-9fb0-6c680cc32b1e|bd70f4ee-9ae6-4626-9ba4-20f0d4c77c12",
-          ""
-        ],
-        [
-          "solder_mask_bridge|171600000|61250000|03851b01-30f4-46a2-bff3-2ff45e418467|bd70f4ee-9ae6-4626-9ba4-20f0d4c77c12",
-          ""
-        ],
-        [
-          "solder_mask_bridge|173101000|45567600|cf3b0022-ab46-43b6-89b5-513961280dd1|a0d11dad-7a28-4b16-881a-7f940513f949",
-          ""
-        ],
-        [
-          "solder_mask_bridge|173266100|42926000|a0d11dad-7a28-4b16-881a-7f940513f949|3ac46759-ba94-4c92-8548-13a2de2283ca",
-          ""
-        ],
-        [
-          "solder_mask_bridge|175006000|42926000|7b4bd984-9a62-4fe6-b571-caa0ef8ac2dd|3ac46759-ba94-4c92-8548-13a2de2283ca",
-          ""
-        ],
-        [
-          "solder_mask_bridge|175006000|42926000|c9fe78f8-5076-4b83-9b91-b2d5981cb46b|3ac46759-ba94-4c92-8548-13a2de2283ca",
-          ""
-        ],
-        [
-          "solder_mask_bridge|176580800|43103800|9bd5c5b0-2ece-4acb-b749-3a9190e2f148|3ac46759-ba94-4c92-8548-13a2de2283ca",
           ""
         ],
         [
@@ -875,7 +807,7 @@
         "uuid": "51c2f14d-61ea-40ae-9b85-8b2a49be52ac"
       }
     ],
-    "used_designators": "U1-11,D1-2,C1-35,BT1,H1-2,Q1-3,L1-8,SW1-2,AE1,R1-17,R20-21,JP1-2,TP1-13,#PWR1-81,Y1-2,J1-12,K1,#FLG1-3,MIC1",
+    "used_designators": "H1-2,AE1,SW1-2,L1-8,Q1-3,U1-11,D1-2,C1-35,Y1-2,#PWR1-81,BT1,JP1-2,R1-17,R20-21,TP1-13,MIC1,#FLG1-3,K1,J1-12",
     "variants": []
   },
   "sheets": [

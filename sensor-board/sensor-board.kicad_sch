@@ -1866,7 +1866,7 @@
 			)
 			(embedded_fonts no)
 		)
-		(symbol "Device:Crystal_GND2_Small"
+		(symbol "Device:Crystal_GND24_Small"
 			(pin_names
 				(offset 1.016)
 				(hide yes)
@@ -1877,23 +1877,25 @@
 			(in_pos_files yes)
 			(duplicate_pin_numbers_are_jumpers no)
 			(property "Reference" "Y"
-				(at 0 5.08 0)
+				(at 1.27 4.445 0)
 				(show_name no)
 				(do_not_autoplace no)
 				(effects
 					(font
 						(size 1.27 1.27)
 					)
+					(justify left)
 				)
 			)
-			(property "Value" "Crystal_GND2_Small"
-				(at 0 3.175 0)
+			(property "Value" "Crystal_GND24_Small"
+				(at 1.27 2.54 0)
 				(show_name no)
 				(do_not_autoplace no)
 				(effects
 					(font
 						(size 1.27 1.27)
 					)
+					(justify left)
 				)
 			)
 			(property "Footprint" ""
@@ -1918,9 +1920,31 @@
 					)
 				)
 			)
-			(property "Description" "Three pin crystal, GND on pin 2, small symbol"
+			(property "Description" "Four pin crystal, GND on pins 2 and 4, small symbol"
 				(at 0 0 0)
 				(show_name no)
+				(do_not_autoplace no)
+				(hide yes)
+				(effects
+					(font
+						(size 1.27 1.27)
+					)
+				)
+			)
+			(property private "KLC_S3.3" "The rectangle is not a symbol body but a graphical element"
+				(at 0 -10.16 0)
+				(show_name yes)
+				(do_not_autoplace no)
+				(hide yes)
+				(effects
+					(font
+						(size 1.27 1.27)
+					)
+				)
+			)
+			(property private "KLC_S4.1" "Some pins are on 50mil grid to make the symbol small"
+				(at 0 -12.7 0)
+				(show_name yes)
 				(do_not_autoplace no)
 				(hide yes)
 				(effects
@@ -1951,7 +1975,19 @@
 					)
 				)
 			)
-			(symbol "Crystal_GND2_Small_0_1"
+			(symbol "Crystal_GND24_Small_0_1"
+				(polyline
+					(pts
+						(xy -1.27 1.27) (xy -1.27 1.905) (xy 1.27 1.905) (xy 1.27 1.27)
+					)
+					(stroke
+						(width 0)
+						(type default)
+					)
+					(fill
+						(type none)
+					)
+				)
 				(polyline
 					(pts
 						(xy -1.27 -0.762) (xy -1.27 0.762)
@@ -2000,7 +2036,7 @@
 					)
 				)
 			)
-			(symbol "Crystal_GND2_Small_1_1"
+			(symbol "Crystal_GND24_Small_1_1"
 				(pin passive line
 					(at -2.54 0 0)
 					(length 1.27)
@@ -2022,7 +2058,7 @@
 				(pin passive line
 					(at 0 -2.54 90)
 					(length 0.635)
-					(name "2"
+					(name "G"
 						(effects
 							(font
 								(size 1.27 1.27)
@@ -2048,6 +2084,25 @@
 						)
 					)
 					(number "3"
+						(effects
+							(font
+								(size 0.762 0.762)
+							)
+						)
+					)
+				)
+				(pin passive line
+					(at 0 -2.54 90)
+					(length 0.635)
+					(hide yes)
+					(name "G"
+						(effects
+							(font
+								(size 1.27 1.27)
+							)
+						)
+					)
+					(number "4"
 						(effects
 							(font
 								(size 0.762 0.762)
@@ -8240,7 +8295,7 @@
 	)
 	(text "CR nausicaa: i wonder if we want\nseries resistors ahead of water*\nto limit slew rate somewhat."
 		(exclude_from_sim no)
-		(at 160.274 128.524 0)
+		(at 161.036 131.318 0)
 		(effects
 			(font
 				(size 1.27 1.27)
@@ -8643,6 +8698,12 @@
 		(uuid "8817e0e8-71f6-4ec1-8a28-12ab9a938bef")
 	)
 	(junction
+		(at 182.88 101.6)
+		(diameter 0)
+		(color 0 0 0 0)
+		(uuid "8faf0690-41f8-40e6-8abb-75955657555c")
+	)
+	(junction
 		(at 29.21 67.31)
 		(diameter 0)
 		(color 0 0 0 0)
@@ -8883,12 +8944,6 @@
 		(uuid "f8952831-5bf6-4e64-a96e-386e192fe5e9")
 	)
 	(junction
-		(at 185.42 101.6)
-		(diameter 0)
-		(color 0 0 0 0)
-		(uuid "f9af0ff6-3370-4071-ae32-e740635682e6")
-	)
-	(junction
 		(at 77.47 92.71)
 		(diameter 0)
 		(color 0 0 0 0)
@@ -9108,7 +9163,7 @@
 	)
 	(wire
 		(pts
-			(xy 185.42 101.6) (xy 205.74 101.6)
+			(xy 182.88 101.6) (xy 205.74 101.6)
 		)
 		(stroke
 			(width 0)
@@ -11458,7 +11513,7 @@
 	)
 	(wire
 		(pts
-			(xy 185.42 101.6) (xy 185.42 102.87)
+			(xy 182.88 101.6) (xy 182.88 102.87)
 		)
 		(stroke
 			(width 0)
@@ -13778,7 +13833,7 @@
 				)
 			)
 		)
-		(property "Description" "Unpolarized capacitor, small symbol"
+		(property "Description" ""
 			(at 152.4 226.06 0)
 			(hide yes)
 			(show_name no)
@@ -13800,7 +13855,7 @@
 				)
 			)
 		)
-		(property "LCSC" "C1779"
+		(property "LCSC" "C23733"
 			(at 152.4 226.06 0)
 			(hide yes)
 			(show_name no)
@@ -14221,8 +14276,8 @@
 				)
 			)
 		)
-		(property "Sim.Device" "NMOS"
-			(at 141.605 226.06 0)
+		(property "KiLib_Generator" "package/gullwing"
+			(at 124.46 226.06 0)
 			(hide yes)
 			(show_name no)
 			(do_not_autoplace no)
@@ -14232,8 +14287,8 @@
 				)
 			)
 		)
-		(property "Sim.Type" "VDMOS"
-			(at 143.51 226.06 0)
+		(property "Sim.Device" "NMOS"
+			(at 124.46 226.06 0)
 			(hide yes)
 			(show_name no)
 			(do_not_autoplace no)
@@ -14244,7 +14299,7 @@
 			)
 		)
 		(property "Sim.Pins" "1=D 2=G 3=S"
-			(at 139.7 226.06 0)
+			(at 124.46 226.06 0)
 			(hide yes)
 			(show_name no)
 			(do_not_autoplace no)
@@ -14254,7 +14309,7 @@
 				)
 			)
 		)
-		(property "KiLib_Generator" "package/gullwing"
+		(property "Sim.Type" "VDMOS"
 			(at 124.46 226.06 0)
 			(hide yes)
 			(show_name no)
@@ -14592,7 +14647,7 @@
 				(justify right)
 			)
 		)
-		(property "Value" "10k"
+		(property "Value" "10K"
 			(at 214.63 242.5699 0)
 			(show_name no)
 			(do_not_autoplace no)
@@ -15505,93 +15560,6 @@
 			(project "sensor-board"
 				(path "/51c2f14d-61ea-40ae-9b85-8b2a49be52ac"
 					(reference "R4")
-					(unit 1)
-				)
-			)
-		)
-	)
-	(symbol
-		(lib_id "Mechanical:MountingHole")
-		(at 33.02 264.16 0)
-		(unit 1)
-		(body_style 1)
-		(exclude_from_sim no)
-		(in_bom no)
-		(on_board yes)
-		(in_pos_files no)
-		(dnp no)
-		(fields_autoplaced yes)
-		(uuid "29f4635a-e7c4-4937-a69b-f835891d815c")
-		(property "Reference" "H1"
-			(at 35.56 262.8899 0)
-			(show_name no)
-			(do_not_autoplace no)
-			(effects
-				(font
-					(size 1.27 1.27)
-				)
-				(justify left)
-			)
-		)
-		(property "Value" "MountingHole"
-			(at 35.56 265.4299 0)
-			(show_name no)
-			(do_not_autoplace no)
-			(effects
-				(font
-					(size 1.27 1.27)
-				)
-				(justify left)
-			)
-		)
-		(property "Footprint" "MountingHole:MountingHole_2.2mm_M2"
-			(at 33.02 264.16 0)
-			(hide yes)
-			(show_name no)
-			(do_not_autoplace no)
-			(effects
-				(font
-					(size 1.27 1.27)
-				)
-			)
-		)
-		(property "Datasheet" ""
-			(at 33.02 264.16 0)
-			(hide yes)
-			(show_name no)
-			(do_not_autoplace no)
-			(effects
-				(font
-					(size 1.27 1.27)
-				)
-			)
-		)
-		(property "Description" "Mounting Hole without connection"
-			(at 33.02 264.16 0)
-			(hide yes)
-			(show_name no)
-			(do_not_autoplace no)
-			(effects
-				(font
-					(size 1.27 1.27)
-				)
-			)
-		)
-		(property "KiLib_Generator" "mounting_hardware/mounting_hole"
-			(at 33.02 264.16 0)
-			(hide yes)
-			(show_name no)
-			(do_not_autoplace no)
-			(effects
-				(font
-					(size 1.27 1.27)
-				)
-			)
-		)
-		(instances
-			(project "sensor-board"
-				(path "/51c2f14d-61ea-40ae-9b85-8b2a49be52ac"
-					(reference "H1")
 					(unit 1)
 				)
 			)
@@ -16559,7 +16527,7 @@
 				)
 			)
 		)
-		(property "Value" "10k"
+		(property "Value" "10K"
 			(at 71.12 45.72 90)
 			(show_name no)
 			(do_not_autoplace no)
@@ -16947,7 +16915,7 @@
 				(justify left)
 			)
 		)
-		(property "Value" "1uF"
+		(property "Value" "1.0uF"
 			(at 102.87 22.8662 0)
 			(show_name no)
 			(do_not_autoplace no)
@@ -20225,6 +20193,82 @@
 		)
 	)
 	(symbol
+		(lib_id "Mechanical:MountingHole")
+		(at 21.59 274.32 0)
+		(unit 1)
+		(body_style 1)
+		(exclude_from_sim no)
+		(in_bom no)
+		(on_board yes)
+		(in_pos_files yes)
+		(dnp no)
+		(fields_autoplaced yes)
+		(uuid "7a892c20-e187-4c0d-bc5d-34c5bf97042a")
+		(property "Reference" "H1"
+			(at 24.13 273.0499 0)
+			(show_name no)
+			(do_not_autoplace no)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(justify left)
+			)
+		)
+		(property "Value" "MountingHole"
+			(at 24.13 275.5899 0)
+			(show_name no)
+			(do_not_autoplace no)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(justify left)
+			)
+		)
+		(property "Footprint" "MountingHole:MountingHole_2.2mm_M2"
+			(at 21.59 274.32 0)
+			(hide yes)
+			(show_name no)
+			(do_not_autoplace no)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+			)
+		)
+		(property "Datasheet" ""
+			(at 21.59 274.32 0)
+			(hide yes)
+			(show_name no)
+			(do_not_autoplace no)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+			)
+		)
+		(property "Description" "Mounting Hole without connection"
+			(at 21.59 274.32 0)
+			(hide yes)
+			(show_name no)
+			(do_not_autoplace no)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+			)
+		)
+		(instances
+			(project "sensor-board"
+				(path "/51c2f14d-61ea-40ae-9b85-8b2a49be52ac"
+					(reference "H1")
+					(unit 1)
+				)
+			)
+		)
+	)
+	(symbol
 		(lib_id "power:GND")
 		(at 100.33 24.13 0)
 		(unit 1)
@@ -21636,8 +21680,8 @@
 				)
 			)
 		)
-		(property "Sim.Device" "NMOS"
-			(at 228.6 252.095 0)
+		(property "KiLib_Generator" "package/gullwing"
+			(at 228.6 234.95 0)
 			(hide yes)
 			(show_name no)
 			(do_not_autoplace no)
@@ -21647,8 +21691,8 @@
 				)
 			)
 		)
-		(property "Sim.Type" "VDMOS"
-			(at 228.6 254 0)
+		(property "Sim.Device" "NMOS"
+			(at 228.6 234.95 0)
 			(hide yes)
 			(show_name no)
 			(do_not_autoplace no)
@@ -21659,7 +21703,7 @@
 			)
 		)
 		(property "Sim.Pins" "1=D 2=G 3=S"
-			(at 228.6 250.19 0)
+			(at 228.6 234.95 0)
 			(hide yes)
 			(show_name no)
 			(do_not_autoplace no)
@@ -21669,7 +21713,7 @@
 				)
 			)
 		)
-		(property "KiLib_Generator" "package/gullwing"
+		(property "Sim.Type" "VDMOS"
 			(at 228.6 234.95 0)
 			(hide yes)
 			(show_name no)
@@ -23691,7 +23735,7 @@
 	)
 	(symbol
 		(lib_id "power:GND")
-		(at 185.42 107.95 0)
+		(at 182.88 107.95 0)
 		(unit 1)
 		(body_style 1)
 		(exclude_from_sim no)
@@ -23701,7 +23745,7 @@
 		(dnp no)
 		(uuid "a948ea37-c6e4-44fa-bf82-7e391e878e94")
 		(property "Reference" "#PWR038"
-			(at 185.42 114.3 0)
+			(at 182.88 114.3 0)
 			(hide yes)
 			(show_name no)
 			(do_not_autoplace no)
@@ -23712,7 +23756,7 @@
 			)
 		)
 		(property "Value" "GND"
-			(at 186.69 113.03 0)
+			(at 184.15 113.03 0)
 			(show_name no)
 			(do_not_autoplace no)
 			(effects
@@ -23722,7 +23766,7 @@
 			)
 		)
 		(property "Footprint" ""
-			(at 185.42 107.95 0)
+			(at 182.88 107.95 0)
 			(hide yes)
 			(show_name no)
 			(do_not_autoplace no)
@@ -23733,7 +23777,7 @@
 			)
 		)
 		(property "Datasheet" ""
-			(at 185.42 107.95 0)
+			(at 182.88 107.95 0)
 			(hide yes)
 			(show_name no)
 			(do_not_autoplace no)
@@ -23744,7 +23788,7 @@
 			)
 		)
 		(property "Description" "Power symbol creates a global label with name \"GND\" , ground"
-			(at 185.42 107.95 0)
+			(at 182.88 107.95 0)
 			(hide yes)
 			(show_name no)
 			(do_not_autoplace no)
@@ -23789,7 +23833,7 @@
 				(justify left)
 			)
 		)
-		(property "Value" "1k"
+		(property "Value" "1K"
 			(at 40.64 132.0799 0)
 			(show_name no)
 			(do_not_autoplace no)
@@ -23865,6 +23909,82 @@
 			(project "sensor-board"
 				(path "/51c2f14d-61ea-40ae-9b85-8b2a49be52ac"
 					(reference "R1")
+					(unit 1)
+				)
+			)
+		)
+	)
+	(symbol
+		(lib_id "Mechanical:MountingHole")
+		(at 21.59 269.24 0)
+		(unit 1)
+		(body_style 1)
+		(exclude_from_sim no)
+		(in_bom no)
+		(on_board yes)
+		(in_pos_files yes)
+		(dnp no)
+		(fields_autoplaced yes)
+		(uuid "ac575c51-5d6e-4162-84a0-134f25409c87")
+		(property "Reference" "H2"
+			(at 24.13 267.9699 0)
+			(show_name no)
+			(do_not_autoplace no)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(justify left)
+			)
+		)
+		(property "Value" "MountingHole"
+			(at 24.13 270.5099 0)
+			(show_name no)
+			(do_not_autoplace no)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(justify left)
+			)
+		)
+		(property "Footprint" "MountingHole:MountingHole_2.2mm_M2"
+			(at 21.59 269.24 0)
+			(hide yes)
+			(show_name no)
+			(do_not_autoplace no)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+			)
+		)
+		(property "Datasheet" ""
+			(at 21.59 269.24 0)
+			(hide yes)
+			(show_name no)
+			(do_not_autoplace no)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+			)
+		)
+		(property "Description" "Mounting Hole without connection"
+			(at 21.59 269.24 0)
+			(hide yes)
+			(show_name no)
+			(do_not_autoplace no)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+			)
+		)
+		(instances
+			(project "sensor-board"
+				(path "/51c2f14d-61ea-40ae-9b85-8b2a49be52ac"
+					(reference "H2")
 					(unit 1)
 				)
 			)
@@ -24226,7 +24346,7 @@
 	)
 	(symbol
 		(lib_id "Device:C_Small")
-		(at 185.42 105.41 0)
+		(at 182.88 105.41 0)
 		(unit 1)
 		(body_style 1)
 		(exclude_from_sim no)
@@ -24237,7 +24357,7 @@
 		(fields_autoplaced yes)
 		(uuid "b0a95f19-986b-4342-acf4-510d6087f86c")
 		(property "Reference" "C15"
-			(at 187.96 104.1462 0)
+			(at 185.42 104.1462 0)
 			(show_name no)
 			(do_not_autoplace no)
 			(effects
@@ -24248,7 +24368,7 @@
 			)
 		)
 		(property "Value" "0.1uF"
-			(at 187.96 106.6862 0)
+			(at 185.42 106.6862 0)
 			(show_name no)
 			(do_not_autoplace no)
 			(effects
@@ -24259,7 +24379,7 @@
 			)
 		)
 		(property "Footprint" "Capacitor_SMD:C_0402_1005Metric"
-			(at 185.42 105.41 0)
+			(at 182.88 105.41 0)
 			(hide yes)
 			(show_name no)
 			(do_not_autoplace no)
@@ -24270,7 +24390,7 @@
 			)
 		)
 		(property "Datasheet" ""
-			(at 185.42 105.41 0)
+			(at 182.88 105.41 0)
 			(hide yes)
 			(show_name no)
 			(do_not_autoplace no)
@@ -24281,7 +24401,7 @@
 			)
 		)
 		(property "Description" "Unpolarized capacitor, small symbol"
-			(at 185.42 105.41 0)
+			(at 182.88 105.41 0)
 			(hide yes)
 			(show_name no)
 			(do_not_autoplace no)
@@ -24292,7 +24412,7 @@
 			)
 		)
 		(property "KiLib_Generator" "SMD_2terminal_chip_molded"
-			(at 185.42 105.41 0)
+			(at 182.88 105.41 0)
 			(hide yes)
 			(show_name no)
 			(do_not_autoplace no)
@@ -24303,7 +24423,7 @@
 			)
 		)
 		(property "LCSC" "C141382"
-			(at 185.42 105.41 0)
+			(at 182.88 105.41 0)
 			(hide yes)
 			(show_name no)
 			(do_not_autoplace no)
@@ -24715,7 +24835,7 @@
 	)
 	(symbol
 		(lib_id "power:+3V0")
-		(at 185.42 101.6 0)
+		(at 182.88 101.6 0)
 		(unit 1)
 		(body_style 1)
 		(exclude_from_sim no)
@@ -24726,7 +24846,7 @@
 		(fields_autoplaced yes)
 		(uuid "b59a3f3d-6a45-4c13-9ebe-b01d863e6c45")
 		(property "Reference" "#PWR037"
-			(at 185.42 105.41 0)
+			(at 182.88 105.41 0)
 			(hide yes)
 			(show_name no)
 			(do_not_autoplace no)
@@ -24737,7 +24857,7 @@
 			)
 		)
 		(property "Value" "+3V0"
-			(at 185.42 96.52 0)
+			(at 182.88 96.52 0)
 			(show_name no)
 			(do_not_autoplace no)
 			(effects
@@ -24747,7 +24867,7 @@
 			)
 		)
 		(property "Footprint" ""
-			(at 185.42 101.6 0)
+			(at 182.88 101.6 0)
 			(hide yes)
 			(show_name no)
 			(do_not_autoplace no)
@@ -24758,7 +24878,7 @@
 			)
 		)
 		(property "Datasheet" ""
-			(at 185.42 101.6 0)
+			(at 182.88 101.6 0)
 			(hide yes)
 			(show_name no)
 			(do_not_autoplace no)
@@ -24769,7 +24889,7 @@
 			)
 		)
 		(property "Description" "Power symbol creates a global label with name \"+3V0\""
-			(at 185.42 101.6 0)
+			(at 182.88 101.6 0)
 			(hide yes)
 			(show_name no)
 			(do_not_autoplace no)
@@ -24985,93 +25105,6 @@
 		)
 	)
 	(symbol
-		(lib_id "Mechanical:MountingHole")
-		(at 33.02 269.24 0)
-		(unit 1)
-		(body_style 1)
-		(exclude_from_sim no)
-		(in_bom no)
-		(on_board yes)
-		(in_pos_files no)
-		(dnp no)
-		(fields_autoplaced yes)
-		(uuid "bdc6cfbd-a06c-4d37-97d7-b40697de803a")
-		(property "Reference" "H2"
-			(at 35.56 267.9699 0)
-			(show_name no)
-			(do_not_autoplace no)
-			(effects
-				(font
-					(size 1.27 1.27)
-				)
-				(justify left)
-			)
-		)
-		(property "Value" "MountingHole"
-			(at 35.56 270.5099 0)
-			(show_name no)
-			(do_not_autoplace no)
-			(effects
-				(font
-					(size 1.27 1.27)
-				)
-				(justify left)
-			)
-		)
-		(property "Footprint" "MountingHole:MountingHole_2.2mm_M2"
-			(at 33.02 269.24 0)
-			(hide yes)
-			(show_name no)
-			(do_not_autoplace no)
-			(effects
-				(font
-					(size 1.27 1.27)
-				)
-			)
-		)
-		(property "Datasheet" ""
-			(at 33.02 269.24 0)
-			(hide yes)
-			(show_name no)
-			(do_not_autoplace no)
-			(effects
-				(font
-					(size 1.27 1.27)
-				)
-			)
-		)
-		(property "Description" "Mounting Hole without connection"
-			(at 33.02 269.24 0)
-			(hide yes)
-			(show_name no)
-			(do_not_autoplace no)
-			(effects
-				(font
-					(size 1.27 1.27)
-				)
-			)
-		)
-		(property "KiLib_Generator" "mounting_hardware/mounting_hole"
-			(at 33.02 269.24 0)
-			(hide yes)
-			(show_name no)
-			(do_not_autoplace no)
-			(effects
-				(font
-					(size 1.27 1.27)
-				)
-			)
-		)
-		(instances
-			(project "sensor-board"
-				(path "/51c2f14d-61ea-40ae-9b85-8b2a49be52ac"
-					(reference "H2")
-					(unit 1)
-				)
-			)
-		)
-	)
-	(symbol
 		(lib_id "power:GND")
 		(at 270.51 165.1 0)
 		(unit 1)
@@ -25250,7 +25283,7 @@
 				(justify right)
 			)
 		)
-		(property "Value" "1k"
+		(property "Value" "1.0k"
 			(at 127 215.8999 0)
 			(show_name no)
 			(do_not_autoplace no)
@@ -26878,7 +26911,7 @@
 				)
 			)
 		)
-		(property "Value" "1k"
+		(property "Value" "1.0k"
 			(at 215.9 231.14 90)
 			(show_name no)
 			(do_not_autoplace no)
@@ -27051,7 +27084,7 @@
 		)
 	)
 	(symbol
-		(lib_id "Device:Crystal_GND2_Small")
+		(lib_id "Device:Crystal_GND24_Small")
 		(at 60.96 60.96 270)
 		(unit 1)
 		(body_style 1)
@@ -27060,10 +27093,9 @@
 		(on_board yes)
 		(in_pos_files yes)
 		(dnp no)
-		(fields_autoplaced yes)
 		(uuid "d0fd6d13-8ea1-472f-ad11-1c7f79c3f5a6")
 		(property "Reference" "Y1"
-			(at 63.5 59.6899 90)
+			(at 63.754 59.69 90)
 			(show_name no)
 			(do_not_autoplace no)
 			(effects
@@ -27074,7 +27106,7 @@
 			)
 		)
 		(property "Value" "32MHz"
-			(at 63.5 62.2299 90)
+			(at 63.754 62.23 90)
 			(show_name no)
 			(do_not_autoplace no)
 			(effects
@@ -27106,7 +27138,7 @@
 				)
 			)
 		)
-		(property "Description" "Three pin crystal, GND on pin 2, small symbol"
+		(property "Description" "Four pin crystal, GND on pins 2 and 4, small symbol"
 			(at 60.96 60.96 0)
 			(hide yes)
 			(show_name no)
@@ -27136,6 +27168,9 @@
 		)
 		(pin "1"
 			(uuid "8f77a85e-5bb8-4eff-8b60-7e4d447ee730")
+		)
+		(pin "4"
+			(uuid "3b9f1276-f7c2-48b8-8ffe-1e7b134f9805")
 		)
 		(instances
 			(project "sensor-board"
@@ -27204,17 +27239,6 @@
 			)
 		)
 		(property "Description" ""
-			(at 368.3 120.65 0)
-			(hide yes)
-			(show_name no)
-			(do_not_autoplace no)
-			(effects
-				(font
-					(size 1.27 1.27)
-				)
-			)
-		)
-		(property "LCSC" ""
 			(at 368.3 120.65 0)
 			(hide yes)
 			(show_name no)
