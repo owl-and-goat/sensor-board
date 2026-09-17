@@ -1,0 +1,184 @@
+#+title: sensor board firmware
+
+Rust/Embassy firmware for the STM32WB55CG on the sensor board. There is no
+debugger attached; everything goes through the chip's ROM bootloader over USB
+DFU.
+
+* Build and flash
+
+#+begin_src sh
+  cargo run --release            # build, objcopy to .bin, dfu-util (flash.sh)
+  DFU_UTIL=/path/to/dfu-util cargo run --release   # if dfu-util isn't on PATH
+#+end_src
+
+=flash.sh= works whether the app is running (it asks the app to detach into
+the bootloader) or the chip is already in the bootloader.
+
+* Getting into the bootloader
+
+Any of these puts the chip in USB DFU mode (=lsusb= shows =0483:df11=):
+
+- Short the two pads of JP1 (BOOT0) while plugging in USB. Hardware only;
+  works no matter what is in flash. Take the coin cell out first: VBUS and the
+  cell share a net.
+- Hold SW1 for two seconds while the app runs.
+- Type =dfu= on the CDC-ACM console (=/dev/ttyACM*=). =hang= gets there the
+  slow way, through the watchdog.
+- =dfu-util= detach, which =flash.sh= does for you.
+- A panic, hard fault or watchdog reset in the app.
+
+* Clocks
+
+Everything runs from the two crystals; the internal MSI, HSI16 and HSI48
+oscillators are switched off after boot.
+
+| Y1, 32 MHz HSE     | PLL: 32/2*12 = 192 MHz VCO; /3 = 64 MHz sysclk; /4 = 48 MHz USB |
+| Y2, 32.768 kHz LSE | RTC calendar, RF wakeup clock                                    |
+
+This is embassy's =WPAN_DEFAULT=, which is also what the CPU2 radio stack
+needs later, with USB moved from HSI48 to the PLL. The console prints a
+=clocks:= line read back from the RCC registers with every heartbeat, and the
+heartbeat carries both =embassy-time= uptime (a timer on the HSE/PLL tree) and
+the RTC time (LSE), so drift against the host can be measured from a log of
+=/dev/ttyACM0=.
+
+A 4 s independent watchdog (LSI, no crystal involved) is started before clock
+init and fed by the main loop. A hang, for example waiting for a crystal that
+never starts, ends in a watchdog reset, and =dfu.rs= turns that reset into a
+jump to the ROM bootloader. Typing =hang= on the console exercises this path
+(measured: DFU device 4.4 s later, including USB enumeration).
+
+Oddity found on this chip: whatever is written to =IWDG_PR=, it reads back as
+6 (/256) once the update flag clears, while =IWDG_RLR= takes any value. So
+=start_watchdog= reads the prescaler back and derives the reload from it
+(499 at 125 Hz). Not found in the ES0394 errata sheet at the time of writing.
+
+Note for later: the IWDG keeps running in Stop mode unless the =IWDG_STOP=
+option bit is cleared, so a low-power firmware must feed it or freeze it.
+
+* How the software path works
+
+=src/dfu.rs=: a magic word in an =.uninit= RAM word, then a system reset. The
+first statement of =main= checks the word and jumps to system memory
+(0x1FFF0000) before any clock or peripheral is touched. The hardware path
+through JP1 is independent of all this.
+
+* Do not
+
+- Use =dfu-util= alt settings 1 (option bytes) or 2 (OTP). Alt 0 only.
+- Set read protection (RDP) or write option bytes over DFU.
+- Let the app image grow past the CPU2 stack install address once a wireless
+  stack is installed (=memory.x= caps it at 256 KB for now).
+
+* Host setup (NixOS)
+
+=dfu-util= is in nixpkgs. The ROM bootloader (=0483:df11=) already has an
+access rule on this machine via the Wally rules; the running app
+(=1209:0001=) does not, so either use =sudo= or add:
+
+#+begin_src nix
+  services.udev.extraRules = ''
+    SUBSYSTEM=="usb", ATTRS{idVendor}=="1209", ATTRS{idProduct}=="0001", MODE="0660", GROUP="plugdev", TAG+="uaccess"
+    SUBSYSTEM=="usb", ATTRS{idVendor}=="0483", ATTRS{idProduct}=="df11", MODE="0660", GROUP="plugdev", TAG+="uaccess"
+  '';
+#+end_src
+
+The console is =/dev/ttyACM0=. Use =./console.py= (no dependencies). Plain
+=stty= + =cat= also works, but =stty= can hang if the port has undrained
+output, and =cat= blocks on carrier detect unless =clocal= is set:
+
+#+begin_src sh
+  ./console.py                 # or: python3 console.py /dev/ttyACM0
+  stty -F /dev/ttyACM0 raw -echo clocal && cat /dev/ttyACM0
+#+end_src
+
+* CPU2: FUS, the Thread stack, and OpenThread
+
+CPU2 (the Cortex-M0+ radio core) runs ST's signed firmware: FUS (the
+firmware upgrade service) and, once installed, the Thread FTD stack. All of
+that is driven from the console; the images are written into flash by the
+host over DFU first. Binaries: =STM32CubeWB/Projects/STM32WB_Copro_Wireless_Binaries/STM32WB5x/=.
+
+** Install procedure (per board, once)
+
+Addresses are for the 1 MB STM32WB55xG from the V1.24.0 release notes.
+
+#+begin_src sh
+  # 1. FUS v2.2.0 (chips ship with v1.2.0)
+  dfu-util -p <usb path> -d 1209:0001,0483:df11 -a 0 -s 0x080EE000 -D stm32wb5x_FUS_fw.bin
+  dfu-util -p <usb path> -a 0 -s 0x08000000:leave -D <app>.bin     # relaunch the app
+  cmd.py /dev/ttyACMx "fus upgrade"; cmd.py /dev/ttyACMx "fus state"  # until idle
+  cmd.py /dev/ttyACMx "wpan info"                                     # FUS v2.2.0
+  # 2. Thread FTD stack
+  dfu-util -p <usb path> -d 1209:0001,0483:df11 -a 0 -s 0x0808C000 -D stm32wb5x_Thread_FTD_fw.bin
+  dfu-util -p <usb path> -a 0 -s 0x08000000:leave -D <app>.bin
+  cmd.py /dev/ttyACMx "fus upgrade"; cmd.py /dev/ttyACMx "fus state"  # until idle
+  cmd.py /dev/ttyACMx "fus start"                                     # reboots on the stack
+  cmd.py /dev/ttyACMx "wpan info"                                     # stack ... = Thread FTD
+#+end_src
+
+Never write a stack image with =:leave=: the leave jumps to the download
+address. Relaunch the app with its own address instead.
+
+** Console commands
+
+- =wpan info= / =status=: what CPU2 runs, versions, IPCC and flash state.
+- =fus state | upgrade | start | delete=: FUS commands (AN5185).
+- =thread init=: start the Thread stack after CPU2 reports it running.
+- =ot init | new | tlvs | settlvs <hex> | up | down | info | neighbors | parent | ping <ipv6> [n] | save | forget | config | range [off] | keepalive [off] | txpower [dBm]=:
+  OpenThread through ST's API mirror (=src/ot.rs=, IDs in =src/otids.rs=).
+- =thread_test.py /dev/ttyACM_A /dev/ttyACM_B=: forms a network on A, joins
+  B, pings both ways, prints neighbor RSSI.
+
+** Result (2026-09-16, two boards side by side on one hub)
+
+A leader (RLOC16 0xd400) and B child (0xd401) on channel 14, PAN 0x5f11.
+Ping A to B 5/5 with 21 to 69 ms RTT, B to A 5/5 with 21 to 23 ms. A's
+neighbor table: B at RSSI -18 dBm, link margin 82 dB, LQI 3. Antenna,
+balun and stack all work; range and TX power are untested.
+
+** Persistent network and the range test
+
+=ot save= stores the active dataset with an autostart flag in the last 4 KB
+page of the app's flash (=src/config.rs=, 0x0803F000; CPU2 forgets its own
+settings when it restarts). At power-up a board with a stored dataset joins
+the network by itself and runs the range probe: every 3 s it pings the
+leader anycast address and prints a =range:= line with its role, the parent
+RSSI (child) or the neighbors' RSSI (leader/router), and the ping RTT.
+
+LED while the probe runs:
+- fast blink: not attached to the network yet (or lost it; OT takes a few
+  minutes to give up on a parent),
+- off: attached but the last ping got no reply,
+- on, with a short off-pulse for each reply: link is good.
+
+Range test: leave one board on the laptop and log it, take the other one
+anywhere with a USB power source (no coin cell while on USB):
+
+#+begin_src sh
+  ./console.py /dev/ttyACMx | grep --line-buffered range:   # leader side, logs the walker's RSSI
+#+end_src
+
+=ot forget= clears the stored config; =ot range off= stops the probe; =ot
+config= shows what is stored. Both boards must be saved with the same
+dataset; the first one up becomes leader and the other joins it.
+
+** Things learned the hard way
+
+- The ROM bootloader boots CPU2 for its own FUS commands, and a CPU1 reset
+  does not restart CPU2. After a DFU =:leave= the app finds CPU2 holding
+  the bootloader's mailbox pointers, so it wipes that marker and takes a
+  real system reset first (=reset_if_launched_by_bootloader=).
+- FUS answers its commands into whichever mailbox CPU2 booted with. Before
+  the fix above a =fus upgrade= looked hung; it had actually run.
+- A wireless stack switches the 48 MHz clock off unless CPU1 holds hardware
+  semaphore 5 (AN5289). The firmware takes it before C2BOOT and keeps it.
+- The RF core clocks itself from HSI16 by default; with HSI16 off,
+  =SHCI_C2_THREAD_Init= never answers. HSI16 stays on, unused by CPU1.
+- The Thread stack uses SRAM1 above 0x20024000: CPU1 RAM is capped at 144 KB.
+- CPU2 needs the traces queue initialised, and someone must drain traces
+  (they show as =cpu2:= lines) and acknowledge OT notifications.
+- In stack v1.24 the OpenThread CLI runs on CPU1, not CPU2: channel 5 is
+  dead. Everything goes through the OT command channel (3).
+- FUS resets CPU1 during an upgrade; the watchdog-to-DFU path is disabled
+  while a FUS operation is marked in progress (=fus_busy=).
