@@ -24,10 +24,14 @@ mod usb_device;
 mod wpan;
 
 use embassy_executor::Spawner;
-use embassy_stm32::gpio::{Input, Level, Output, Pull, Speed};
-use embassy_stm32::rtc::{Rtc, RtcConfig};
-use embassy_stm32::usb::{self, Driver};
-use embassy_stm32::{Config, bind_interrupts, peripherals};
+
+use embassy_stm32::{
+    gpio::{Input, Level, Output, Pull, Speed},
+    rcc,
+    rtc::{Rtc, RtcConfig},
+    usb::{self, Driver},
+    {Config, bind_interrupts, peripherals},
+};
 
 bind_interrupts!(struct Irqs {
     USB_LP => usb::InterruptHandler<peripherals::USB>;
@@ -42,25 +46,7 @@ async fn main(spawner: Spawner) {
     dfu::start_watchdog();
 
     let mut config = Config::default();
-    {
-        use embassy_stm32::rcc::*;
-        // Clocks as in ST's Thread examples: Y1 (32 MHz HSE) is the system
-        // clock directly, no PLL, CPU2 also at 32 MHz. Y2 (32.768 kHz LSE)
-        // clocks the RTC and the RF wakeup timer. USB gets its 48 MHz from
-        // HSI48 trimmed against USB SOF by the CRS (the one internal
-        // oscillator in use; the CPU2 stack switches it off unless CPU1 holds
-        // hardware semaphore 5, see wpan.rs). HSI16 stays on but unused by
-        // CPU1: the RF core clocks itself from HSI16 by default (RCC_EXTCFGR
-        // RFCSS) and ST's Thread examples keep it on for that reason.
-        config.rcc = WPAN_DEFAULT;
-        config.rcc.sys = Sysclk::HSE;
-        config.rcc.hsi = true;
-        config.rcc.core2_ahb_pre = AHBPrescaler::DIV1;
-        // PLL stays on (not as sysclk) only to give USB its 48 MHz from PLL Q,
-        // out of reach of CPU2's HSI48 handling.
-        config.rcc.hsi48 = None;
-        config.rcc.mux.clk48sel = mux::Clk48sel::PLL1_Q;
-    }
+    config.rcc = external_clock_configuration();
     let p = embassy_stm32::init(config);
 
     // Option-validity error is set after FUS/bootloader activity; ST clears it
@@ -87,4 +73,29 @@ async fn main(spawner: Spawner) {
         &button,
     )
     .await
+}
+
+/// Clocks as in ST's Thread examples: Y1 (32 MHz HSE) is the system
+/// clock directly, no PLL, CPU2 also at 32 MHz. Y2 (32.768 kHz LSE)
+/// clocks the RTC and the RF wakeup timer. USB gets its 48 MHz from
+/// HSI48 trimmed against USB SOF by the CRS (the one internal
+/// oscillator in use; the CPU2 stack switches it off unless CPU1 holds
+/// hardware semaphore 5, see wpan.rs). HSI16 stays on but unused by
+/// CPU1: the RF core clocks itself from HSI16 by default (RCC_EXTCFGR
+/// RFCSS) and ST's Thread examples keep it on for that reason.
+fn external_clock_configuration() -> rcc::Config {
+    let mut clocks = rcc::WPAN_DEFAULT;
+
+    clocks.sys = rcc::Sysclk::HSE;
+    clocks.hsi = true;
+    clocks.core2_ahb_pre = rcc::AHBPrescaler::DIV1;
+
+    // PLL stays on (not as sysclk) only to give USB its 48 MHz from PLL Q,
+    // out of reach of CPU2's HSI48 handling.
+    // TODO: disable this PLL and remove USB entirely so that we can go into
+    // proper low-power sleep!
+    clocks.hsi48 = None;
+    clocks.mux.clk48sel = rcc::mux::Clk48sel::PLL1_Q;
+
+    clocks
 }
