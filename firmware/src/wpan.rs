@@ -10,10 +10,10 @@
 
 use core::fmt::Write as _;
 
+use core::sync::atomic::{AtomicBool, AtomicU8, Ordering};
 use embassy_executor::Spawner;
 use embassy_futures::select::{Either, select};
 use embassy_time::{Duration, Ticker, Timer};
-use core::sync::atomic::{AtomicBool, AtomicU8, Ordering};
 
 use embassy_stm32::flash::{Blocking, Flash};
 use embassy_stm32::ipcc::{self, ReceiveInterruptHandler, TransmitInterruptHandler};
@@ -83,7 +83,9 @@ pub fn status_line(l: &mut heapless::String<224>) {
     use core::sync::atomic::Ordering;
     use embassy_stm32::pac::{FLASH, IPCC, PWR};
     let raw = unsafe {
-        core::ptr::read_volatile((&raw const embassy_stm32_wpan::tables::TL_DEVICE_INFO_TABLE) as *const [u32; 16])
+        core::ptr::read_volatile(
+            (&raw const embassy_stm32_wpan::tables::TL_DEVICE_INFO_TABLE) as *const [u32; 16],
+        )
     };
     let ref0 = unsafe { core::ptr::read_volatile(0x2003_0000 as *const [u32; 3]) };
     let _ = write!(
@@ -100,8 +102,15 @@ pub fn status_line(l: &mut heapless::String<224>) {
         IPCC.cpu(0).sr().read().0,
         IPCC.cpu(0).mr().read().0,
         IPCC.cpu(1).sr().read().0,
-        ref0[0], ref0[1], ref0[2],
-        raw[0], raw[1], raw[2], raw[3], raw[4], raw[5]
+        ref0[0],
+        ref0[1],
+        ref0[2],
+        raw[0],
+        raw[1],
+        raw[2],
+        raw[3],
+        raw[4],
+        raw[5]
     );
 }
 
@@ -119,7 +128,8 @@ pub fn owns(line: &str) -> bool {
 /// Queue console text. If the console is not draining (no host reading),
 /// give up after a short wait rather than block the caller.
 pub async fn out(s: &str) {
-    let _ = embassy_time::with_timeout(Duration::from_millis(100), OUT.write_all(s.as_bytes())).await;
+    let _ =
+        embassy_time::with_timeout(Duration::from_millis(100), OUT.write_all(s.as_bytes())).await;
 }
 
 /// The relay output, driven by keep-alive; `None` until the wpan task owns it.
@@ -154,7 +164,15 @@ async fn print_snapshot() {
         let w = &snap[row * 8..row * 8 + 8];
         outf(format_args!(
             "wpan: sram2a+{:03x}: {:08x} {:08x} {:08x} {:08x} {:08x} {:08x} {:08x} {:08x}\r\n",
-            row * 32, w[0], w[1], w[2], w[3], w[4], w[5], w[6], w[7]
+            row * 32,
+            w[0],
+            w[1],
+            w[2],
+            w[3],
+            w[4],
+            w[5],
+            w[6],
+            w[7]
         ))
         .await;
     }
@@ -282,10 +300,15 @@ pub async fn wpan_task(
 /// "Fake a C2BOOT when it has already been set" (ST's words): SHCI_C2_REINIT
 /// followed by a SEV instruction makes CPU2 restart its firmware, re-read the
 /// reference table and send its ready event again.
-async fn reinit(sys: &mut Sys<'_>) -> Option<Result<embassy_stm32_wpan::shci::SchiSysEventReady, ()>> {
+async fn reinit(
+    sys: &mut Sys<'_>,
+) -> Option<Result<embassy_stm32_wpan::shci::SchiSysEventReady, ()>> {
     let r = sys.shci_c2_reinit().await;
     cortex_m::asm::sev();
-    outf(format_args!("wpan: REINIT -> {r:?}, SEV sent, waiting for ready\r\n")).await;
+    outf(format_args!(
+        "wpan: REINIT -> {r:?}, SEV sent, waiting for ready\r\n"
+    ))
+    .await;
     let ready = match select(sys.read_ready(), Timer::after_secs(3)).await {
         Either::First(r) => Some(r),
         Either::Second(()) => None,
@@ -333,7 +356,10 @@ async fn print_info(sys: &Sys<'_>) {
         (t.version, t.memory_size, t.thread_info)
     };
     let (a, b, c) = version(fus_v);
-    outf(format_args!("wpan: FUS v{a}.{b}.{c} (0x{fus_v:08x}) mem 0x{fus_mem:08x}\r\n")).await;
+    outf(format_args!(
+        "wpan: FUS v{a}.{b}.{c} (0x{fus_v:08x}) mem 0x{fus_mem:08x}\r\n"
+    ))
+    .await;
     let (a, b, c) = version(ws_v);
     let stack = match ws_info & 0xff {
         0x00 => "none",
@@ -353,13 +379,20 @@ async fn print_info(sys: &Sys<'_>) {
 
 fn parse_hex(s: Option<&str>) -> u32 {
     let s = s.unwrap_or("0");
-    let s = s.strip_prefix("0x").or_else(|| s.strip_prefix("0X")).unwrap_or(s);
+    let s = s
+        .strip_prefix("0x")
+        .or_else(|| s.strip_prefix("0X"))
+        .unwrap_or(s);
     u32::from_str_radix(s, 16).unwrap_or(0)
 }
 
 /// True when CPU2 reports a running Thread stack (not FUS, not another stack).
 fn thread_stack_running(sys: &Sys<'_>) -> bool {
-    sys.device_info_raw()[0] != FUS_TABLE_KEYWORD && sys.wireless_fw_info().map(|i| i.thread_info & 0xff == 0x10).unwrap_or(false)
+    sys.device_info_raw()[0] != FUS_TABLE_KEYWORD
+        && sys
+            .wireless_fw_info()
+            .map(|i| i.thread_info & 0xff == 0x10)
+            .unwrap_or(false)
 }
 
 async fn command_loop(sys: &mut Sys<'_>, ot: &mut ThreadOt<'_>, flash: &mut Flash<'_, Blocking>) {
@@ -407,7 +440,9 @@ async fn command_loop(sys: &mut Sys<'_>, ot: &mut ThreadOt<'_>, flash: &mut Flas
             (Some("wpan"), Some("clk48")) => {
                 if words.next() == Some("fix") {
                     use embassy_stm32::pac::RCC;
-                    RCC.ccipr().modify(|w| w.set_clk48sel(embassy_stm32::pac::rcc::vals::Clk48sel::PLL1_Q));
+                    RCC.ccipr().modify(|w| {
+                        w.set_clk48sel(embassy_stm32::pac::rcc::vals::Clk48sel::PLL1_Q)
+                    });
                 }
                 let mut l: heapless::String<224> = heapless::String::new();
                 clk48_line(&mut l);
@@ -419,7 +454,10 @@ async fn command_loop(sys: &mut Sys<'_>, ot: &mut ThreadOt<'_>, flash: &mut Flas
             (Some("wpan"), _) => print_info(sys).await,
             (Some("fus"), Some("state")) => {
                 let (state, err) = sys.shci_c2_fus_get_state().await;
-                outf(format_args!("fus: state 0x{state:02x} error 0x{err:02x}\r\n")).await;
+                outf(format_args!(
+                    "fus: state 0x{state:02x} error 0x{err:02x}\r\n"
+                ))
+                .await;
                 if state == 0x00 && crate::dfu::is_fus_busy() {
                     crate::dfu::fus_busy(false);
                     out("fus: idle, busy marker cleared\r\n").await;
@@ -428,7 +466,10 @@ async fn command_loop(sys: &mut Sys<'_>, ot: &mut ThreadOt<'_>, flash: &mut Flas
             (Some("fus"), Some("upgrade")) => {
                 let src = parse_hex(words.next());
                 let dst = parse_hex(words.next());
-                outf(format_args!("fus: fw_upgrade src 0x{src:08x} dst 0x{dst:08x}\r\n")).await;
+                outf(format_args!(
+                    "fus: fw_upgrade src 0x{src:08x} dst 0x{dst:08x}\r\n"
+                ))
+                .await;
                 crate::dfu::fus_busy(true);
                 let r = sys.shci_c2_fus_fwupgrade(src, dst).await;
                 outf(format_args!("fus: fw_upgrade -> {r:?}\r\n")).await;
@@ -458,11 +499,17 @@ async fn range_tick(ot: &mut ThreadOt<'_>, prefix: &mut Option<[u8; 8]>, replies
     let role = crate::ot::role(ot).await;
     if role < 2 {
         LINK.store(0, Ordering::Relaxed);
-        outf(format_args!("range: role {} (not attached)\r\n", crate::ot::role_name(role))).await;
+        outf(format_args!(
+            "range: role {} (not attached)\r\n",
+            crate::ot::role_name(role)
+        ))
+        .await;
         return;
     }
     if prefix.is_none() {
-        let eid = ot.call(crate::otids::MSG_M4TOM0_OT_THREAD_GET_MESH_LOCAL_EID, &[]).await;
+        let eid = ot
+            .call(crate::otids::MSG_M4TOM0_OT_THREAD_GET_MESH_LOCAL_EID, &[])
+            .await;
         if (0x2000_0000..0x2004_0000).contains(&eid) {
             let a = unsafe { core::ptr::read_volatile(eid as *const [u8; 16]) };
             let mut p = [0u8; 8];
@@ -494,7 +541,11 @@ async fn range_tick(ot: &mut ThreadOt<'_>, prefix: &mut Option<[u8; 8]>, replies
     if r != 0 {
         let _ = write!(l, " | ping -> {}", crate::ot::err_name(r));
     } else if got {
-        let _ = write!(l, " | leader ping {} ms", crate::ot::LAST_RTT.load(Ordering::Relaxed));
+        let _ = write!(
+            l,
+            " | leader ping {} ms",
+            crate::ot::LAST_RTT.load(Ordering::Relaxed)
+        );
     } else {
         let _ = l.push_str(" | leader ping: no reply");
     }
@@ -520,7 +571,11 @@ async fn traces_loop(traces: &mut Traces<'_>) {
             let chunk = &payload[i..(i + 64).min(payload.len())];
             let mut l: heapless::String<224> = heapless::String::new();
             for &b in chunk {
-                let _ = l.push(if (0x20..0x7f).contains(&b) || b == b'\n' || b == b'\r' { b as char } else { '.' });
+                let _ = l.push(if (0x20..0x7f).contains(&b) || b == b'\n' || b == b'\r' {
+                    b as char
+                } else {
+                    '.'
+                });
             }
             out(&l).await;
             i += chunk.len();

@@ -35,9 +35,9 @@ use embassy_stm32::{Config, bind_interrupts, peripherals};
 use embassy_time::{Duration, Instant, Timer, with_timeout};
 use embassy_usb::Builder;
 use embassy_usb::class::cdc_acm::{CdcAcmClass, Sender, State as CdcState};
-use embassy_usb::driver::Driver as UsbDriver;
 use embassy_usb::class::dfu::app_mode::{DfuState, Handler as DfuHandler, usb_dfu};
 use embassy_usb::class::dfu::consts::DfuAttributes;
+use embassy_usb::driver::Driver as UsbDriver;
 
 bind_interrupts!(struct Irqs {
     USB_LP => usb::InterruptHandler<peripherals::USB>;
@@ -91,7 +91,9 @@ async fn main(spawner: Spawner) {
 
     // Option-validity error is set after FUS/bootloader activity; ST clears it
     // first thing in every WB application before any flash use.
-    embassy_stm32::pac::FLASH.sr().write(|w| w.set_optverr(true));
+    embassy_stm32::pac::FLASH
+        .sr()
+        .write(|w| w.set_optverr(true));
 
     // Calendar RTC on the LSE: if it advances, Y2 is oscillating.
     let (_rtc, rtc_time) = Rtc::new(p.RTC, RtcConfig::default());
@@ -154,7 +156,13 @@ async fn main(spawner: Spawner) {
         let mut line: heapless::String<192> = heapless::String::new();
         let mut cmdline: heapless::String<512> = heapless::String::new();
         loop {
-            match select3(rx.read_packet(&mut buf), Timer::after_secs(2), wpan::OUT.read(&mut wbuf)).await {
+            match select3(
+                rx.read_packet(&mut buf),
+                Timer::after_secs(2),
+                wpan::OUT.read(&mut wbuf),
+            )
+            .await
+            {
                 Either3::First(Ok(n)) => {
                     write_all(&mut tx, &buf[..n]).await;
                     for &b in &buf[..n] {
@@ -305,7 +313,13 @@ async fn handle_command<'d, D: UsbDriver<'d>>(cmd: &str, tx: &mut Sender<'d, D>)
                 write_all(tx, b"wpan: busy\r\n").await;
             }
         }
-        _ => write_all(tx, b"? (dfu, hang, wpan info, fus ..., thread init, ot <cli>)\r\n").await,
+        _ => {
+            write_all(
+                tx,
+                b"? (dfu, hang, wpan info, fus ..., thread init, ot <cli>)\r\n",
+            )
+            .await
+        }
     }
 }
 
@@ -350,7 +364,6 @@ fn clock_report(line: &mut heapless::String<192>) {
         embassy_stm32::pac::IWDG.pr().read().pr().to_bits(),
         embassy_stm32::pac::IWDG.rlr().read().rl(),
     );
-
 }
 
 /// Write `data` as a run of max-size packets, plus a zero-length packet when

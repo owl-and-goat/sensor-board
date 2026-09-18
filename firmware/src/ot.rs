@@ -125,7 +125,9 @@ fn readable(p: u32) -> bool {
 
 pub async fn init(ot: &mut ThreadOt<'_>) -> (u32, u32) {
     let inst = ot.call(MSG_M4TOM0_OT_INSTANCE_INIT_SINGLE, &[]).await;
-    let r = ot.call(MSG_M4TOM0_OT_SET_STATE_CHANGED_CALLBACK, &[0]).await;
+    let r = ot
+        .call(MSG_M4TOM0_OT_SET_STATE_CHANGED_CALLBACK, &[0])
+        .await;
     (inst, r)
 }
 
@@ -139,12 +141,21 @@ pub async fn set_active_tlvs(ot: &mut ThreadOt<'_>, tlvs: &[u8]) -> u32 {
     buf[..n].copy_from_slice(&tlvs[..n]);
     buf[254] = n as u8;
     unsafe { core::ptr::write_volatile(addr_of_mut!(TLVS), Buf(buf)) };
-    ot.call(MSG_M4TOM0_OT_DATASET_SET_ACTIVE_TLVS, &[addr(addr_of_mut!(TLVS))]).await
+    ot.call(
+        MSG_M4TOM0_OT_DATASET_SET_ACTIVE_TLVS,
+        &[addr(addr_of_mut!(TLVS))],
+    )
+    .await
 }
 
 /// Active dataset TLVs from CPU2, or the OT error.
 pub async fn get_active_tlvs(ot: &mut ThreadOt<'_>) -> Result<heapless::Vec<u8, 254>, u32> {
-    let r = ot.call(MSG_M4TOM0_OT_DATASET_GET_ACTIVE_TLVS, &[addr(addr_of_mut!(TLVS))]).await;
+    let r = ot
+        .call(
+            MSG_M4TOM0_OT_DATASET_GET_ACTIVE_TLVS,
+            &[addr(addr_of_mut!(TLVS))],
+        )
+        .await;
     if r != 0 {
         return Err(r);
     }
@@ -181,16 +192,21 @@ pub async fn ping(ot: &mut ThreadOt<'_>, dst: &[u8; 16], count: u16, timeout_ms:
     c[48..52].copy_from_slice(&1000u32.to_le_bytes());
     c[52..54].copy_from_slice(&timeout_ms.to_le_bytes());
     unsafe { core::ptr::write_volatile(addr_of_mut!(PING), Buf(c)) };
-    ot.call(MSG_M4TOM0_OT_PING_SENDER_PING, &[addr(addr_of_mut!(PING))]).await
+    ot.call(MSG_M4TOM0_OT_PING_SENDER_PING, &[addr(addr_of_mut!(PING))])
+        .await
 }
 
 /// (average, last) RSSI of the parent link in dBm, for a child.
 pub async fn parent_rssi(ot: &mut ThreadOt<'_>) -> Option<(i8, i8)> {
     unsafe { core::ptr::write_volatile(addr_of_mut!(NEIGHBOR_ITER), Buf([0; 4])) };
     let p = addr(addr_of_mut!(NEIGHBOR_ITER));
-    let r1 = ot.call(MSG_M4TOM0_OT_THREAD_GET_PARENT_AVERAGE_RSSI, &[p]).await;
+    let r1 = ot
+        .call(MSG_M4TOM0_OT_THREAD_GET_PARENT_AVERAGE_RSSI, &[p])
+        .await;
     let avg = unsafe { read_volatile(addr_of!(NEIGHBOR_ITER)) }.0[0] as i8;
-    let r2 = ot.call(MSG_M4TOM0_OT_THREAD_GET_PARENT_LAST_RSSI, &[p]).await;
+    let r2 = ot
+        .call(MSG_M4TOM0_OT_THREAD_GET_PARENT_LAST_RSSI, &[p])
+        .await;
     let last = unsafe { read_volatile(addr_of!(NEIGHBOR_ITER)) }.0[0] as i8;
     (r1 == 0 && r2 == 0).then_some((avg, last))
 }
@@ -202,7 +218,12 @@ pub async fn neighbors_summary(ot: &mut ThreadOt<'_>, l: &mut heapless::String<2
     let it = addr(addr_of_mut!(NEIGHBOR_ITER));
     let ni = addr(addr_of_mut!(NEIGHBOR));
     let mut count = 0;
-    while count < 8 && ot.call(MSG_M4TOM0_OT_THREAD_GET_NEXT_NEIGHBOR_INFO, &[it, ni]).await == 0 {
+    while count < 8
+        && ot
+            .call(MSG_M4TOM0_OT_THREAD_GET_NEXT_NEIGHBOR_INFO, &[it, ni])
+            .await
+            == 0
+    {
         let n = unsafe { read_volatile(addr_of!(NEIGHBOR)) }.0;
         let rloc = u16::from_le_bytes([n[16], n[17]]);
         let _ = write!(l, " 0x{rloc:04x} {}/{} dBm", n[29] as i8, n[30] as i8);
@@ -234,7 +255,12 @@ pub async fn autostart(ot: &mut ThreadOt<'_>, cfg: &Config) {
     .await;
 }
 
-pub async fn command(line: &str, ot: &mut ThreadOt<'_>, sys: &mut Sys<'_>, flash: &mut Flash<'_, Blocking>) {
+pub async fn command(
+    line: &str,
+    ot: &mut ThreadOt<'_>,
+    sys: &mut Sys<'_>,
+    flash: &mut Flash<'_, Blocking>,
+) {
     let mut words = line.split_whitespace();
     let _ = words.next(); // "ot"
     match words.next() {
@@ -487,6 +513,12 @@ pub async fn notification(n: OtNotification) {
                 .await;
             }
         }
-        _ => outf(format_args!("ot: notification {} size {} data {:08x} {:08x}\r\n", n.id, n.size, n.data[0], n.data[1])).await,
+        _ => {
+            outf(format_args!(
+                "ot: notification {} size {} data {:08x} {:08x}\r\n",
+                n.id, n.size, n.data[0], n.data[1]
+            ))
+            .await
+        }
     }
 }

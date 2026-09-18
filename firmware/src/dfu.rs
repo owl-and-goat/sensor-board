@@ -36,7 +36,12 @@ fn flag() -> *mut u32 {
 }
 
 pub fn fus_busy(busy: bool) {
-    unsafe { ptr::write_volatile((&raw mut FUS_BUSY).cast::<u32>(), if busy { BUSY_MAGIC } else { 0 }) };
+    unsafe {
+        ptr::write_volatile(
+            (&raw mut FUS_BUSY).cast::<u32>(),
+            if busy { BUSY_MAGIC } else { 0 },
+        )
+    };
 }
 
 pub fn is_fus_busy() -> bool {

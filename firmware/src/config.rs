@@ -113,7 +113,10 @@ fn guarded<T>(f: impl FnOnce() -> Result<T, Error>) -> Result<T, Error> {
     r
 }
 
-async fn with_flash_access<T>(sys: &mut Sys<'_>, f: impl FnOnce() -> Result<T, Error>) -> Result<T, Error> {
+async fn with_flash_access<T>(
+    sys: &mut Sys<'_>,
+    f: impl FnOnce() -> Result<T, Error>,
+) -> Result<T, Error> {
     if !sem_lock(SEM_FLASH) {
         return Err(Error::Unaligned);
     }
@@ -124,8 +127,14 @@ async fn with_flash_access<T>(sys: &mut Sys<'_>, f: impl FnOnce() -> Result<T, E
     r
 }
 
-pub async fn save(flash: &mut Flash<'_, Blocking>, sys: &mut Sys<'_>, cfg: &Config) -> Result<(), Error> {
-    let bytes = unsafe { core::slice::from_raw_parts(cfg as *const Config as *const u8, size_of::<Config>()) };
+pub async fn save(
+    flash: &mut Flash<'_, Blocking>,
+    sys: &mut Sys<'_>,
+    cfg: &Config,
+) -> Result<(), Error> {
+    let bytes = unsafe {
+        core::slice::from_raw_parts(cfg as *const Config as *const u8, size_of::<Config>())
+    };
     with_flash_access(sys, || {
         guarded(|| flash.blocking_erase(PAGE_OFFSET, PAGE_OFFSET + 4096))?;
         guarded(|| flash.blocking_write(PAGE_OFFSET, bytes))
@@ -134,5 +143,8 @@ pub async fn save(flash: &mut Flash<'_, Blocking>, sys: &mut Sys<'_>, cfg: &Conf
 }
 
 pub async fn erase(flash: &mut Flash<'_, Blocking>, sys: &mut Sys<'_>) -> Result<(), Error> {
-    with_flash_access(sys, || guarded(|| flash.blocking_erase(PAGE_OFFSET, PAGE_OFFSET + 4096))).await
+    with_flash_access(sys, || {
+        guarded(|| flash.blocking_erase(PAGE_OFFSET, PAGE_OFFSET + 4096))
+    })
+    .await
 }
