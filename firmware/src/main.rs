@@ -17,6 +17,7 @@
 
 mod config;
 mod dfu;
+mod fault;
 mod ot;
 mod otids;
 mod wpan;
@@ -371,16 +372,4 @@ async fn write_all<'d, D: UsbDriver<'d>>(tx: &mut Sender<'d, D>, data: &[u8]) {
     if !data.is_empty() && data.len() % max == 0 {
         let _ = with_timeout(Duration::from_millis(50), tx.write_packet(&[])).await;
     }
-}
-
-/// Any panic or hard fault lands in the ROM bootloader rather than a dead
-/// board: the DFU device showing up is the crash indicator.
-#[panic_handler]
-fn panic(_info: &core::panic::PanicInfo) -> ! {
-    dfu::reboot_into_bootloader()
-}
-
-#[cortex_m_rt::exception]
-unsafe fn HardFault(_ef: &cortex_m_rt::ExceptionFrame) -> ! {
-    dfu::reboot_into_bootloader()
 }
