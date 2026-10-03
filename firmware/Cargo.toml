@@ -1,0 +1,44 @@
+[package]
+name = "sensor-board-firmware"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+[dependencies]
+embassy-stm32 = { version = "0.6.0", features = ["defmt", "stm32wb55cg", "time-driver-any", "unstable-pac"] }
+embassy-executor = { version = "0.10.0", features = ["defmt", "platform-cortex-m", "executor-thread"] }
+embassy-time = { version = "0.5.1", features = ["defmt", "defmt-timestamp-uptime", "tick-hz-1_000_000"] }
+embassy-usb = { version = "0.6.0", default-features = false, features = ["defmt"] }
+embassy-futures = "0.1.2"
+# Fork of embassy-stm32-wpan adding a Thread subsystem, CPU2 traces, and the
+# FUS commands needed to install coprocessor firmware. The branch keeps the
+# upstreamable work in its first commit and the "use released embassy crates
+# rather than path deps" change on top; drop that one when opening the PR.
+# https://github.com/glittershark/embassy/tree/wb55-thread
+embassy-sync = { version = "0.8.0", features = ["defmt"] }
+
+cortex-m = { version = "0.7.7", features = ["inline-asm", "critical-section-single-core"] }
+# set-vtor: point VTOR at our own vector table on reset, so the app works no
+# matter what the ROM bootloader left in VTOR after a DFU ":leave".
+cortex-m-rt = { version = "0.7.5", features = ["set-vtor"] }
+heapless = { version = "0.9", default-features = false }
+
+defmt = "1.1.1"
+defmt-rtt = "1.3.0"
+# print-defmt: send the panic message through defmt before raising the
+# HardFault that probe-rs (or fault.rs, with no probe attached) catches.
+panic-probe = { version = "1.0.0", features = ["print-defmt"] }
+
+[dependencies.embassy-stm32-wpan]
+git = "https://github.com/glittershark/embassy.git"
+rev = "ea46134a5225e6d94f8290cc2f4d693e65899de2"
+features = ["defmt", "stm32wb55cg", "wb55_thread"]
+
+[profile.release]
+debug = 2
+lto = "fat"
+opt-level = "s"
+codegen-units = 1
+
+[profile.dev]
+opt-level = 1
