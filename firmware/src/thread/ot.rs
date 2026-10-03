@@ -5,7 +5,7 @@
 use embassy_stm32_wpan::sub::thread::ThreadOt;
 
 // TODO: move ffi module to a submodule of this one?
-use crate::thread::ffi;
+use super::ffi;
 
 // use ffi::MsgId_M0toM4_Enum_t as ffi_notification;
 use ffi::MsgId_M4toM0_Enum_t as ffi_command;

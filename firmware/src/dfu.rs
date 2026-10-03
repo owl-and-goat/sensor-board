@@ -25,15 +25,6 @@ fn flag() -> *mut u32 {
     (&raw mut DFU_FLAG).cast()
 }
 
-pub fn fus_busy(busy: bool) {
-    unsafe {
-        ptr::write_volatile(
-            (&raw mut FUS_BUSY).cast::<u32>(),
-            if busy { BUSY_MAGIC } else { 0 },
-        )
-    };
-}
-
 pub fn is_fus_busy() -> bool {
     unsafe { ptr::read_volatile((&raw const FUS_BUSY).cast::<u32>()) == BUSY_MAGIC }
 }
