@@ -19,9 +19,10 @@ use postcard_rpc::server::impls::embassy_usb_v0_6::dispatch_impl::spawn_fn;
 use protocol::{
     BeginInstall, BoardInfo, CoprocessorResult, CoprocessorStatus, Dataset, ENDPOINT_LIST,
     EnterBootloader, FinishInstall, GetBoardInfo, GetCoprocessorStatus, GetNetworkDataset,
-    GetNetworkNeighbors, GetNetworkStatus, ImageChunk, ImageSize, JoinNetwork, LeaveNetwork,
-    NeighborsResult, NetworkResult, NetworkStatus, ReadSensorValue, SensorReadReq,
-    SensorReadResult, SensorValue, TOPICS_IN_LIST, TOPICS_OUT_LIST, UninstallStack, WriteInstall,
+    GetNetworkNeighbors, GetNetworkRouters, GetNetworkStatus, ImageChunk, ImageSize, JoinNetwork,
+    LeaveNetwork, NeighborsResult, NetworkResult, NetworkStatus, ReadSensorValue, RoutersResult,
+    SensorReadReq, SensorReadResult, SensorValue, TOPICS_IN_LIST, TOPICS_OUT_LIST, UninstallStack,
+    WriteInstall,
 };
 
 use crate::{coprocessor, dfu, sensor::capacitance, thread, usb};
@@ -54,6 +55,7 @@ define_dispatch! {
         | JoinNetwork          | async    | join_network       |
         | LeaveNetwork         | async    | leave_network      |
         | GetNetworkNeighbors  | async    | network_neighbors  |
+        | GetNetworkRouters    | async    | network_routers    |
         | GetCoprocessorStatus | blocking | coprocessor_status |
         | BeginInstall         | async    | begin_install      |
         | WriteInstall         | async    | write_install      |
@@ -114,6 +116,10 @@ async fn leave_network(context: &mut Context, _header: VarHeader, (): ()) -> Net
 
 async fn network_neighbors(context: &mut Context, _header: VarHeader, (): ()) -> NeighborsResult {
     context.thread.neighbors().await
+}
+
+async fn network_routers(context: &mut Context, _header: VarHeader, (): ()) -> RoutersResult {
+    context.thread.routers().await
 }
 
 fn coprocessor_status(context: &mut Context, _header: VarHeader, (): ()) -> CoprocessorStatus {

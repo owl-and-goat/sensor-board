@@ -11,7 +11,7 @@ use std::{
 };
 
 use anyhow::{Context, Result, bail};
-use protocol::{Dataset, Link, Neighbor, NeighborTable, NetworkStatus};
+use protocol::{Dataset, Link, Neighbor, NeighborTable, NetworkStatus, Route, Router, RouterTable};
 use rand::RngExt;
 
 use crate::board::Board;
@@ -338,11 +338,62 @@ pub fn describe_neighbors(table: &NeighborTable) -> String {
     text
 }
 
+/// The table as text: a heading, then a line for each router.
+pub fn describe_routers(table: &RouterTable) -> String {
+    let mut text = format!("{:<6}  {:<10}  {:>9}\n", "RLOC16", "Reached", "Path cost");
+    for Router { id, route } in &table.routers {
+        let (reached, cost) = match route {
+            Route::ThisBoard => ("this board".to_owned(), None),
+            Route::Direct { cost } => ("directly".to_owned(), Some(cost)),
+            Route::Relayed { next_hop, cost } => {
+                (format!("via {:#06x}", next_hop.rloc16()), Some(cost))
+            }
+            Route::Unreachable => ("no route".to_owned(), None),
+        };
+        let rloc16 = id.rloc16();
+        text += &match cost {
+            Some(cost) => format!("{rloc16:#06x}  {reached:<10}  {cost:>9}\n"),
+            None => format!("{rloc16:#06x}  {reached}\n"),
+        };
+    }
+    text
+}
+
 #[cfg(test)]
 mod tests {
-    use protocol::{ExtAddress, NeighborKind};
+    use protocol::{ExtAddress, NeighborKind, RouterId};
 
     use super::*;
+
+    #[test]
+    fn routers_line_up_under_their_headings() {
+        let mut table = RouterTable::default();
+        let routes = [
+            (24, Route::Direct { cost: 1 }),
+            (27, Route::ThisBoard),
+            (
+                47,
+                Route::Relayed {
+                    next_hop: RouterId(24),
+                    cost: 3,
+                },
+            ),
+            (58, Route::Unreachable),
+        ];
+        for (id, route) in routes {
+            let id = RouterId(id);
+            table.routers.push(Router { id, route }).unwrap();
+        }
+
+        assert_eq!(
+            describe_routers(&table),
+            "RLOC16  Reached     Path cost\n\
+             0x6000  directly            1\n\
+             0x6c00  this board\n\
+             0xbc00  via 0x6000          3\n\
+             0xe800  no route\n"
+        );
+    }
 
     #[test]
     fn neighbors_line_up_under_their_headings() {

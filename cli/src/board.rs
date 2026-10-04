@@ -12,9 +12,9 @@ use postcard_rpc::{
 use protocol::{
     BeginInstall, BoardInfo, CoprocessorResult, CoprocessorStatus, Dataset, EnterBootloader,
     FinishInstall, GetBoardInfo, GetCoprocessorStatus, GetNetworkDataset, GetNetworkNeighbors,
-    GetNetworkStatus, ImageChunk, ImageSize, JoinNetwork, LeaveNetwork, NeighborTable,
-    NetworkError, NetworkStatus, ReadSensorValue, Sensor, SensorReadReq, SensorReadResult, USB_PID,
-    USB_VID, UninstallStack, WriteInstall,
+    GetNetworkRouters, GetNetworkStatus, ImageChunk, ImageSize, JoinNetwork, LeaveNetwork,
+    NeighborTable, NetworkError, NetworkStatus, ReadSensorValue, RouterTable, Sensor,
+    SensorReadReq, SensorReadResult, USB_PID, USB_VID, UninstallStack, WriteInstall,
 };
 
 /// How long a board gets to answer. The slowest it can be is a join or leave
@@ -121,9 +121,17 @@ impl Board {
         self.network_result(result)
     }
 
-    /// The Thread devices the board has a direct radio link with.
+    /// The board's children, and the routers it has a direct radio link with,
+    /// other than its parent.
     pub async fn neighbors(&self) -> Result<NeighborTable> {
         let result = self.call::<GetNetworkNeighbors>(&()).await?;
+        self.network_result(result)
+    }
+
+    /// Every router on the board's network, and what the board does to get a
+    /// message to it.
+    pub async fn routers(&self) -> Result<RouterTable> {
+        let result = self.call::<GetNetworkRouters>(&()).await?;
         self.network_result(result)
     }
 

@@ -26,6 +26,7 @@ endpoints! {
     | JoinNetwork          | Dataset       | NetworkResult     | "network/join"               |
     | LeaveNetwork         | ()            | NetworkResult     | "network/leave"              |
     | GetNetworkNeighbors  | ()            | NeighborsResult   | "network/neighbors"          |
+    | GetNetworkRouters    | ()            | RoutersResult     | "network/routers"            |
     | GetCoprocessorStatus | ()            | CoprocessorStatus | "coprocessor/status"         |
     | BeginInstall         | ImageSize     | CoprocessorResult | "coprocessor/install/begin"  |
     | WriteInstall         | ImageChunk    | CoprocessorResult | "coprocessor/install/write"  |
@@ -272,8 +273,9 @@ impl FromStr for Dataset {
 /// The result of [`GetNetworkNeighbors`].
 pub type NeighborsResult = Result<NeighborTable, NetworkError>;
 
-/// A board's neighbor table: the Thread devices it has a direct radio link
-/// with. Empty while the board is not attached to a network.
+/// A board's neighbor table: its children, and the routers it has a direct
+/// radio link with. While the board is a child, its parent is not among
+/// them: the stack keeps that link somewhere else.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, Schema)]
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]
 pub struct NeighborTable {
@@ -315,8 +317,7 @@ pub struct Neighbor {
 pub enum NeighborKind {
     /// A child of the board.
     Child,
-    /// A router: another one, if the board is a router itself, or else the
-    /// board's parent.
+    /// Another router.
     Router,
 }
 
@@ -340,6 +341,69 @@ impl fmt::Display for ExtAddress {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         self.0.iter().try_for_each(|b| write!(f, "{b:02x}"))
     }
+}
+
+/// The result of [`GetNetworkRouters`].
+pub type RoutersResult = Result<RouterTable, NetworkError>;
+
+/// A board's router table: every router on its network, in order of ID, with
+/// what the board does to get a message to it. Empty while the board is not
+/// attached to a network.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, Schema)]
+#[cfg_attr(feature = "defmt", derive(defmt::Format))]
+pub struct RouterTable {
+    pub routers: heapless::Vec<Router, { RouterId::COUNT }>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Schema)]
+#[cfg_attr(feature = "defmt", derive(defmt::Format))]
+pub struct Router {
+    pub id: RouterId,
+    pub route: Route,
+}
+
+/// The ID a router has on its network, 0 to 62. It is the top six bits of
+/// the router's RLOC16, and of the RLOC16 of each of its children.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Schema)]
+#[cfg_attr(feature = "defmt", derive(defmt::Format))]
+pub struct RouterId(pub u8);
+
+impl RouterId {
+    /// `OT_NETWORK_MAX_ROUTER_ID`
+    pub const MAX: u8 = 62;
+    /// How many IDs there are, and so the most routers there can be to list.
+    pub const COUNT: usize = Self::MAX as usize + 1;
+
+    /// Every ID there is, in order.
+    pub fn all() -> impl Iterator<Item = RouterId> {
+        (0..=Self::MAX).map(RouterId)
+    }
+
+    /// The RLOC16 of the router that has this ID.
+    pub fn rloc16(self) -> u16 {
+        (self.0 as u16) << 10
+    }
+
+    /// The ID of the router that has this RLOC16, or whose child has it.
+    pub fn of_rloc16(rloc16: u16) -> RouterId {
+        RouterId((rloc16 >> 10) as u8)
+    }
+}
+
+/// What a board's Thread stack does with a message for a router. A `cost` is
+/// that of the whole path: each link on it adds 1 if it is good, 2 if it is
+/// middling and 4 if it is poor.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Schema)]
+#[cfg_attr(feature = "defmt", derive(defmt::Format))]
+pub enum Route {
+    /// Nothing: the router is the board itself.
+    ThisBoard,
+    /// Sends it straight over the radio link the two have.
+    Direct { cost: u8 },
+    /// Sends it to another router to pass on: the mesh at work.
+    Relayed { next_hop: RouterId, cost: u8 },
+    /// The board knows of no way there.
+    Unreachable,
 }
 
 /// What the radio coprocessor (CPU2) is running.
@@ -638,6 +702,16 @@ mod tests {
         let mut message = [0; 4096];
         let message = postcard_rpc::postcard::to_slice(&result, &mut message).unwrap();
         assert!(13 + message.len() <= 1024, "{} bytes", message.len());
+    }
+
+    #[test]
+    fn router_id_is_the_top_of_an_rloc16() {
+        assert_eq!(RouterId(27).rloc16(), 0x6c00);
+        assert_eq!(RouterId::of_rloc16(0x6c00), RouterId(27));
+        // A child of that router.
+        assert_eq!(RouterId::of_rloc16(0x6c01), RouterId(27));
+        assert_eq!(RouterId::all().count(), RouterId::COUNT);
+        assert_eq!(RouterId::all().last(), Some(RouterId(62)));
     }
 
     #[test]

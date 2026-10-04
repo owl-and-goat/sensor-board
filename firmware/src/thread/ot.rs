@@ -7,7 +7,7 @@ use core::mem::MaybeUninit;
 use core::ptr::{read_volatile, write_volatile};
 
 use embassy_stm32_wpan::sub::thread::ThreadOt;
-use protocol::{Dataset, ExtAddress, Neighbor, NeighborKind, OtError, Role};
+use protocol::{Dataset, ExtAddress, Neighbor, NeighborKind, OtError, Role, Route, RouterId};
 
 // TODO: move ffi module to a submodule of this one?
 use super::ffi;
@@ -69,6 +69,31 @@ fn neighbor_from_raw(info: &ffi::otNeighborInfo) -> Neighbor {
     }
 }
 
+/// What `otThreadGetNextHopAndPathCost` answered about `destination`, an
+/// RLOC16.
+fn route_from_raw(destination: u16, next_hop: u16, cost: u8) -> Route {
+    /// The stack's "no next hop".
+    const INVALID_RLOC16: u16 = 0xfffe;
+    /// The path cost it gives to what it has no way to. A child still names
+    /// its parent as the next hop then, as it does for everything.
+    const MAX_ROUTE_COST: u8 = 16;
+
+    if next_hop == INVALID_RLOC16 || cost >= MAX_ROUTE_COST {
+        Route::Unreachable
+    } else if next_hop != destination {
+        Route::Relayed {
+            next_hop: RouterId::of_rloc16(next_hop),
+            cost,
+        }
+    } else if cost == 0 {
+        // No link costs nothing: this is the stack's answer about the device
+        // it runs on.
+        Route::ThisBoard
+    } else {
+        Route::Direct { cost }
+    }
+}
+
 /// CPU1 memory that CPU2 is given a pointer to, and only reads: the dataset
 /// argument of `otDatasetSetActiveTlvs`. It has to be handed over as
 /// `&'static`, because CPU2 keeps reading until it has answered the call,
@@ -94,6 +119,23 @@ impl NeighborBuffer {
         NeighborBuffer {
             iterator: UnsafeCell::new(NeighborIterator::INIT.0),
             info: UnsafeCell::new(MaybeUninit::zeroed()),
+        }
+    }
+}
+
+/// CPU1 memory that CPU2 is given pointers to, and writes: the two out
+/// arguments of `otThreadGetNextHopAndPathCost`. `&'static` for the same
+/// reason as [`NeighborBuffer`].
+pub struct NextHopBuffer {
+    next_hop_rloc16: UnsafeCell<u16>,
+    path_cost: UnsafeCell<u8>,
+}
+
+impl NextHopBuffer {
+    pub const fn new() -> Self {
+        NextHopBuffer {
+            next_hop_rloc16: UnsafeCell::new(0),
+            path_cost: UnsafeCell::new(0),
         }
     }
 }
@@ -282,6 +324,53 @@ pub unsafe trait OpenThread {
             read_volatile(info_out)
         };
         Ok(Some(neighbor_from_raw(&info)))
+    }
+
+    /// Whether a router on the network has this ID.
+    async fn thread_is_router_id_allocated(&mut self, id: RouterId) -> bool {
+        let allocated = unsafe {
+            // SAFETY: expects one argument, the router ID.
+            self.ffi_call(
+                ffi_command::MSG_M4TOM0_OT_THREAD_IS_ROUTER_ID_ALLOCATED,
+                &[id.0 as u32],
+            )
+            .await
+        };
+        allocated != 0
+    }
+
+    /// What the stack does with a message for the router that has this ID.
+    async fn thread_get_next_hop_and_path_cost(
+        &mut self,
+        buffer: &'static NextHopBuffer,
+        destination: RouterId,
+    ) -> Route {
+        let destination = destination.rloc16();
+        let next_hop_out = buffer.next_hop_rloc16.get();
+        let path_cost_out = buffer.path_cost.get();
+
+        let (next_hop, cost) = unsafe {
+            // SAFETY: expects the destination's RLOC16 and two pointers that
+            // it writes through, to a uint16_t and to a uint8_t. Both stay
+            // valid for as long as CPU2 could use them. (The name of the
+            // message is ST's spelling.)
+            self.ffi_call(
+                ffi_command::MSG_M4TOM0_OT_THREAD_GET_NEXT_HOP_AND_PAST_COST,
+                &[
+                    destination as u32,
+                    next_hop_out as u32,
+                    path_cost_out as u32,
+                ],
+            )
+            .await;
+            // SAFETY: CPU2 has answered, so it has done its writing, and this
+            // function is the only place CPU1 touches what is in the buffer,
+            // never through a reference. An earlier call that was dropped
+            // has been answered before this one, so what is here now is this
+            // one's.
+            (read_volatile(next_hop_out), read_volatile(path_cost_out))
+        };
+        route_from_raw(destination, next_hop, cost)
     }
 
     /// Set the radio's transmit power, in dBm. The STM32WB55's radio covers
