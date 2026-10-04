@@ -11,6 +11,7 @@ use clap::{Args, Parser, Subcommand};
 
 use board::Board;
 use network::SavedDataset;
+use protocol::{Sensor, SensorValue};
 
 #[derive(Parser)]
 #[command(version, about = "Talk to sensor boards attached over USB")]
@@ -31,6 +32,8 @@ enum Command {
     Coprocessor(CoprocessorCommand),
     /// Reboot a board into its ROM bootloader, to flash it over USB DFU
     Bootloader(Target),
+    #[command(subcommand)]
+    Sensor(SensorCommand),
 }
 
 #[derive(Subcommand)]
@@ -78,6 +81,20 @@ enum CoprocessorCommand {
     Uninstall(Target),
 }
 
+/// Commands to interact with sensors
+#[derive(Subcommand)]
+enum SensorCommand {
+    /// Read the current value of a sensor
+    Read {
+        /// Which sensor to read
+        #[arg(long)]
+        sensor: Sensor,
+
+        #[command(flatten)]
+        target: Target,
+    },
+}
+
 /// The board a command should target.
 #[derive(Args)]
 struct Target {
@@ -91,7 +108,6 @@ impl Target {
         Board::select(self.board.as_deref()).await
     }
 }
-
 
 async fn list() -> Result<()> {
     let devices = board::devices().await?;
@@ -160,6 +176,12 @@ async fn main() -> Result<()> {
             let board = target.board().await?;
             board.enter_bootloader().await?;
             println!("Board {} is rebooting into its bootloader.", board.serial());
+            Ok(())
+        }
+        Command::Sensor(SensorCommand::Read { sensor, target }) => {
+            let board = target.board().await?;
+            let SensorValue { value } = board.read_sensor(sensor).await??;
+            println!("Sensor value: {value}");
             Ok(())
         }
     }

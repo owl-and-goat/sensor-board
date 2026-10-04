@@ -6,12 +6,16 @@ edition = "2024"
 [features]
 # `defmt::Format` on every type, for the firmware's log.
 defmt = ["dep:defmt", "heapless/defmt"]
+clap = ["dep:clap", "std"]
+std = ["serde/std", "thiserror/std"]
 
 [dependencies]
 defmt = { version = "1.1.1", optional = true }
 heapless = { version = "0.9", default-features = false, features = ["serde"] }
 postcard-schema = { version = "0.2.5", features = ["derive", "heapless-v0_9"] }
 serde = { version = "1.0", default-features = false, features = ["derive"] }
+clap = { version = "4.6", optional = true, features = ["derive"] }
+thiserror = { version = "2.0", default-features = false }
 
 # Unreleased main: the released 0.12.1 only serves embassy-usb 0.5 on
 # embassy-executor 0.9, and two executor versions do not link into one

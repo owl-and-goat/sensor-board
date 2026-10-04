@@ -31,6 +31,8 @@ panic-probe = { version = "1.0.0", features = ["print-defmt"] }
 protocol = { path = "../protocol", features = ["defmt"] }
 static_cell = "2.1"
 
+bitvec = { version = "1.1", default-features = false }
+
 # Same revision as the protocol crate, which says why it is not a release.
 [dependencies.postcard-rpc]
 git = "https://github.com/jamesmunns/postcard-rpc.git"

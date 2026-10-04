@@ -1,12 +1,13 @@
 //! The communication protocol between the USB host and the sensor-board.
 
-#![no_std]
+#![cfg_attr(not(feature = "std"), no_std)]
 
 use core::{fmt, str::FromStr};
 
 use postcard_rpc::{endpoints, topics, TopicDirection};
 use postcard_schema::Schema;
 use serde::{Deserialize, Serialize};
+use thiserror::Error;
 
 /// USB IDs of a board running the firmware. This is the pid.codes test PID, which is for private
 /// testing only: by its terms it must not be on a board that is redistributed, sold or
@@ -16,19 +17,20 @@ pub const USB_PID: u16 = 0x0001;
 
 endpoints! {
     list = ENDPOINT_LIST;
-    | EndpointTy           | RequestTy  | ResponseTy        | Path                         |
-    | ----------           | ---------  | ----------        | ----                         |
-    | GetBoardInfo         | ()         | BoardInfo         | "board/info"                 |
-    | EnterBootloader      | ()         | ()                | "board/bootloader"           |
-    | GetNetworkStatus     | ()         | NetworkStatus     | "network/status"             |
-    | GetNetworkDataset    | ()         | StoredDataset     | "network/dataset"            |
-    | JoinNetwork          | Dataset    | NetworkResult     | "network/join"               |
-    | LeaveNetwork         | ()         | NetworkResult     | "network/leave"              |
-    | GetCoprocessorStatus | ()         | CoprocessorStatus | "coprocessor/status"         |
-    | BeginInstall         | ImageSize  | CoprocessorResult | "coprocessor/install/begin"  |
-    | WriteInstall         | ImageChunk | CoprocessorResult | "coprocessor/install/write"  |
-    | FinishInstall        | ()         | CoprocessorResult | "coprocessor/install/finish" |
-    | UninstallStack       | ()         | CoprocessorResult | "coprocessor/uninstall"      |
+    | EndpointTy           | RequestTy     | ResponseTy        | Path                         |
+    | ----------           | ---------     | ----------        | ----                         |
+    | GetBoardInfo         | ()            | BoardInfo         | "board/info"                 |
+    | EnterBootloader      | ()            | ()                | "board/bootloader"           |
+    | GetNetworkStatus     | ()            | NetworkStatus     | "network/status"             |
+    | GetNetworkDataset    | ()            | StoredDataset     | "network/dataset"            |
+    | JoinNetwork          | Dataset       | NetworkResult     | "network/join"               |
+    | LeaveNetwork         | ()            | NetworkResult     | "network/leave"              |
+    | GetCoprocessorStatus | ()            | CoprocessorStatus | "coprocessor/status"         |
+    | BeginInstall         | ImageSize     | CoprocessorResult | "coprocessor/install/begin"  |
+    | WriteInstall         | ImageChunk    | CoprocessorResult | "coprocessor/install/write"  |
+    | FinishInstall        | ()            | CoprocessorResult | "coprocessor/install/finish" |
+    | UninstallStack       | ()            | CoprocessorResult | "coprocessor/uninstall"      |
+    | ReadSensorValue      | SensorReadReq | SensorReadResult  | "sensor/read"                |
 }
 
 topics! {
@@ -379,6 +381,60 @@ impl fmt::Display for FusError {
         f.write_str(s)
     }
 }
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Schema)]
+#[cfg_attr(feature = "defmt", derive(defmt::Format))]
+#[cfg_attr(feature = "clap", derive(clap::ValueEnum))]
+pub enum Sensor {
+    Capacitance0,
+    Capacitance1,
+    Capacitance2,
+    Capacitance3,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Schema)]
+#[cfg_attr(feature = "defmt", derive(defmt::Format))]
+pub struct SensorReadReq {
+    pub sensor: Sensor,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Schema)]
+#[cfg_attr(feature = "defmt", derive(defmt::Format))]
+pub struct SensorValue {
+    pub value: u32,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Schema, Error)]
+#[cfg_attr(feature = "defmt", derive(defmt::Format))]
+pub enum SensorReadError {
+    /// I2C Bus error
+    #[error("I2C Bus Error")]
+    Bus,
+    /// Arbitration lost
+    #[error("I2C Arbitration Lost")]
+    Arbitration,
+    /// ACK not received (either to the address or to a data byte)
+    #[error("I2C ACK Not Received")]
+    Nack,
+    /// Timeout
+    #[error("I2C Timeout")]
+    Timeout,
+    /// CRC error
+    #[error("I2C CRC Error")]
+    Crc,
+    /// Overrun error
+    #[error("I2C Buffer Overrun")]
+    Overrun,
+    /// Zero-length transfers are not allowed.
+    #[error("Zero-Length Transfers are not allowed")]
+    ZeroLengthTransfer,
+    #[error("Capacitance Sensor Watchdog Timeout Error")]
+    WatchdogTimeoutError,
+    #[error("Capacitance Sensor Amplitude Warning")]
+    AmplitudeWarning,
+}
+
+pub type SensorReadResult = Result<SensorValue, SensorReadError>;
 
 /// How a request went. `Ok` from [`FinishInstall`] or [`UninstallStack`]
 /// means that the work has begun, not that it is done.

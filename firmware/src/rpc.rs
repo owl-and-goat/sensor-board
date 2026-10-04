@@ -20,16 +20,19 @@ use protocol::{
     BeginInstall, BoardInfo, CoprocessorResult, CoprocessorStatus, Dataset, ENDPOINT_LIST,
     EnterBootloader, FinishInstall, GetBoardInfo, GetCoprocessorStatus, GetNetworkDataset,
     GetNetworkStatus, ImageChunk, ImageSize, JoinNetwork, LeaveNetwork, NetworkResult,
-    NetworkStatus, TOPICS_IN_LIST, TOPICS_OUT_LIST, UninstallStack, WriteInstall,
+    NetworkStatus, ReadSensorValue, SensorReadReq, SensorReadResult, SensorValue, TOPICS_IN_LIST,
+    TOPICS_OUT_LIST, UninstallStack, WriteInstall,
 };
 
-use crate::{coprocessor, dfu, thread, usb};
+use crate::{coprocessor, dfu, sensor::capacitance, thread, usb};
 
 /// What the handlers act on.
 pub struct Context {
     pub thread: thread::Handle,
     pub coprocessor: coprocessor::Handle,
     pub bootloader: dfu::Handle,
+    // TODO(aspen): Make nicer
+    pub capacitance: capacitance::CapacitanceSensor<'static>,
 }
 
 define_dispatch! {
@@ -55,6 +58,7 @@ define_dispatch! {
         | WriteInstall         | async    | write_install      |
         | FinishInstall        | async    | finish_install     |
         | UninstallStack       | async    | uninstall_stack    |
+        | ReadSensorValue      | async    | read_sensor        |
     };
     topics_in: {
         list: TOPICS_IN_LIST;
@@ -133,4 +137,22 @@ async fn finish_install(context: &mut Context, _header: VarHeader, (): ()) -> Co
 
 async fn uninstall_stack(context: &mut Context, _header: VarHeader, (): ()) -> CoprocessorResult {
     context.coprocessor.uninstall_stack().await
+}
+
+async fn read_sensor(
+    context: &mut Context,
+    _header: VarHeader,
+    req: SensorReadReq,
+) -> SensorReadResult {
+    let mut read_cap = async |chan| -> SensorReadResult {
+        let value = context.capacitance.read_channel_capacitance(chan).await?;
+        Ok(SensorValue { value })
+    };
+
+    match req.sensor {
+        protocol::Sensor::Capacitance0 => read_cap(capacitance::Channel::Ch0).await,
+        protocol::Sensor::Capacitance1 => read_cap(capacitance::Channel::Ch1).await,
+        protocol::Sensor::Capacitance2 => read_cap(capacitance::Channel::Ch2).await,
+        protocol::Sensor::Capacitance3 => read_cap(capacitance::Channel::Ch3).await,
+    }
 }

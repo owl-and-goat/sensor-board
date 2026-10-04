@@ -741,10 +741,12 @@ dependencies = [
 name = "protocol"
 version = "0.1.0"
 dependencies = [
+ "clap",
  "heapless 0.9.3",
  "postcard-rpc",
  "postcard-schema",
  "serde",
+ "thiserror",
 ]
 
 [[package]]

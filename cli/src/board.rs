@@ -12,8 +12,9 @@ use postcard_rpc::{
 use protocol::{
     BeginInstall, BoardInfo, CoprocessorResult, CoprocessorStatus, Dataset, EnterBootloader,
     FinishInstall, GetBoardInfo, GetCoprocessorStatus, GetNetworkDataset, GetNetworkStatus,
-    ImageChunk, ImageSize, JoinNetwork, LeaveNetwork, NetworkResult, NetworkStatus, USB_PID,
-    USB_VID, UninstallStack, WriteInstall,
+    ImageChunk, ImageSize, JoinNetwork, LeaveNetwork, NetworkResult, NetworkStatus,
+    ReadSensorValue, Sensor, SensorReadReq, SensorReadResult, USB_PID, USB_VID, UninstallStack,
+    WriteInstall,
 };
 
 /// How long a board gets to answer. The slowest it can be is a join or leave
@@ -151,6 +152,11 @@ impl Board {
     pub async fn uninstall_stack(&self) -> Result<()> {
         let result = self.call::<UninstallStack>(&()).await?;
         self.coprocessor_result(result)
+    }
+
+    pub async fn read_sensor(&self, sensor: Sensor) -> Result<SensorReadResult> {
+        self.call::<ReadSensorValue>(&SensorReadReq { sensor })
+            .await
     }
 
     fn coprocessor_result(&self, result: CoprocessorResult) -> Result<()> {

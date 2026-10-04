@@ -4,9 +4,11 @@
 mod coprocessor;
 mod dfu;
 mod fault;
+mod i2c_device;
 mod persistent_config;
 mod request;
 mod rpc;
+mod sensor;
 mod thread;
 mod usb;
 
@@ -14,15 +16,25 @@ use defmt_rtt as _;
 use embassy_executor::Spawner;
 
 use embassy_stm32::{
-    Config, Peri, bind_interrupts, peripherals, rcc,
+    Config, Peri, bind_interrupts, dma, i2c,
+    mode::Async,
+    peripherals::{self, DMA1_CH1, DMA2_CH1, I2C1},
+    rcc,
     rtc::{Rtc, RtcConfig},
     wdg::IndependentWatchdog,
 };
+use embassy_sync::{blocking_mutex::raw::ThreadModeRawMutex, mutex::Mutex};
 use embassy_time::Timer;
+use static_cell::StaticCell;
 
-bind_interrupts!(
-    struct Irqs {}
-);
+use crate::sensor::capacitance::CapacitanceSensor;
+
+bind_interrupts!(struct Irqs {
+    I2C1_EV => i2c::EventInterruptHandler<I2C1>;
+    I2C1_ER => i2c::ErrorInterruptHandler<I2C1>;
+    DMA1_CHANNEL1 => dma::InterruptHandler<DMA1_CH1>;
+    DMA2_CHANNEL1 => dma::InterruptHandler<DMA2_CH1>;
+});
 
 fn configure_clocks() -> rcc::Config {
     let mut clocks = rcc::WPAN_DEFAULT;
@@ -122,10 +134,26 @@ async fn main(spawner: Spawner) {
     .init();
     spawner.spawn(usb(usb_device).unwrap());
 
+    let scl = p.PB8;
+    let sda = p.PB9;
+    static I2C: StaticCell<Mutex<ThreadModeRawMutex, i2c::I2c<'static, Async, i2c::Master>>> =
+        StaticCell::new();
+    let i2c = I2C.init(Mutex::new(i2c::I2c::new(
+        p.I2C1,
+        scl,
+        sda,
+        p.DMA1_CH1,
+        p.DMA2_CH1,
+        Irqs,
+        i2c::Config::default(),
+    )));
+    let capacitance = CapacitanceSensor::new(p.PB4, i2c);
+
     let context = rpc::Context {
         thread: thread_handle,
         coprocessor: coprocessor_handle,
         bootloader: bootloader_handle,
+        capacitance,
     };
     spawner.spawn(rpc(rpc::server(spawner, link, context)).unwrap());
 }
