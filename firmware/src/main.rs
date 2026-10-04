@@ -1,10 +1,14 @@
 #![no_std]
 #![no_main]
 
+mod coprocessor;
 mod dfu;
 mod fault;
 mod persistent_config;
+mod request;
+mod rpc;
 mod thread;
+mod usb;
 
 use defmt_rtt as _;
 use embassy_executor::Spawner;
@@ -12,14 +16,13 @@ use embassy_executor::Spawner;
 use embassy_stm32::{
     Config, Peri, bind_interrupts, peripherals, rcc,
     rtc::{Rtc, RtcConfig},
-    usb,
     wdg::IndependentWatchdog,
 };
 use embassy_time::Timer;
 
-bind_interrupts!(struct Irqs {
-    USB_LP => usb::InterruptHandler<peripherals::USB>;
-});
+bind_interrupts!(
+    struct Irqs {}
+);
 
 fn configure_clocks() -> rcc::Config {
     let mut clocks = rcc::WPAN_DEFAULT;
@@ -39,14 +42,34 @@ fn configure_clocks() -> rcc::Config {
 }
 
 #[embassy_executor::task]
-async fn thread(thread_task: thread::Task<'static>) -> ! {
-    thread_task.run().await
+async fn coprocessor(task: coprocessor::Task<'static>) -> ! {
+    task.run().await
+}
+
+#[embassy_executor::task]
+async fn usb(mut device: usb::Device) -> ! {
+    device.run().await
+}
+
+#[embassy_executor::task]
+async fn rpc(mut server: rpc::Server) -> ! {
+    loop {
+        // `run` only returns with an error when the USB connection drops
+        // (cable pulled, host reset the bus). Call it again so the server is
+        // listening when the host reconnects.
+        let _ = server.run().await;
+    }
+}
+
+#[embassy_executor::task]
+async fn bootloader(task: dfu::Task) -> ! {
+    task.run().await
 }
 
 #[embassy_executor::task]
 async fn watchdog(iwdg: Peri<'static, peripherals::IWDG>) -> ! {
     // 32 s because this chip pins the IWDG prescaler at /256 whatever is written, and that is the
-    // period /256 expresses with the driver's reload maths (measurements in README.org).
+    // period /256 expresses with the driver's reload maths (measurements in AGENTS.md).
     // TODO(aspen): verify that this is true
     let mut watchdog = IndependentWatchdog::new(iwdg, 32_000_000);
     watchdog.unleash();
@@ -79,6 +102,30 @@ async fn main(spawner: Spawner) {
     // let mut led = Output::new(p.PA6, Level::High, Speed::Low); // D1, active low
     // let button = Input::new(p.PA7, Pull::Up); // SW1 to GND
 
-    let (thread_task, _thread_handle) = thread::Builder { ipcc: p.IPCC }.init().await.unwrap();
-    spawner.spawn(thread(thread_task).unwrap());
+    spawner.spawn(watchdog(p.IWDG).unwrap());
+
+    let (bootloader_task, bootloader_handle) = dfu::init();
+    spawner.spawn(bootloader(bootloader_task).unwrap());
+
+    let (coprocessor_task, coprocessor_handle, thread_handle) = coprocessor::Builder {
+        ipcc: p.IPCC,
+        flash: p.FLASH,
+    }
+    .init();
+    spawner.spawn(coprocessor(coprocessor_task).unwrap());
+
+    let (usb_device, link) = usb::Builder {
+        usb: p.USB,
+        dp: p.PA12,
+        dm: p.PA11,
+    }
+    .init();
+    spawner.spawn(usb(usb_device).unwrap());
+
+    let context = rpc::Context {
+        thread: thread_handle,
+        coprocessor: coprocessor_handle,
+        bootloader: bootloader_handle,
+    };
+    spawner.spawn(rpc(rpc::server(spawner, link, context)).unwrap());
 }

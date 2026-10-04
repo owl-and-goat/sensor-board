@@ -2,6 +2,9 @@ use core::mem::MaybeUninit;
 use core::ptr;
 
 use embassy_stm32::pac::RCC;
+use embassy_sync::{blocking_mutex::raw::ThreadModeRawMutex, signal::Signal};
+use embassy_time::Timer;
+use static_cell::StaticCell;
 
 const MAGIC: u32 = 0xB007_10AD;
 
@@ -23,6 +26,15 @@ const BUSY_MAGIC: u32 = 0xF05B_0511;
 
 fn flag() -> *mut u32 {
     (&raw mut DFU_FLAG).cast()
+}
+
+pub fn fus_busy(busy: bool) {
+    unsafe {
+        ptr::write_volatile(
+            (&raw mut FUS_BUSY).cast::<u32>(),
+            if busy { BUSY_MAGIC } else { 0 },
+        )
+    };
 }
 
 pub fn is_fus_busy() -> bool {
@@ -68,6 +80,41 @@ pub fn reset_if_launched_by_bootloader() {
             ptr::write_volatile(SRAM2A, 0);
             cortex_m::peripheral::SCB::sys_reset();
         }
+    }
+}
+
+type Requested = Signal<ThreadModeRawMutex, ()>;
+
+/// Make the two ends of a request for the ROM bootloader: the handle to ask
+/// with, and the task that goes there. Panics if called a second time.
+pub fn init() -> (Task, Handle) {
+    static REQUESTED: StaticCell<Requested> = StaticCell::new();
+    let requested: &'static Requested = REQUESTED.init(Signal::new());
+    (Task { requested }, Handle { requested })
+}
+
+pub struct Handle {
+    requested: &'static Requested,
+}
+
+impl Handle {
+    /// Ask for a reboot into the ROM bootloader, without doing it on the
+    /// spot: whoever asks (the USB host, say) may still be owed an answer.
+    pub fn request_bootloader(&self) {
+        self.requested.signal(());
+    }
+}
+
+pub struct Task {
+    requested: &'static Requested,
+}
+
+impl Task {
+    pub async fn run(self) -> ! {
+        self.requested.wait().await;
+        // Time for the answer to whoever asked to reach the USB host.
+        Timer::after_millis(100).await;
+        reboot_into_bootloader()
     }
 }
 

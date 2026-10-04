@@ -1,0 +1,21 @@
+[package]
+name = "sensor-board-cli"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+[dependencies]
+anyhow = "1.0"
+clap = { version = "4.6", features = ["derive"] }
+nusb = "0.2.7"
+postcard-schema = "0.2.5"
+protocol = { path = "../protocol" }
+rand = "0.10"
+serde = "1.0"
+tokio = { version = "1.53", features = ["macros", "rt", "rt-multi-thread", "time"] }
+
+# Same revision as the protocol crate, which says why it is not a release.
+[dependencies.postcard-rpc]
+git = "https://github.com/jamesmunns/postcard-rpc.git"
+rev = "d30141f7b2594050d5805f7c7d5be41f73bc7d82"
+features = ["use-std", "raw-nusb"]

@@ -1,7 +1,7 @@
 //! Persistent configuration in the last 4 KB page of the app's flash region
 //! (0x0803F000, kept out of the linker's FLASH region in memory.x): the Thread
-//! operational dataset and an autostart flag, so a board rejoins its network
-//! by itself at power-up. CPU2's own settings do not survive its restarts.
+//! operational dataset, so a board rejoins its network by itself at power-up.
+//! CPU2's own settings do not survive its restarts.
 //!
 //! Writing flash while the radio stack runs follows AN5289 / ST's
 //! flash_driver.c: hold hardware semaphore 2 for the whole operation, tell
@@ -18,28 +18,26 @@ pub const PAGE_OFFSET: u32 = 0x3F000; // relative to 0x08000000
 pub const PAGE_ADDR: u32 = 0x0800_0000 + PAGE_OFFSET;
 const MAGIC: u32 = 0x5342_4346; // "SBCF"
 const VERSION: u32 = 1;
-pub const FLAG_AUTOSTART: u32 = 1;
-/// Energise the relay coil while running, as a ~60 mA load that keeps USB
-/// power banks from switching off.
-pub const FLAG_KEEPALIVE: u32 = 2;
 
 #[repr(C)]
 #[derive(Clone, Copy)]
 pub struct Config {
     magic: u32,
     version: u32,
-    pub flags: u32,
+    /// Flags, in the bring-up firmware. Nothing reads them now; the word
+    /// stays so that a config written back then still loads.
+    _reserved: u32,
     pub dataset_len: u32,
     pub dataset: [u8; 256],
 }
 const _: () = assert!(size_of::<Config>() % 8 == 0);
 
 impl Config {
-    pub fn new(tlvs: &[u8], flags: u32) -> Self {
+    pub fn new(tlvs: &[u8]) -> Self {
         let mut c = Config {
             magic: MAGIC,
             version: VERSION,
-            flags,
+            _reserved: 0,
             dataset_len: tlvs.len().min(254) as u32,
             dataset: [0xff; 256],
         };
@@ -49,19 +47,6 @@ impl Config {
 
     pub fn tlvs(&self) -> &[u8] {
         &self.dataset[..(self.dataset_len as usize).min(254)]
-    }
-
-    pub fn autostart(&self) -> bool {
-        self.flags & FLAG_AUTOSTART != 0
-    }
-
-    pub fn keepalive(&self) -> bool {
-        self.flags & FLAG_KEEPALIVE != 0
-    }
-
-    /// Mesh-Local Prefix TLV (type 7) from the dataset.
-    pub fn mesh_local_prefix(&self) -> Option<[u8; 8]> {
-        crate::thread::Dataset::from_bytes(self.tlvs()).mesh_local_prefix()
     }
 }
 

@@ -21,13 +21,21 @@ cortex-m = { version = "0.7.7", features = ["inline-asm", "critical-section-sing
 # set-vtor: point VTOR at our own vector table on reset, so the app works no
 # matter what the ROM bootloader left in VTOR after a DFU ":leave".
 cortex-m-rt = { version = "0.7.5", features = ["set-vtor"] }
-heapless = { version = "0.9", default-features = false }
 
 defmt = "1.1.1"
 defmt-rtt = "1.3.0"
 # print-defmt: send the panic message through defmt before raising the
 # HardFault that probe-rs (or fault.rs, with no probe attached) catches.
 panic-probe = { version = "1.0.0", features = ["print-defmt"] }
+
+protocol = { path = "../protocol", features = ["defmt"] }
+static_cell = "2.1"
+
+# Same revision as the protocol crate, which says why it is not a release.
+[dependencies.postcard-rpc]
+git = "https://github.com/jamesmunns/postcard-rpc.git"
+rev = "d30141f7b2594050d5805f7c7d5be41f73bc7d82"
+features = ["embassy-usb-0_6-server"]
 
 [dependencies.embassy-stm32-wpan]
 git = "https://github.com/glittershark/embassy.git"
