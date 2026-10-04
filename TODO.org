@@ -163,3 +163,19 @@ CLOSED: [2026-09-03 Thu 22:37]
 *** DONE [#C] Clean up the co-located / too-close vias flagged by hole_to_hole
 CLOSED: [2026-09-03 Thu 22:37]
 Mostly the Y1 ring; also water1/water2, hp2/hp3, sda/scl, JP1 pairs.
+
+* Firmware
+** TODO Update boards over the mesh in an order that keeps the network together
+=firmware push= has every board fetch the update at once, as soon as it
+hears the offer. A board is off the network while its bootloader swaps the
+images and until it has rejoined, about half a minute, and a router that is
+off the network relays for nobody: a board behind it loses the board it was
+fetching from, and has to wait for the next offer to go on. So update the
+boards that nothing is reached through first, and work inwards to the board
+on USB, which goes last. One at a time, waiting for each to report its new
+build before the next starts.
+
+With five boards every one of them is a router, so there are no leaves to
+pick out by role. The order has to come from the gateway's router table
+(=network routers=): farthest by path cost first, and never a board that is
+the next hop to one that is still waiting.

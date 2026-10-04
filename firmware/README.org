@@ -10,11 +10,13 @@ repository:
 #+begin_src sh
   just flash                  # both, through the st-link on the jtag port
   just update                 # the firmware, over usb, through the firmware that runs
+  just update-all             # the same for every attached board, one after the other
+  just push                   # the firmware, to every board on the network, through the attached one
   just dfu-flash              # both, over usb, through the rom bootloader
   just dfu-flash-all          # the same for every attached board, one after the other
 #+end_src
 
-=just update= and =just dfu-flash= take =--board <serial>= with several boards
+=just update=, =just push= and =just dfu-flash= take =--board <serial>= with several boards
 attached. to watch the log of a board on the probe, flashing only the
 firmware (the bootloader has to be there already):
 
@@ -32,6 +34,38 @@ trial. once the board is back on its network (or has none to join) the
 update is kept. if the board restarts first, or is not back within five
 minutes, the bootloader puts the old firmware back. =firmware status= says
 which build runs and where that stands.
+
+=just push= is =firmware push <image>=, and updates every board on the
+network without plugging any of them in. the attached board takes the image
+over usb and offers it to the others every ten seconds; a board that runs
+another build fetches it from that board in small pieces, checks it, and
+restarts into it the same way, trial included. the command follows the
+boards' reports, which say what build each runs, and updates the attached
+board last, once every board it has heard from runs the image. a board whose
+trial of a build failed does not fetch that build again.
+
+while that goes on, the command shows a line that says how many of the boards
+run the image, and under it a bar for each board that is fetching, going by
+what they ask the attached board for:
+
+#+begin_example
+  ⠙ 1 of 3 other boards run build 1791154812 (2m)
+  4B0041000350475532303120 ███████████████░░░░░░░░░░░░░  56%    1.85 KiB/s  eta 48s
+  a board                  ███░░░░░░░░░░░░░░░░░░░░░░░░░  12%    1.71 KiB/s  eta  2m
+  4D0021000350475532303120 ████████████████████████████ 100%  restarting
+#+end_example
+
+a bar bears the board's serial number once the board has said which it is,
+which a firmware from before 2026-10-04 does not: it is "a board". a board
+that has the whole image keeps its bar for half a minute while it checks the
+image, restarts and swaps, and shows up as =updated= when it next reports.
+the bars are only drawn on a terminal (and not if =TERM= is =dumb=), and only
+if the attached board runs a firmware that can tell (=just update= first if
+it does not).
+
+all the boards fetch at the same time, whatever they relay for each other
+(see =TODO.org=). a board has to run a firmware that can do this before it
+can be updated this way: the first time, it gets it over usb.
 
 a board keeps its network through all of this: its stored configuration is
 in a page of its own that neither firmware slot covers.
@@ -73,6 +107,7 @@ unique id, and =--board= takes any unambiguous start of it.
   cargo run -- bootloader --board 4d       # reboot into the rom bootloader
   cargo run -- firmware status --board 4d  # which build runs, and where an update stands
   cargo run -- firmware update <image> --board 4d  # see "firmware updates" above
+  cargo run -- firmware push <image> --board 4d    # to every board on the network
   cargo run -- reports watch               # print the boards' sensor reports as they arrive
   cargo run -- reports export              # serve them to prometheus
 #+end_src

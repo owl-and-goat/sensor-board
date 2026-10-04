@@ -183,13 +183,19 @@ fn ip6_address(address: Ipv6Addr) -> ffi::otIp6Address {
 pub enum Notification {
     /// The device's role, one of its addresses or the like has changed.
     StateChanged,
-    /// A datagram has arrived on the UDP socket: its payload.
-    UdpReceived(Datagram),
-    /// Anything else, by its ID, and a datagram that was too long to take.
+    /// A datagram has arrived on one of the UDP sockets.
+    UdpReceived {
+        /// Which socket: the context it was opened with.
+        socket: usize,
+        from: Ipv6Addr,
+        payload: Datagram,
+    },
+    /// Anything else, by its ID, and a datagram that could not be taken.
     Other(u32),
 }
 
-/// Wait for the stack's next callback.
+/// Wait for the stack's next callback. `sockets` are the buffers of the UDP
+/// sockets, each at the index that is the context it was opened with.
 ///
 /// CPU2 is inside that callback until its notification is acknowledged, and
 /// the message a datagram arrives in is only there that long. So the payload
@@ -199,7 +205,7 @@ pub enum Notification {
 pub async fn notification(
     notif_rx: &mut ThreadNotifRx<'_>,
     ot: &mut ThreadOt<'_>,
-    buffer: &'static UdpBuffer,
+    sockets: &'static [UdpBuffer],
 ) -> Notification {
     const STATE_CHANGE: u32 = ffi_notification::MSG_M0TOM4_NOTIFY_STATE_CHANGE as u32;
     const UDP_RECEIVE: u32 = ffi_notification::MSG_M0TOM4_UDP_RECEIVE as u32;
@@ -207,16 +213,33 @@ pub async fn notification(
     let acknowledged_after = |raw: OtNotification| match raw.id {
         STATE_CHANGE => Notification::StateChanged,
         UDP_RECEIVE => {
-            // The arguments of the socket's receive callback: its context,
-            // the message, and the message's otMessageInfo.
-            let message = raw.data[1];
-            let datagram = unsafe {
-                // SAFETY: the notification that brought the message is not
-                // acknowledged until this closure returns.
-                block_on(udp_read(ot, buffer, message))
+            // The arguments of a socket's receive callback: its context, the
+            // message, and the message's otMessageInfo.
+            let [context, message, info, _] = raw.data;
+            let socket = context as usize;
+            let info = info as *const ffi::otMessageInfo;
+            let Some(buffer) = sockets.get(socket) else {
+                return Notification::Other(raw.id);
             };
-            match datagram {
-                Some(datagram) => Notification::UdpReceived(datagram),
+            if raw.size < 3 || info.is_null() {
+                return Notification::Other(raw.id);
+            }
+
+            let (from, payload) = unsafe {
+                // SAFETY: CPU2 keeps the otMessageInfo, as it does the
+                // message, until the notification is acknowledged, which is
+                // not before this closure returns. It is in memory that CPU1
+                // can read: ST's own receive callbacks read it where it is.
+                // Its fields are numbers, the address a union of them.
+                let from = read_volatile(info).mPeerAddr.mFields.m8;
+                (from, block_on(udp_read(ot, buffer, message)))
+            };
+            match payload {
+                Some(payload) => Notification::UdpReceived {
+                    socket,
+                    from: Ipv6Addr::from(from),
+                    payload,
+                },
                 None => Notification::Other(raw.id),
             }
         }
@@ -502,16 +525,18 @@ pub unsafe trait OpenThread {
         route_from_raw(destination, next_hop, cost)
     }
 
-    /// Open the UDP socket. It can send from then on.
-    async fn udp_open(&mut self, buffer: &'static UdpBuffer) -> Result<()> {
+    /// Open a UDP socket. It can send from then on. What it receives comes
+    /// with `context`, which tells it from the other sockets (see
+    /// [`notification`]).
+    async fn udp_open(&mut self, buffer: &'static UdpBuffer, context: usize) -> Result<()> {
         unsafe {
             // SAFETY: expects a pointer to an otUdpSocket, which CPU2 fills
             // in and keeps until the socket is closed, and the context of
-            // its receive callback, which nothing here has a use for. The
-            // callback is no argument: its calls arrive as notifications.
+            // its receive callback, which is any word. The callback is no
+            // argument: its calls arrive as notifications.
             self.ffi_try(
                 ffi_command::MSG_M4TOM0_OT_UDP_OPEN,
-                &[buffer.socket.get() as u32, 0],
+                &[buffer.socket.get() as u32, context as u32],
             )
             .await
         }

@@ -128,12 +128,13 @@ async fn main(spawner: Spawner) {
     spawner.spawn(bootloader(bootloader_task).unwrap());
 
     let (update_handle, update_service) = update::init();
-    let (coprocessor_task, coprocessor_handle, thread_handle, datagrams) = coprocessor::Builder {
-        ipcc: p.IPCC,
-        flash: p.FLASH,
-        update: update_service,
-    }
-    .init();
+    let (coprocessor_task, coprocessor_handle, thread_handle, report_socket) =
+        coprocessor::Builder {
+            ipcc: p.IPCC,
+            flash: p.FLASH,
+            update: update_service,
+        }
+        .init();
     spawner.spawn(coprocessor(coprocessor_task).unwrap());
 
     let (usb_device, link) = usb::Builder {
@@ -161,7 +162,7 @@ async fn main(spawner: Spawner) {
     let capacitance = &*CAPACITANCE.init(Mutex::new(CapacitanceSensor::new(p.PB4, i2c)));
 
     let (report_task, report_handle) = report::Builder {
-        datagrams,
+        socket: report_socket,
         capacitance,
     }
     .init();

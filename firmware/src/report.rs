@@ -22,7 +22,7 @@ use crate::{
 const INTERVAL: Duration = Duration::from_secs(10);
 
 /// How long the task gets to start or stop collecting: one request of
-/// [`thread::Datagrams`], which keeps to a limit of its own, after whatever
+/// [`thread::Socket`], which keeps to a limit of its own, after whatever
 /// report it is in the middle of. Less than the host waits for an answer.
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(8);
 
@@ -32,7 +32,8 @@ const _: () = assert!(Report::MAX_LEN <= thread::MAX_DATAGRAM_LEN);
 struct Collect(bool);
 
 pub struct Builder {
-    pub datagrams: thread::Datagrams,
+    /// The socket boards send each other reports on.
+    pub socket: thread::Socket,
     pub capacitance: &'static sensor::Shared<CapacitanceSensor<'static>>,
 }
 
@@ -43,7 +44,7 @@ impl Builder {
         let (client, server) = REQUESTS.init(request::Channel::new()).split();
 
         let task = Task {
-            datagrams: self.datagrams,
+            socket: self.socket,
             capacitance: self.capacitance,
             requests: server,
             board: BoardId(embassy_stm32::uid::uid()),
@@ -69,7 +70,7 @@ impl Handle {
 }
 
 pub struct Task {
-    datagrams: thread::Datagrams,
+    socket: thread::Socket,
     capacitance: &'static sensor::Shared<CapacitanceSensor<'static>>,
     requests: request::Server<Collect, NetworkResult>,
     board: BoardId,
@@ -83,15 +84,15 @@ impl Task {
             let next = select3(
                 ticker.next(),
                 self.requests.receive(),
-                self.datagrams.receive(),
+                self.socket.receive(),
             );
             match next.await {
                 Either3::First(()) => self.report().await,
                 Either3::Second((pending, Collect(on))) => {
-                    let outcome = self.datagrams.listen(on).await;
+                    let outcome = self.socket.listen(on).await;
                     self.requests.answer(pending, outcome);
                 }
-                Either3::Third(datagram) => match Report::decode(&datagram) {
+                Either3::Third(received) => match Report::decode(&received.datagram) {
                     Some(report) => publisher.report_received(&report).await,
                     None => debug!("report: a datagram that is no report of this firmware's"),
                 },
@@ -120,7 +121,7 @@ impl Task {
 
         // A board that is on no network yet cannot send. The next report
         // may find it on one.
-        if let Err(e) = self.datagrams.broadcast(datagram).await {
+        if let Err(e) = self.socket.broadcast(datagram).await {
             debug!("report: not sent: {}", e);
         }
     }

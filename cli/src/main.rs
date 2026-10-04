@@ -58,6 +58,15 @@ enum FirmwareCommand {
         #[command(flatten)]
         target: Target,
     },
+    /// Update every board on the network: the attached board takes the image and offers it to
+    /// the others, which fetch it over the network. The attached board is updated last
+    Push {
+        /// The image, as `just firmware-image` makes it
+        image: PathBuf,
+
+        #[command(flatten)]
+        target: Target,
+    },
 }
 
 #[derive(Subcommand)]
@@ -270,6 +279,10 @@ async fn main() -> Result<()> {
         Command::Firmware(FirmwareCommand::Update { image, target }) => {
             let image = firmware::Image::read(&image)?;
             firmware::update(target.board().await?, &image).await
+        }
+        Command::Firmware(FirmwareCommand::Push { image, target }) => {
+            let image = firmware::Image::read(&image)?;
+            firmware::push(target.board().await?, &image).await
         }
         Command::Reports(ReportsCommand::Watch(target)) => {
             reports::watch(target.board.as_deref()).await

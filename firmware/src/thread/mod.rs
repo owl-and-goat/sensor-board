@@ -3,7 +3,7 @@
 //! [`init`] makes the ends of it. The [`Service`] is the only thing that
 //! talks to that stack, and it runs inside the coprocessor task. The rest of
 //! the firmware goes through the [`Handle`], for the network itself, and
-//! through [`Datagrams`], for what is sent over it: a request is handed over
+//! through a [`Socket`], for what is sent over it: a request is handed over
 //! and its outcome awaited for a bounded time, and the status is whatever was
 //! last published. A CPU2 that has stopped answering therefore costs a caller
 //! a timeout, not its life, and no call into CPU2 is ever abandoned halfway.
@@ -58,13 +58,43 @@ pub use ot::{Datagram, MAX_DATAGRAM_LEN};
 /// whatever addresses they have and however many hops away they are.
 const ALL_BOARDS: Ipv6Addr = Ipv6Addr::new(0xff03, 0, 0, 0, 0, 0, 0, 1);
 
-/// The UDP port that boards send each other datagrams on. It is one of the
-/// sixteen that 6LoWPAN writes in four bits.
-const DATAGRAM_PORT: u16 = 61620;
+/// What boards talk to each other about, each on a UDP port of its own. The
+/// ports are among the sixteen that 6LoWPAN writes in four bits.
+#[derive(Clone, Copy)]
+enum Port {
+    Reports,
+    Updates,
+}
 
-/// How many datagrams that have arrived can wait to be taken. One more than
-/// that is dropped.
-const RECEIVED_DEPTH: usize = 4;
+impl Port {
+    const ALL: [Port; 2] = [Port::Reports, Port::Updates];
+
+    const fn number(self) -> u16 {
+        match self {
+            Port::Reports => 61620,
+            Port::Updates => 61621,
+        }
+    }
+
+    /// Where the port's socket is among the sockets.
+    const fn index(self) -> usize {
+        self as usize
+    }
+}
+
+/// How many datagrams that have arrived on a port can wait to be taken. One
+/// more than that is dropped.
+const RECEIVED_DEPTH: usize = 8;
+
+/// Another board, by its address on the network.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub struct Peer(Ipv6Addr);
+
+/// A datagram that has arrived, and the board it is from.
+pub struct Received {
+    pub from: Peer,
+    pub datagram: Datagram,
+}
 
 /// What the [`Handle`] can ask for that changes the network the board is on.
 enum Request {
@@ -77,11 +107,28 @@ enum Request {
 struct NeighborsRequest;
 struct RoutersRequest;
 
-/// What [`Datagrams`] can ask for.
-enum DatagramRequest {
-    /// Start taking in what boards send to all of them, or stop.
+/// What a [`Socket`] can ask for.
+enum SocketRequest {
+    /// Start taking in what is sent to the socket's port, or stop.
     Listen(bool),
+    /// To every board on the network.
     Broadcast(Datagram),
+    Send(Peer, Datagram),
+}
+
+/// What a [`Socket`] and the service have between them.
+struct SocketShared {
+    requests: request::Channel<SocketRequest, NetworkResult>,
+    received: Channel<ThreadModeRawMutex, Received, RECEIVED_DEPTH>,
+}
+
+impl SocketShared {
+    const fn new() -> Self {
+        SocketShared {
+            requests: request::Channel::new(),
+            received: Channel::new(),
+        }
+    }
 }
 
 /// Where the board stands with its network, as last published.
@@ -107,8 +154,8 @@ struct Shared {
     requests: request::Channel<Request, NetworkResult>,
     neighbor_requests: request::Channel<NeighborsRequest, NeighborsResult>,
     router_requests: request::Channel<RoutersRequest, RoutersResult>,
-    datagram_requests: request::Channel<DatagramRequest, NetworkResult>,
-    received: Channel<ThreadModeRawMutex, Datagram, RECEIVED_DEPTH>,
+    /// One for each [`Port`], at its index.
+    sockets: [SocketShared; Port::ALL.len()],
     status: Status,
     buffers: Buffers,
 }
@@ -119,84 +166,107 @@ struct Buffers {
     active_dataset: ot::DatasetBuffer,
     next_neighbor: ot::NeighborBuffer,
     next_hop: ot::NextHopBuffer,
-    udp: ot::UdpBuffer,
+    /// One for the socket of each [`Port`], at its index.
+    udp: [ot::UdpBuffer; Port::ALL.len()],
 }
 
-/// Make the ends of Thread: the handle and the datagrams for the rest of the
+/// Make the ends of Thread: the handle and the sockets for the rest of the
 /// firmware, and the service for the coprocessor task to run. Panics if
 /// called a second time: the firmware has one of each.
-pub fn init() -> (Handle, Datagrams, Service) {
+pub fn init() -> (Handle, Sockets, Service) {
     static SHARED: StaticCell<Shared> = StaticCell::new();
     let shared: &'static Shared = SHARED.init(Shared {
         requests: request::Channel::new(),
         neighbor_requests: request::Channel::new(),
         router_requests: request::Channel::new(),
-        datagram_requests: request::Channel::new(),
-        received: Channel::new(),
+        sockets: [SocketShared::new(), SocketShared::new()],
         status: Status(Mutex::new(Cell::new(NetworkStatus::Starting))),
         buffers: Buffers {
             active_dataset: ot::DatasetBuffer::new(),
             next_neighbor: ot::NeighborBuffer::new(),
             next_hop: ot::NextHopBuffer::new(),
-            udp: ot::UdpBuffer::new(),
+            udp: [ot::UdpBuffer::new(), ot::UdpBuffer::new()],
         },
     });
 
     let (client, server) = shared.requests.split();
     let (neighbor_client, neighbor_server) = shared.neighbor_requests.split();
     let (router_client, router_server) = shared.router_requests.split();
-    let (datagram_client, datagram_server) = shared.datagram_requests.split();
     let handle = Handle {
         requests: client,
         neighbor_requests: neighbor_client,
         router_requests: router_client,
         status: &shared.status,
     };
-    let datagrams = Datagrams {
-        requests: datagram_client,
-        received: shared.received.receiver(),
+
+    let ends = |port: Port| {
+        let socket = &shared.sockets[port.index()];
+        let (client, server) = socket.requests.split();
+        let socket_end = Socket {
+            requests: client,
+            received: socket.received.receiver(),
+        };
+        (socket_end, server, socket.received.sender())
     };
+    let (reports, report_server, report_sender) = ends(Port::Reports);
+    let (updates, update_server, update_sender) = ends(Port::Updates);
+
     let service = Service {
         requests: Requests {
             changes: server,
             neighbors: neighbor_server,
             routers: router_server,
-            datagrams: datagram_server,
+            sockets: [report_server, update_server],
         },
-        received: shared.received.sender(),
+        received: [report_sender, update_sender],
         status: &shared.status,
         buffers: &shared.buffers,
     };
-    (handle, datagrams, service)
+    (handle, Sockets { reports, updates }, service)
 }
 
-/// What boards say to each other over Thread: datagrams that go to every
-/// board on the network, and those that arrive.
-pub struct Datagrams {
-    requests: request::Client<DatagramRequest, NetworkResult>,
-    received: channel::Receiver<'static, ThreadModeRawMutex, Datagram, RECEIVED_DEPTH>,
+/// What boards say to each other over Thread, a socket for each thing they
+/// talk about.
+pub struct Sockets {
+    /// Sensor reports.
+    pub reports: Socket,
+    /// Firmware updates.
+    pub updates: Socket,
 }
 
-impl Datagrams {
+/// Datagrams to the boards on the network, and from them.
+pub struct Socket {
+    requests: request::Client<SocketRequest, NetworkResult>,
+    received: channel::Receiver<'static, ThreadModeRawMutex, Received, RECEIVED_DEPTH>,
+}
+
+impl Socket {
     /// Send `datagram` to every board on the network. Nothing tells whether
     /// any of them got it.
     pub async fn broadcast(&mut self, datagram: Datagram) -> NetworkResult {
-        self.request(DatagramRequest::Broadcast(datagram)).await
+        self.request(SocketRequest::Broadcast(datagram)).await
     }
 
-    /// Start taking in what boards broadcast, this one among them, or stop.
-    /// A board that is not listening is not troubled by any of it.
+    /// Send `datagram` to one board. Nothing tells whether it got it.
+    pub async fn send_to(&mut self, peer: Peer, datagram: Datagram) -> NetworkResult {
+        self.request(SocketRequest::Send(peer, datagram)).await
+    }
+
+    /// Start taking in what boards send to this socket, or stop: what they
+    /// send to all of them, this one among them, and what they send to this
+    /// one alone. A board that is not listening is not troubled by any of
+    /// it.
     pub async fn listen(&mut self, on: bool) -> NetworkResult {
-        self.request(DatagramRequest::Listen(on)).await
+        self.request(SocketRequest::Listen(on)).await
     }
 
     /// The next datagram that has arrived. None does unless the board is
     /// listening.
-    pub async fn receive(&mut self) -> Datagram {
+    pub async fn receive(&mut self) -> Received {
         self.received.receive().await
     }
 
-    async fn request(&mut self, request: DatagramRequest) -> NetworkResult {
+    async fn request(&mut self, request: SocketRequest) -> NetworkResult {
         self.requests
             .ask(request, REQUEST_TIMEOUT)
             .await
@@ -288,13 +358,14 @@ pub struct Thread<'a, 'd> {
     pub flash: &'a radio_flash::Shared<'d>,
 }
 
-/// The serving ends of what the [`Handle`] and [`Datagrams`] ask through.
+/// The serving ends of what the [`Handle`] and the [`Socket`]s ask through.
 #[derive(Clone, Copy)]
 struct Requests {
     changes: request::Server<Request, NetworkResult>,
     neighbors: request::Server<NeighborsRequest, NeighborsResult>,
     routers: request::Server<RoutersRequest, RoutersResult>,
-    datagrams: request::Server<DatagramRequest, NetworkResult>,
+    /// One for each [`Port`], at its index.
+    sockets: [request::Server<SocketRequest, NetworkResult>; Port::ALL.len()],
 }
 
 /// A request that has been taken, and is owed an answer.
@@ -302,22 +373,28 @@ enum Asked {
     Change(request::Pending, Request),
     Neighbors(request::Pending),
     Routers(request::Pending),
-    Datagram(request::Pending, DatagramRequest),
+    Socket(request::Pending, Port, SocketRequest),
 }
 
 impl Requests {
     async fn receive(&self) -> Asked {
+        let [reports, updates] = &self.sockets;
         let next = select4(
             self.changes.receive(),
             self.neighbors.receive(),
             self.routers.receive(),
-            self.datagrams.receive(),
+            select(reports.receive(), updates.receive()),
         );
         match next.await {
             Either4::First((pending, request)) => Asked::Change(pending, request),
             Either4::Second((pending, NeighborsRequest)) => Asked::Neighbors(pending),
             Either4::Third((pending, RoutersRequest)) => Asked::Routers(pending),
-            Either4::Fourth((pending, request)) => Asked::Datagram(pending, request),
+            Either4::Fourth(Either::First((pending, request))) => {
+                Asked::Socket(pending, Port::Reports, request)
+            }
+            Either4::Fourth(Either::Second((pending, request))) => {
+                Asked::Socket(pending, Port::Updates, request)
+            }
         }
     }
 
@@ -327,15 +404,22 @@ impl Requests {
             Asked::Change(pending, _) => self.changes.answer(pending, Err(error)),
             Asked::Neighbors(pending) => self.neighbors.answer(pending, Err(error)),
             Asked::Routers(pending) => self.routers.answer(pending, Err(error)),
-            Asked::Datagram(pending, _) => self.datagrams.answer(pending, Err(error)),
+            Asked::Socket(pending, port, _) => {
+                self.sockets[port.index()].answer(pending, Err(error))
+            }
         }
     }
 }
 
-/// The end of Thread that answers the [`Handle`] and [`Datagrams`].
+/// What has arrived on the socket of each [`Port`], on its way to whoever
+/// has that socket.
+type Arrivals =
+    [channel::Sender<'static, ThreadModeRawMutex, Received, RECEIVED_DEPTH>; Port::ALL.len()];
+
+/// The end of Thread that answers the [`Handle`] and the [`Socket`]s.
 pub struct Service {
     requests: Requests,
-    received: channel::Sender<'static, ThreadModeRawMutex, Datagram, RECEIVED_DEPTH>,
+    received: Arrivals,
     status: &'static Status,
     buffers: &'static Buffers,
 }
@@ -364,7 +448,7 @@ impl Service {
             received: self.received,
             status: self.status,
             buffers: self.buffers,
-            listening: false,
+            listening: [false; Port::ALL.len()],
         };
 
         // The stack stalls unless its CLI output is acknowledged. (The CLI
@@ -402,11 +486,11 @@ struct Network<'a, 'd> {
     notif_rx: ThreadNotifRx<'d>,
     flash: &'a radio_flash::Shared<'d>,
     requests: Requests,
-    received: channel::Sender<'static, ThreadModeRawMutex, Datagram, RECEIVED_DEPTH>,
+    received: Arrivals,
     status: &'static Status,
     buffers: &'static Buffers,
-    /// Whether the socket is bound to the datagram port.
-    listening: bool,
+    /// Whether the socket of each [`Port`] is bound to it.
+    listening: [bool; Port::ALL.len()],
 }
 
 impl Network<'_, '_> {
@@ -429,8 +513,16 @@ impl Network<'_, '_> {
             match select(self.requests.receive(), notification).await {
                 Either::First(asked) => self.answer(asked).await,
                 Either::Second(ot::Notification::StateChanged) => self.publish_status().await,
-                Either::Second(ot::Notification::UdpReceived(datagram)) => {
-                    if self.received.try_send(datagram).is_err() {
+                Either::Second(ot::Notification::UdpReceived {
+                    socket,
+                    from,
+                    payload,
+                }) => {
+                    let received = Received {
+                        from: Peer(from),
+                        datagram: payload,
+                    };
+                    if self.received[socket].try_send(received).is_err() {
                         defmt::warn!("thread: nothing is taking datagrams; dropped one");
                     }
                 }
@@ -461,13 +553,17 @@ impl Network<'_, '_> {
                 let routers = self.routers().await;
                 self.requests.routers.answer(pending, routers);
             }
-            Asked::Datagram(pending, request) => {
+            Asked::Socket(pending, port, request) => {
                 let outcome = match request {
-                    DatagramRequest::Listen(on) => self.listen(on).await,
-                    DatagramRequest::Broadcast(datagram) => self.broadcast(&datagram).await,
+                    SocketRequest::Listen(on) => self.listen(port, on).await,
+                    SocketRequest::Broadcast(datagram) => {
+                        self.send(port, ALL_BOARDS, &datagram).await
+                    }
+                    SocketRequest::Send(Peer(address), datagram) => {
+                        self.send(port, address, &datagram).await
+                    }
                 };
-                self.requests
-                    .datagrams
+                self.requests.sockets[port.index()]
                     .answer(pending, outcome.map_err(NetworkError::from));
             }
         }
@@ -482,30 +578,37 @@ impl Network<'_, '_> {
         }
         self.ot.instance_init_single().await;
         self.ot.set_state_changed_callback().await?;
-        self.ot.udp_open(&self.buffers.udp).await?;
+        for port in Port::ALL {
+            let socket = &self.buffers.udp[port.index()];
+            self.ot.udp_open(socket, port.index()).await?;
+        }
         Ok(())
     }
 
-    /// Have the socket take in what is sent to the datagram port, or not.
-    async fn listen(&mut self, on: bool) -> ot::Result<()> {
-        if on == self.listening {
+    /// Have the socket of `port` take in what is sent to it, or not.
+    async fn listen(&mut self, port: Port, on: bool) -> ot::Result<()> {
+        let listening = &mut self.listening[port.index()];
+        if on == *listening {
             return Ok(());
         }
         // A socket cannot be taken off a port again, so either way it is a
         // fresh one.
-        self.ot.udp_close(&self.buffers.udp).await?;
-        self.ot.udp_open(&self.buffers.udp).await?;
-        self.listening = false;
+        let socket = &self.buffers.udp[port.index()];
+        self.ot.udp_close(socket).await?;
+        self.ot.udp_open(socket, port.index()).await?;
+        *listening = false;
         if on {
-            self.ot.udp_bind(&self.buffers.udp, DATAGRAM_PORT).await?;
-            self.listening = true;
+            self.ot.udp_bind(socket, port.number()).await?;
+            *listening = true;
         }
         Ok(())
     }
 
-    async fn broadcast(&mut self, datagram: &Datagram) -> ot::Result<()> {
+    /// Send from the socket of `port` to that port at `address`.
+    async fn send(&mut self, port: Port, address: Ipv6Addr, datagram: &Datagram) -> ot::Result<()> {
+        let socket = &self.buffers.udp[port.index()];
         self.ot
-            .udp_send(&self.buffers.udp, ALL_BOARDS, DATAGRAM_PORT, datagram)
+            .udp_send(socket, address, port.number(), datagram)
             .await
     }
 

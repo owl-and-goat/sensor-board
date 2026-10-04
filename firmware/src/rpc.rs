@@ -20,11 +20,11 @@ use protocol::{
     ApplyUpdate, BeginInstall, BeginUpdate, BoardInfo, CoprocessorResult, CoprocessorStatus,
     Dataset, ENDPOINT_LIST, EnterBootloader, FinishInstall, FinishUpdate, FirmwareStatus,
     GetBoardInfo, GetCoprocessorStatus, GetFirmwareStatus, GetNetworkDataset, GetNetworkNeighbors,
-    GetNetworkRouters, GetNetworkStatus, ImageChunk, ImageSize, JoinNetwork, LeaveNetwork,
-    NeighborsResult, NetworkResult, NetworkStatus, ReadSensorValue, Report, ReportReceived,
-    RoutersResult, SensorReadReq, SensorReadResult, SensorValue, StartCollecting, StopCollecting,
-    TOPICS_IN_LIST, TOPICS_OUT_LIST, UninstallStack, UpdateImage, UpdateResult, WriteInstall,
-    WriteUpdate,
+    GetNetworkRouters, GetNetworkStatus, GetOfferProgress, ImageChunk, ImageSize, JoinNetwork,
+    LeaveNetwork, NeighborsResult, NetworkResult, NetworkStatus, OfferProgress, ReadSensorValue,
+    Report, ReportReceived, RoutersResult, SensorReadReq, SensorReadResult, SensorValue,
+    StartCollecting, StartOffering, StopCollecting, StopOffering, TOPICS_IN_LIST, TOPICS_OUT_LIST,
+    UninstallStack, UpdateImage, UpdateResult, WriteInstall, WriteUpdate,
 };
 
 use crate::{
@@ -77,6 +77,9 @@ define_dispatch! {
         | WriteUpdate          | async    | write_update       |
         | FinishUpdate         | async    | finish_update      |
         | ApplyUpdate          | async    | apply_update       |
+        | StartOffering        | async    | start_offering     |
+        | StopOffering         | async    | stop_offering      |
+        | GetOfferProgress     | blocking | offer_progress     |
     };
     topics_in: {
         list: TOPICS_IN_LIST;
@@ -220,6 +223,18 @@ async fn finish_update(context: &mut Context, _header: VarHeader, (): ()) -> Upd
 
 async fn apply_update(context: &mut Context, _header: VarHeader, (): ()) -> UpdateResult {
     context.update.apply().await
+}
+
+async fn start_offering(context: &mut Context, _header: VarHeader, (): ()) -> UpdateResult {
+    context.update.offer(true).await
+}
+
+async fn stop_offering(context: &mut Context, _header: VarHeader, (): ()) -> UpdateResult {
+    context.update.offer(false).await
+}
+
+fn offer_progress(context: &mut Context, _header: VarHeader, (): ()) -> OfferProgress {
+    context.update.offer_progress()
 }
 
 async fn start_collecting(context: &mut Context, _header: VarHeader, (): ()) -> NetworkResult {

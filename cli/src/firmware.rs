@@ -2,13 +2,17 @@
 //! staged next to the one that runs, and the board's bootloader swaps the two.
 
 use std::{
+    collections::BTreeMap,
     path::Path,
     time::{Duration, Instant},
 };
 
 use anyhow::{Context, Result, bail};
+use indicatif::{MultiProgress, ProgressBar, ProgressDrawTarget, ProgressStyle};
+use postcard_rpc::host_client::{MultiSubRxError, MultiSubscription};
 use protocol::{
-    BuildId, BuildMarker, ImageChunk, ImageDigest, ImageSize, UpdateImage, UpdateStatus,
+    BoardId, BuildId, BuildMarker, Fetcher, ImageChunk, ImageDigest, ImageSize, OfferProgress,
+    Report, UpdateImage, UpdateStatus,
 };
 use sha2::{Digest, Sha256};
 
@@ -18,6 +22,20 @@ use crate::board::Board;
 /// some fifteen seconds over the swap.
 const RESTART_TIMEOUT: Duration = Duration::from_secs(90);
 const POLL_INTERVAL: Duration = Duration::from_millis(500);
+
+/// Boards report every ten seconds. After this long, one that has not been
+/// heard from is not there.
+const ALL_HEARD_AFTER: Duration = Duration::from_secs(25);
+
+/// How long the boards on the network get to fetch an image and come back.
+const PUSH_TIMEOUT: Duration = Duration::from_secs(900);
+
+/// How often the board that offers an image is asked how far the others have
+/// got with it.
+const PROGRESS_INTERVAL: Duration = Duration::from_secs(1);
+
+/// How often the line that sums a push up turns its spinner.
+const SPINNER_INTERVAL: Duration = Duration::from_millis(120);
 
 /// A firmware image file.
 pub struct Image {
@@ -80,6 +98,13 @@ pub async fn update(board: Board, image: &Image) -> Result<()> {
     }
 
     stage(&board, image).await?;
+    restart_into_staged(board, image).await
+}
+
+/// Have `board` restart into `image`, which it has staged, and wait for it
+/// to be running it.
+async fn restart_into_staged(board: Board, image: &Image) -> Result<()> {
+    let serial = board.serial().to_owned();
     board.apply_update().await?;
     drop(board);
     println!("Board {serial} is restarting into build {}.", image.build());
@@ -111,6 +136,262 @@ pub async fn update(board: Board, image: &Image) -> Result<()> {
     Ok(())
 }
 
+/// Update every board on the network to `image` through `gateway`: it takes
+/// the image over USB and offers it to the others, which fetch it over the
+/// network and restart into it. The gateway itself is updated once all the
+/// boards that are heard from run the image.
+pub async fn push(gateway: Board, image: &Image) -> Result<()> {
+    let serial = gateway.serial().to_owned();
+    let status = gateway.firmware_status().await?;
+    if status.update != UpdateStatus::Staged(image.describes) {
+        stage(&gateway, image).await?;
+    }
+
+    // The reports say which build each board runs.
+    let mut reports = gateway.reports().await?;
+    gateway.start_collecting().await?;
+    gateway.start_offering().await?;
+    println!(
+        "Board {serial} is offering build {} to the network.",
+        image.build()
+    );
+
+    let outcome = boards_updated(&gateway, &mut reports, image).await;
+    // Best effort: a board left at it only does work that nobody looks at.
+    let _ = gateway.stop_offering().await;
+    let _ = gateway.stop_collecting().await;
+    if !outcome? {
+        return Ok(());
+    }
+
+    if status.build == image.build() {
+        println!("Board {serial} runs build {} already.", image.build());
+        return Ok(());
+    }
+    restart_into_staged(gateway, image).await
+}
+
+/// Watch the reports that `gateway` passes on until every board but itself
+/// runs `image`, showing how far the boards that are fetching it have got.
+/// `false` if interrupted before that.
+async fn boards_updated(
+    gateway: &Board,
+    reports: &mut MultiSubscription<Report>,
+    image: &Image,
+) -> Result<bool> {
+    let build = image.build();
+    let started = Instant::now();
+    let mut builds = BTreeMap::new();
+
+    let mut progress = PushProgress::new(image.describes.size);
+    progress.summarize(&builds, build);
+    let mut progress_due = tokio::time::interval(PROGRESS_INTERVAL);
+    progress_due.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+    // Until the gateway turns out to be unable to tell.
+    let mut tells_progress = true;
+
+    let interrupted = tokio::signal::ctrl_c();
+    tokio::pin!(interrupted);
+
+    loop {
+        // Every board reports in less time than this, so by then there is no
+        // board that has yet to be heard from.
+        let all_heard = started.elapsed() > ALL_HEARD_AFTER;
+        if all_heard && builds.values().all(|&running| running == build) {
+            progress.say(&match builds.len() {
+                0 => "No other board was heard from.".into(),
+                n => format!("All {n} other boards run build {build}."),
+            });
+            return Ok(true);
+        }
+        if started.elapsed() > PUSH_TIMEOUT {
+            let behind: Vec<String> = builds
+                .iter()
+                .filter(|&(_, &running)| running != build)
+                .map(|(board, running)| format!("{board} (build {running})"))
+                .collect();
+            bail!("these boards did not update: {}", behind.join(", "));
+        }
+
+        let report = tokio::select! {
+            _ = &mut interrupted => return Ok(false),
+            () = tokio::time::sleep(POLL_INTERVAL) => continue,
+            _ = progress_due.tick(), if tells_progress => {
+                match gateway.offer_progress().await {
+                    Ok(Some(fetching)) => progress.show(&fetching),
+                    Ok(None) => {
+                        tells_progress = false;
+                        progress.say(&format!(
+                            "Board {} runs a firmware that cannot tell how far the others have \
+                             got. Update it first (firmware update) to see that.",
+                            gateway.serial()
+                        ));
+                    }
+                    // Whatever is wrong shows in the reports too.
+                    Err(_) => {}
+                }
+                continue;
+            }
+            report = reports.recv() => report,
+        };
+        match report {
+            Ok(report) if report.board.to_string() != gateway.serial() => {
+                if builds.insert(report.board, report.firmware) != Some(report.firmware) {
+                    let state = if report.firmware == build {
+                        "updated"
+                    } else {
+                        "to update"
+                    };
+                    progress.say(&format!(
+                        "{}  build {}  {state}",
+                        report.board, report.firmware
+                    ));
+                    progress.summarize(&builds, build);
+                }
+            }
+            // The gateway's own, which goes last.
+            Ok(_) => {}
+            Err(MultiSubRxError::Lagged(_)) => {}
+            Err(MultiSubRxError::IoClosed) => bail!("board {} is gone", gateway.serial()),
+        }
+    }
+}
+
+/// What a push shows while the boards update: a line that says how many of
+/// them run the image, and under it a bar for each board that is fetching it.
+/// Drawn on a terminal only. What is said through it is printed above the
+/// bars, wherever that goes.
+struct PushProgress {
+    bars: MultiProgress,
+    summary: ProgressBar,
+    fetching: Vec<FetchBar>,
+    size: ImageSize,
+}
+
+/// The bar of a board that is fetching.
+struct FetchBar {
+    /// Which board, once it has said.
+    board: Option<BoardId>,
+    bar: ProgressBar,
+}
+
+impl PushProgress {
+    fn new(size: ImageSize) -> PushProgress {
+        PushProgress::drawn_on(ProgressDrawTarget::stderr(), size)
+    }
+
+    fn drawn_on(target: ProgressDrawTarget, size: ImageSize) -> PushProgress {
+        let bars = MultiProgress::with_draw_target(target);
+        let style = ProgressStyle::with_template("{spinner} {msg} ({elapsed})")
+            .expect("the template is well-formed");
+        let summary = bars.add(ProgressBar::new_spinner().with_style(style));
+        summary.enable_steady_tick(SPINNER_INTERVAL);
+        PushProgress {
+            bars,
+            summary,
+            fetching: Vec::new(),
+            size,
+        }
+    }
+
+    /// Print a line above the bars.
+    fn say(&self, line: &str) {
+        self.bars.suspend(|| println!("{line}"));
+    }
+
+    /// Say how many of the boards that have been heard from run `build`.
+    fn summarize(&self, builds: &BTreeMap<BoardId, BuildId>, build: BuildId) {
+        let updated = builds.values().filter(|&&running| running == build);
+        self.summary.set_message(match builds.len() {
+            0 => "Waiting to hear from the other boards".into(),
+            n => format!("{} of {n} other boards run build {build}", updated.count()),
+        });
+    }
+
+    /// Bring the bars in line with what the offering board tells.
+    fn show(&mut self, progress: &OfferProgress) {
+        let shown: Vec<Option<BoardId>> = self.fetching.iter().map(|row| row.board).collect();
+        let places = bars_for(&shown, &progress.fetchers);
+        let mut shown: Vec<Option<FetchBar>> = self.fetching.drain(..).map(Some).collect();
+        let kept: Vec<Option<FetchBar>> = places
+            .into_iter()
+            .map(|place| place.and_then(|i| shown[i].take()))
+            .collect();
+
+        // What is left is of a board that has stopped asking: it is done, or
+        // gone.
+        for gone in shown.into_iter().flatten() {
+            self.bars.remove(&gone.bar);
+        }
+        for (fetcher, row) in progress.fetchers.iter().zip(kept) {
+            let mut row = row.unwrap_or_else(|| self.new_bar(fetcher.received));
+            row.board = fetcher.board;
+            // With the whole image, a board checks it and restarts into it.
+            let template = if fetcher.received < self.size.0 {
+                "{prefix:24} {wide_bar} {percent:>3}%  {bytes_per_sec:>12}  eta {eta:>3}"
+            } else {
+                "{prefix:24} {wide_bar} {percent:>3}%  restarting"
+            };
+            let style = ProgressStyle::with_template(template);
+            row.bar
+                .set_style(style.expect("the template is well-formed"));
+            // A board that runs a firmware from before boards said who they
+            // are has no name here.
+            let name = fetcher.board.map_or("a board".into(), |b| b.to_string());
+            row.bar.set_prefix(name);
+            row.bar.set_position(fetcher.received.into());
+            self.fetching.push(row);
+        }
+    }
+
+    /// A bar for a board that has `received` bytes of the image when it is
+    /// first seen.
+    fn new_bar(&self, received: u32) -> FetchBar {
+        let length = Some(self.size.0.into());
+        let bar = ProgressBar::with_draw_target(length, ProgressDrawTarget::hidden());
+        // What the board had before it was seen is not to count towards its
+        // rate. indicatif only starts that estimate over when a bar steps
+        // back, so step this one back to where the board is, before it shows.
+        bar.set_position(u64::MAX);
+        bar.set_position(received.into());
+        FetchBar {
+            board: None,
+            bar: self.bars.add(bar),
+        }
+    }
+}
+
+impl Drop for PushProgress {
+    fn drop(&mut self) {
+        // A bar that is dropped unfinished is drawn once more, and left
+        // standing.
+        for row in &self.fetching {
+            row.bar.finish_and_clear();
+        }
+        self.summary.finish_and_clear();
+    }
+}
+
+/// The bar each fetcher is shown on, as an index into `shown`, which says
+/// whose each bar is. A board keeps its bar. One that has no bar takes the
+/// first of a board that had not said who it is: that is the same board, if
+/// it has said so since or still has not. `None` for one that needs a new bar.
+fn bars_for(shown: &[Option<BoardId>], fetchers: &[Fetcher]) -> Vec<Option<usize>> {
+    let mut bars: Vec<Option<usize>> = fetchers
+        .iter()
+        .map(|fetcher| {
+            let board = fetcher.board?;
+            shown.iter().position(|&shown| shown == Some(board))
+        })
+        .collect();
+
+    let mut unnamed = (0..shown.len()).filter(|&i| shown[i].is_none());
+    for bar in bars.iter_mut().filter(|bar| bar.is_none()) {
+        *bar = unnamed.next();
+    }
+    bars
+}
+
 pub fn describe(status: &UpdateStatus) -> String {
     match status {
         UpdateStatus::Starting => "starting".into(),
@@ -130,7 +411,84 @@ pub fn describe(status: &UpdateStatus) -> String {
 
 #[cfg(test)]
 mod tests {
+    use indicatif::InMemoryTerm;
+
     use super::*;
+
+    const BOARD: BoardId = BoardId([
+        0x4C, 0x00, 0x32, 0x00, 0x03, 0x50, 0x47, 0x55, 0x32, 0x30, 0x33, 0x31,
+    ]);
+
+    fn fetcher(board: Option<BoardId>, received: u32) -> Fetcher {
+        Fetcher { board, received }
+    }
+
+    #[test]
+    fn a_board_that_fetches_keeps_its_bar() {
+        let (a, b) = (Some(BoardId([0xA; 12])), Some(BoardId([0xB; 12])));
+        let fetchers = |boards: &[Option<BoardId>]| -> Vec<Fetcher> {
+            boards.iter().map(|&board| fetcher(board, 0)).collect()
+        };
+
+        // The one in the middle is gone, and the one after it stays where it
+        // was.
+        assert_eq!(
+            bars_for(&[a, None, b], &fetchers(&[a, b])),
+            [Some(0), Some(2)]
+        );
+        // One that has said who it is since has the bar it had without a
+        // name.
+        assert_eq!(bars_for(&[a, None], &fetchers(&[a, b])), [Some(0), Some(1)]);
+        assert_eq!(bars_for(&[None, None], &fetchers(&[None])), [Some(0)]);
+        // Whoever is new needs a new bar.
+        assert_eq!(
+            bars_for(&[a], &fetchers(&[a, None, b])),
+            [Some(0), None, None]
+        );
+    }
+
+    #[test]
+    fn a_push_shows_a_bar_for_each_board_that_fetches() {
+        let terminal = InMemoryTerm::new(10, 100);
+        let target = ProgressDrawTarget::term_like(Box::new(terminal.clone()));
+        let mut progress = PushProgress::drawn_on(target, ImageSize(200_000));
+        progress.summarize(&BTreeMap::from([(BOARD, BuildId(1))]), BuildId(2));
+
+        progress.show(&OfferProgress {
+            fetchers: [fetcher(Some(BOARD), 50_000), fetcher(None, 200_000)]
+                .into_iter()
+                .collect(),
+        });
+        let screen = terminal.contents();
+        let lines: Vec<&str> = screen.lines().collect();
+        assert_eq!(lines.len(), 3, "{screen}");
+        assert!(
+            lines[0].contains("0 of 1 other boards run build 2"),
+            "{screen}"
+        );
+        assert!(
+            lines[1].starts_with("4C0032000350475532303331 "),
+            "{screen}"
+        );
+        assert!(lines[1].contains(" 25%"), "{screen}");
+        // What it had when it was first seen is no measure of how fast it is.
+        assert!(lines[1].contains(" 0 B/s"), "{screen}");
+        assert!(lines[2].starts_with("a board "), "{screen}");
+        assert!(lines[2].contains("100%"), "{screen}");
+        assert!(lines[2].ends_with("restarting"), "{screen}");
+
+        // The board that had it all has stopped asking.
+        progress.show(&OfferProgress {
+            fetchers: [fetcher(Some(BOARD), 100_000)].into_iter().collect(),
+        });
+        let screen = terminal.contents();
+        let lines: Vec<&str> = screen.lines().collect();
+        assert_eq!(lines.len(), 2, "{screen}");
+        assert!(lines[1].contains(" 50%"), "{screen}");
+
+        drop(progress);
+        assert_eq!(terminal.contents().trim(), "");
+    }
 
     #[test]
     fn only_an_image_of_the_firmware_is_taken() {
@@ -139,10 +497,11 @@ mod tests {
         let mut bytes = vec![0x11; 300];
         bytes.extend_from_slice(b"sensor-board-fw\0");
         bytes.extend_from_slice(&1_791_145_757u32.to_le_bytes());
+        bytes.extend_from_slice(&(!1_791_145_757u32).to_le_bytes());
         bytes.extend_from_slice(&[0x22; 100]);
         let image = Image::from_bytes(bytes.clone()).unwrap();
         assert_eq!(image.build(), BuildId(1_791_145_757));
-        assert_eq!(image.describes.size, ImageSize(420));
+        assert_eq!(image.describes.size, ImageSize(424));
         assert_eq!(
             image.describes.digest.0,
             <[u8; 32]>::from(Sha256::digest(&bytes))

@@ -39,6 +39,18 @@ flash: _flash-image
 update *board: firmware-image
     {{just_executable()}} cli firmware update {{firmware_image}} {{board}}
 
+# The same, for every attached board, one after the other
+update-all: firmware-image
+    #!/usr/bin/env bash
+    set -euo pipefail
+    for serial in $({{just_executable()}} cli list | cut -d' ' -f1); do
+        {{just_executable()}} cli firmware update {{firmware_image}} --board "$serial"
+    done
+
+# Update the firmware of every board on the network: the attached board takes the image over USB and offers it to the others, which fetch it over the network. With several boards attached, say which: just push --board <serial>
+push *board: firmware-image
+    {{just_executable()}} cli firmware push {{firmware_image}} {{board}}
+
 # Flash the bootloader and the firmware over USB through the ROM bootloader, onto a board that is running a firmware. With several boards attached, say which: just dfu-flash --board <serial>
 dfu-flash *board: _flash-image
     {{just_executable()}} cli bootloader {{board}}

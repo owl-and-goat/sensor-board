@@ -140,6 +140,26 @@ back. Seen on a board on 2026-10-04: the swap, the trial being kept, the
 rollback after a reset during the trial, and an update from the rolled-back
 state. Not seen: the five-minute limit of a trial.
 
+An image gets into the staging area from the host over USB, or from another
+board over the network (`UpdateMessage` in `protocol`, on UDP port 61621,
+which every board listens on). A board that has an image staged offers it to
+all the boards every ten seconds, once the host has told it to. A board that
+runs another build asks that board for the image 192 bytes at a time, stages
+it, and restarts into it. A board whose trial of a build failed finds that
+build in its staging area afterwards, and does not fetch it again. The
+offering board keeps the offset each board last asked for, which is all
+`firmware push` has to show progress with (`GetOfferProgress`); a fetching
+board also says which board it is (`UpdateMessage::Fetching`), at the start
+and at every offer it hears, so that its bar can bear its serial. The bars
+are indicatif's, which draws nothing unless stderr is a terminal and `TERM`
+is something other than `dumb`.
+
+The encoding of `UpdateMessage` is frozen, and tests in `protocol` pin its
+bytes: a board on an old firmware has to understand the offer of the firmware
+that replaces it. A new message goes at the end of the enum, and a firmware
+that does not know it lets it pass. Seen on boards on 2026-10-04: a push to
+the whole network, boards fetching from the attached one.
+
 Things learned the hard way:
 
 - A page that a flash loader (probe-rs's, or the ROM bootloader's) has put
@@ -150,6 +170,10 @@ Things learned the hard way:
 - Flash is only written through `RadioFlash` while a stack runs on CPU2
   (`radio_flash.rs`). The Thread service and the update service share it
   behind a mutex inside the coprocessor task.
+- The sixteen bytes that mark an image as this firmware (`BuildMarker`) are
+  in it twice: once in the marker, and once where the firmware has them to
+  look for markers with. The marker carries a check so that only it is taken
+  for one.
 - The bootloader has to fit 24 K in any profile. Unoptimized it does not, so
   its dev profile is as size-optimized as its release one.
 - Boards and the CLI are often on different builds. Add endpoints; do not

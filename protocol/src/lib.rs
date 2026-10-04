@@ -40,6 +40,9 @@ endpoints! {
     | WriteUpdate          | ImageChunk    | UpdateResult      | "firmware/update/write"      |
     | FinishUpdate         | ()            | UpdateResult      | "firmware/update/finish"     |
     | ApplyUpdate          | ()            | UpdateResult      | "firmware/update/apply"      |
+    | StartOffering        | ()            | UpdateResult      | "firmware/offer/start"       |
+    | StopOffering         | ()            | UpdateResult      | "firmware/offer/stop"        |
+    | GetOfferProgress     | ()            | OfferProgress     | "firmware/offer/progress"    |
 }
 
 topics! {
@@ -90,15 +93,23 @@ pub struct BuildMarker {
     magic: [u8; 16],
     /// The [`BuildId`], least significant byte first.
     build: [u8; 4],
+    /// The same with every bit turned over. The sixteen bytes of `magic` turn
+    /// up in an image a second time, where the firmware has them to look for
+    /// markers with: what follows them there is not a build and this.
+    check: [u8; 4],
 }
 
 impl BuildMarker {
     const MAGIC: [u8; 16] = *b"sensor-board-fw\0";
 
+    /// How many bytes a marker is.
+    pub const LEN: usize = size_of::<BuildMarker>();
+
     pub const fn new(build: BuildId) -> BuildMarker {
         BuildMarker {
             magic: Self::MAGIC,
             build: build.0.to_le_bytes(),
+            check: (!build.0).to_le_bytes(),
         }
     }
 
@@ -108,11 +119,13 @@ impl BuildMarker {
 
     /// The build of the firmware that `image` is, if it is the firmware.
     pub fn find(image: &[u8]) -> Option<BuildId> {
-        let at = image
-            .windows(Self::MAGIC.len())
-            .position(|w| w == Self::MAGIC)?;
-        let build = image.get(at + Self::MAGIC.len()..)?.first_chunk()?;
-        Some(BuildId(u32::from_le_bytes(*build)))
+        image.windows(Self::LEN).find_map(|candidate| {
+            let after_magic = candidate.strip_prefix(&Self::MAGIC)?;
+            let (build, check) = after_magic.split_first_chunk()?;
+            let build = u32::from_le_bytes(*build);
+            let check = u32::from_le_bytes(*check.first_chunk()?);
+            (check == !build).then_some(BuildId(build))
+        })
     }
 }
 
@@ -829,6 +842,90 @@ impl fmt::Display for UpdateError {
     }
 }
 
+/// How far the boards that are fetching the image a board offers have got,
+/// going by what they have asked that board for.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, Schema)]
+#[cfg_attr(feature = "defmt", derive(defmt::Format))]
+pub struct OfferProgress {
+    /// The boards that have asked for a chunk in the last half minute.
+    pub fetchers: heapless::Vec<Fetcher, { OfferProgress::MAX_FETCHERS }>,
+}
+
+impl OfferProgress {
+    pub const MAX_FETCHERS: usize = 8;
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Schema)]
+#[cfg_attr(feature = "defmt", derive(defmt::Format))]
+pub struct Fetcher {
+    /// Which board it is, if it has said. A board whose firmware predates
+    /// [`UpdateMessage::Fetching`] does not.
+    pub board: Option<BoardId>,
+    /// How many bytes of the image it has.
+    pub received: u32,
+}
+
+/// What boards say to each other about firmware updates, over their network.
+/// A board that has an image staged and has been told to offer it
+/// ([`StartOffering`]) says so to all of them at intervals. A board that runs
+/// another build asks for the image a chunk at a time, stages it, and
+/// restarts into it.
+///
+/// The encoding of this must never change: a board on an old firmware has to
+/// understand the offer of the firmware that replaces it. So no variant may
+/// be changed or moved, and none of the types in them. A new variant can be
+/// added at the end: a board that does not know it does not understand the
+/// message, and lets it pass.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub enum UpdateMessage {
+    Offer(UpdateImage),
+    /// Asks whoever offers `build` for the chunk of it that starts at
+    /// `offset`.
+    ChunkRequest {
+        build: BuildId,
+        offset: u32,
+    },
+    /// The answer. Every chunk but the last is [`UpdateMessage::CHUNK_LEN`]
+    /// bytes.
+    Chunk {
+        build: BuildId,
+        offset: u32,
+        data: heapless::Vec<u8, { UpdateMessage::CHUNK_LEN }>,
+    },
+    /// A board that starts to fetch an image tells the board it fetches it
+    /// from which board it is. Added after the first three, so a board whose
+    /// firmware has only those does not say it, and does not understand it.
+    Fetching {
+        board: BoardId,
+    },
+}
+
+impl UpdateMessage {
+    /// A whole number of flash words, in a message that is not much more
+    /// than two radio frames.
+    pub const CHUNK_LEN: usize = 192;
+
+    /// The most bytes a message takes up.
+    pub const MAX_LEN: usize = 256;
+
+    /// What every message starts with: tells them from anything else that
+    /// turns up on their port, and this encoding from any that follows it.
+    const MAGIC: [u8; 4] = *b"SBU1";
+
+    /// `None` if `buf` is too short.
+    pub fn encode<'a>(&self, buf: &'a mut [u8]) -> Option<&'a [u8]> {
+        let (magic, body) = buf.split_at_mut_checked(Self::MAGIC.len())?;
+        magic.copy_from_slice(&Self::MAGIC);
+        let body = postcard_rpc::postcard::to_slice(self, body).ok()?.len();
+        Some(&buf[..Self::MAGIC.len() + body])
+    }
+
+    pub fn decode(bytes: &[u8]) -> Option<UpdateMessage> {
+        let body = bytes.strip_prefix(&Self::MAGIC)?;
+        postcard_rpc::postcard::from_bytes(body).ok()
+    }
+}
+
 /// The length of an image about to be installed, in bytes.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Schema)]
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]
@@ -956,19 +1053,92 @@ mod tests {
     }
 
     #[test]
+    fn update_messages_survive_the_trip_between_boards() {
+        let image = UpdateImage {
+            build: BuildId(u32::MAX),
+            size: ImageSize(u32::MAX),
+            digest: ImageDigest([0xab; 32]),
+        };
+        let chunk = UpdateMessage::Chunk {
+            build: BuildId(u32::MAX),
+            offset: u32::MAX,
+            data: heapless::Vec::from_slice(&[0xff; UpdateMessage::CHUNK_LEN]).unwrap(),
+        };
+        let request = UpdateMessage::ChunkRequest {
+            build: BuildId(7),
+            offset: 192,
+        };
+        for message in [UpdateMessage::Offer(image), request, chunk] {
+            let mut buf = [0; UpdateMessage::MAX_LEN];
+            let encoded = message.encode(&mut buf).unwrap();
+            assert_eq!(UpdateMessage::decode(encoded), Some(message));
+        }
+        assert_eq!(UpdateMessage::decode(b"SBU2\x00"), None);
+        assert_eq!(UpdateMessage::decode(&[]), None);
+    }
+
+    /// The bytes themselves, which boards on older firmware go by.
+    #[test]
+    fn update_message_encoding_has_not_changed() {
+        let mut buf = [0; UpdateMessage::MAX_LEN];
+        let request = UpdateMessage::ChunkRequest {
+            build: BuildId(1),
+            offset: 2,
+        };
+        assert_eq!(request.encode(&mut buf).unwrap(), b"SBU1\x01\x01\x02");
+
+        let offer = UpdateMessage::Offer(UpdateImage {
+            build: BuildId(1),
+            size: ImageSize(2),
+            digest: ImageDigest([3; 32]),
+        });
+        let encoded = offer.encode(&mut buf).unwrap();
+        assert_eq!(encoded[..7], *b"SBU1\x00\x01\x02");
+        assert_eq!(encoded[7..], [3; 32]);
+
+        let chunk = UpdateMessage::Chunk {
+            build: BuildId(1),
+            offset: 2,
+            data: heapless::Vec::from_slice(&[9, 8]).unwrap(),
+        };
+        assert_eq!(
+            chunk.encode(&mut buf).unwrap(),
+            b"SBU1\x02\x01\x02\x02\x09\x08"
+        );
+
+        let fetching = UpdateMessage::Fetching {
+            board: BoardId(*b"0123456789ab"),
+        };
+        assert_eq!(fetching.encode(&mut buf).unwrap(), b"SBU1\x030123456789ab");
+    }
+
+    /// A board whose firmware has one variant fewer gets such a message as
+    /// bytes that it cannot decode.
+    #[test]
+    fn update_message_of_an_unknown_kind_is_not_understood() {
+        assert_eq!(UpdateMessage::decode(b"SBU1\x040123456789ab"), None);
+    }
+
+    #[test]
     fn build_marker_is_found_wherever_in_an_image_it_is() {
         let marker = BuildMarker::new(BuildId(1_791_145_757));
         assert_eq!(marker.build(), BuildId(1_791_145_757));
 
         let mut image = std::vec![0xa5; 1000];
+        // What the firmware looks for markers with, and what happens to
+        // follow it.
+        image.extend_from_slice(&marker.magic);
+        image.extend_from_slice(b"src/update.rs");
         image.extend_from_slice(&marker.magic);
         image.extend_from_slice(&marker.build);
+        image.extend_from_slice(&marker.check);
         image.extend_from_slice(&[0x5a; 333]);
         assert_eq!(BuildMarker::find(&image), Some(BuildId(1_791_145_757)));
 
         // No marker, and one that the end of the file cuts short.
         assert_eq!(BuildMarker::find(&[0xa5; 1000]), None);
-        assert_eq!(BuildMarker::find(&image[..1018]), None);
+        let cut_short = image.len() - 333 - 1;
+        assert_eq!(BuildMarker::find(&image[..cut_short]), None);
     }
 
     #[test]

@@ -13,10 +13,11 @@ use protocol::{
     ApplyUpdate, BeginInstall, BeginUpdate, BoardInfo, CoprocessorResult, CoprocessorStatus,
     Dataset, EnterBootloader, FinishInstall, FinishUpdate, FirmwareStatus, GetBoardInfo,
     GetCoprocessorStatus, GetFirmwareStatus, GetNetworkDataset, GetNetworkNeighbors,
-    GetNetworkRouters, GetNetworkStatus, ImageChunk, ImageSize, JoinNetwork, LeaveNetwork,
-    NeighborTable, NetworkError, NetworkStatus, ReadSensorValue, Report, ReportReceived,
-    RouterTable, Sensor, SensorReadReq, SensorReadResult, StartCollecting, StopCollecting, USB_PID,
-    USB_VID, UninstallStack, UpdateImage, UpdateResult, WriteInstall, WriteUpdate,
+    GetNetworkRouters, GetNetworkStatus, GetOfferProgress, ImageChunk, ImageSize, JoinNetwork,
+    LeaveNetwork, NeighborTable, NetworkError, NetworkStatus, OfferProgress, ReadSensorValue,
+    Report, ReportReceived, RouterTable, Sensor, SensorReadReq, SensorReadResult, StartCollecting,
+    StartOffering, StopCollecting, StopOffering, USB_PID, USB_VID, UninstallStack, UpdateImage,
+    UpdateResult, WriteInstall, WriteUpdate,
 };
 
 /// How long a board gets to answer. The slowest it can be is a join or leave
@@ -223,6 +224,30 @@ impl Board {
     pub async fn apply_update(&self) -> Result<()> {
         let result = self.call::<ApplyUpdate>(&()).await?;
         self.update_result(result)
+    }
+
+    /// Have the board offer the image it has staged to the boards on its
+    /// network, which fetch it and restart into it.
+    pub async fn start_offering(&self) -> Result<()> {
+        let result = self.call::<StartOffering>(&()).await?;
+        self.update_result(result)
+    }
+
+    pub async fn stop_offering(&self) -> Result<()> {
+        let result = self.call::<StopOffering>(&()).await?;
+        self.update_result(result)
+    }
+
+    /// How far the boards that fetch the image the board offers have got.
+    /// `None` from a board whose firmware is from before it could tell.
+    pub async fn offer_progress(&self) -> Result<Option<OfferProgress>> {
+        let answer = self.client.send_resp::<GetOfferProgress>(&());
+        match tokio::time::timeout(TIMEOUT, answer).await {
+            Ok(Ok(progress)) => Ok(Some(progress)),
+            Ok(Err(HostErr::Wire(WireError::UnknownKey))) => Ok(None),
+            Ok(Err(e)) => bail!("board {}: could not tell: {e:?}", self.serial),
+            Err(_) => bail!("board {} did not answer", self.serial),
+        }
     }
 
     fn update_result(&self, result: UpdateResult) -> Result<()> {

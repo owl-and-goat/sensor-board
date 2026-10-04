@@ -84,7 +84,9 @@ pub struct Builder<'d> {
 
 impl<'d> Builder<'d> {
     /// Panics if called a second time: there is one coprocessor.
-    pub fn init(self) -> (Task<'d>, Handle, thread::Handle, thread::Datagrams) {
+    /// The socket for reports goes to whoever sends them. The one for firmware
+    /// updates stays with the task, which runs the update service.
+    pub fn init(self) -> (Task<'d>, Handle, thread::Handle, thread::Socket) {
         static SHARED: StaticCell<Shared> = StaticCell::new();
         let shared: &'static Shared = SHARED.init(Shared {
             requests: request::Channel::new(),
@@ -92,7 +94,7 @@ impl<'d> Builder<'d> {
         });
 
         let (client, server) = shared.requests.split();
-        let (thread_handle, datagrams, thread) = thread::init();
+        let (thread_handle, sockets, thread) = thread::init();
         let task = Task {
             ipcc: self.ipcc,
             flash: self.flash,
@@ -100,12 +102,13 @@ impl<'d> Builder<'d> {
             status: &shared.status,
             thread,
             update: self.update,
+            update_socket: sockets.updates,
         };
         let handle = Handle {
             requests: client,
             status: &shared.status,
         };
-        (task, handle, thread_handle, datagrams)
+        (task, handle, thread_handle, sockets.reports)
     }
 }
 
@@ -158,6 +161,7 @@ pub struct Task<'d> {
     status: &'static Status,
     thread: thread::Service,
     update: update::Service,
+    update_socket: thread::Socket,
 }
 
 impl<'d> Task<'d> {
@@ -186,7 +190,8 @@ impl<'d> Task<'d> {
                     // From here on flash is only written in step with the
                     // stack, by Thread for its dataset and by the updates.
                     let flash = radio_flash::Shared::new(RadioFlash::new(flash, sys));
-                    let update = self.update.run(&flash, self.thread.monitor());
+                    let network = self.thread.monitor();
+                    let update = self.update.run(&flash, network, self.update_socket);
                     if firmware.stack.map(|s| s.kind) == Some(StackKind::ThreadFtd) {
                         let thread = thread::Thread {
                             ot,
