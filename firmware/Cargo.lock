@@ -493,7 +493,7 @@ dependencies = [
 [[package]]
 name = "embassy-stm32-wpan"
 version = "0.1.0"
-source = "git+https://github.com/glittershark/embassy.git?rev=ea46134a5225e6d94f8290cc2f4d693e65899de2#ea46134a5225e6d94f8290cc2f4d693e65899de2"
+source = "git+https://github.com/glittershark/embassy.git?rev=ebbabe3b4c979d0c9815b663649c5b85c59dfd30#ebbabe3b4c979d0c9815b663649c5b85c59dfd30"
 dependencies = [
  "aligned 0.4.3",
  "bit_field",
@@ -1182,6 +1182,7 @@ dependencies = [
  "embassy-sync",
  "embassy-time",
  "embassy-usb",
+ "heapless 0.9.3",
  "panic-probe",
  "postcard-rpc",
  "protocol",

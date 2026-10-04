@@ -6,7 +6,7 @@
 use embassy_executor::Spawner;
 use postcard_rpc::{
     define_dispatch,
-    header::VarHeader,
+    header::{VarHeader, VarSeq},
     server::{
         self, Dispatch,
         impls::embassy_usb_v0_6::dispatch_impl::{WireRxBuf, WireSpawnImpl},
@@ -20,20 +20,25 @@ use protocol::{
     BeginInstall, BoardInfo, CoprocessorResult, CoprocessorStatus, Dataset, ENDPOINT_LIST,
     EnterBootloader, FinishInstall, GetBoardInfo, GetCoprocessorStatus, GetNetworkDataset,
     GetNetworkNeighbors, GetNetworkRouters, GetNetworkStatus, ImageChunk, ImageSize, JoinNetwork,
-    LeaveNetwork, NeighborsResult, NetworkResult, NetworkStatus, ReadSensorValue, RoutersResult,
-    SensorReadReq, SensorReadResult, SensorValue, TOPICS_IN_LIST, TOPICS_OUT_LIST, UninstallStack,
-    WriteInstall,
+    LeaveNetwork, NeighborsResult, NetworkResult, NetworkStatus, ReadSensorValue, Report,
+    ReportReceived, RoutersResult, SensorReadReq, SensorReadResult, SensorValue, StartCollecting,
+    StopCollecting, TOPICS_IN_LIST, TOPICS_OUT_LIST, UninstallStack, WriteInstall,
 };
 
-use crate::{coprocessor, dfu, sensor::capacitance, thread, usb};
+use crate::{
+    coprocessor, dfu, report,
+    sensor::{self, capacitance},
+    thread, usb,
+};
 
 /// What the handlers act on.
 pub struct Context {
     pub thread: thread::Handle,
     pub coprocessor: coprocessor::Handle,
     pub bootloader: dfu::Handle,
+    pub reports: report::Handle,
     // TODO(aspen): Make nicer
-    pub capacitance: capacitance::CapacitanceSensor<'static>,
+    pub capacitance: &'static sensor::Shared<capacitance::CapacitanceSensor<'static>>,
 }
 
 define_dispatch! {
@@ -62,6 +67,8 @@ define_dispatch! {
         | FinishInstall        | async    | finish_install     |
         | UninstallStack       | async    | uninstall_stack    |
         | ReadSensorValue      | async    | read_sensor        |
+        | StartCollecting      | async    | start_collecting   |
+        | StopCollecting       | async    | stop_collecting    |
     };
     topics_in: {
         list: TOPICS_IN_LIST;
@@ -76,10 +83,36 @@ define_dispatch! {
 
 pub type Server = server::Server<usb::Tx, usb::Rx, WireRxBuf, Dispatcher>;
 
-pub fn server(spawner: Spawner, link: usb::Link, context: Context) -> Server {
+/// The server that answers the host, and the way to tell the host something
+/// it has not asked.
+pub fn server(spawner: Spawner, link: usb::Link, context: Context) -> (Server, Publisher) {
     let dispatcher = Dispatcher::new(context, spawner.into());
     let key_len = dispatcher.min_key_len();
-    Server::new(link.tx, link.rx, link.rx_buf, dispatcher, key_len)
+    let server = Server::new(link.tx, link.rx, link.rx_buf, dispatcher, key_len);
+    let publisher = Publisher {
+        sender: server.sender(),
+        sequence: 0,
+    };
+    (server, publisher)
+}
+
+/// Sends the host the topics in the `protocol` crate.
+pub struct Publisher {
+    sender: server::Sender<usb::Tx>,
+    sequence: u16,
+}
+
+impl Publisher {
+    /// Pass a report on to the host. Nothing tells whether a host is there
+    /// to take it: one that is not misses it.
+    pub async fn report_received(&mut self, report: &Report) {
+        self.sequence = self.sequence.wrapping_add(1);
+        let sequence = VarSeq::Seq2(self.sequence);
+        let sent = self.sender.publish::<ReportReceived>(sequence, report);
+        if sent.await.is_err() {
+            defmt::debug!("rpc: no host took a report");
+        }
+    }
 }
 
 fn board_info(_context: &mut Context, _header: VarHeader, (): ()) -> BoardInfo {
@@ -150,13 +183,22 @@ async fn uninstall_stack(context: &mut Context, _header: VarHeader, (): ()) -> C
     context.coprocessor.uninstall_stack().await
 }
 
+async fn start_collecting(context: &mut Context, _header: VarHeader, (): ()) -> NetworkResult {
+    context.reports.collect(true).await
+}
+
+async fn stop_collecting(context: &mut Context, _header: VarHeader, (): ()) -> NetworkResult {
+    context.reports.collect(false).await
+}
+
 async fn read_sensor(
     context: &mut Context,
     _header: VarHeader,
     req: SensorReadReq,
 ) -> SensorReadResult {
-    let mut read_cap = async |chan| -> SensorReadResult {
-        let value = context.capacitance.read_channel_capacitance(chan).await?;
+    let read_cap = async |chan| -> SensorReadResult {
+        let mut sensor = context.capacitance.lock().await;
+        let value = sensor.read_channel_capacitance(chan).await?;
         Ok(SensorValue { value })
     };
 

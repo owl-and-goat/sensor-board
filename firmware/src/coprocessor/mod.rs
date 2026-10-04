@@ -78,7 +78,7 @@ pub struct Builder<'d> {
 
 impl<'d> Builder<'d> {
     /// Panics if called a second time: there is one coprocessor.
-    pub fn init(self) -> (Task<'d>, Handle, thread::Handle) {
+    pub fn init(self) -> (Task<'d>, Handle, thread::Handle, thread::Datagrams) {
         static SHARED: StaticCell<Shared> = StaticCell::new();
         let shared: &'static Shared = SHARED.init(Shared {
             requests: request::Channel::new(),
@@ -86,7 +86,7 @@ impl<'d> Builder<'d> {
         });
 
         let (client, server) = shared.requests.split();
-        let (thread_handle, thread) = thread::init();
+        let (thread_handle, datagrams, thread) = thread::init();
         let task = Task {
             ipcc: self.ipcc,
             flash: self.flash,
@@ -98,7 +98,7 @@ impl<'d> Builder<'d> {
             requests: client,
             status: &shared.status,
         };
-        (task, handle, thread_handle)
+        (task, handle, thread_handle, datagrams)
     }
 }
 

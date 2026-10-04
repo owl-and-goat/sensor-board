@@ -42,6 +42,8 @@ unique id, and =--board= takes any unambiguous start of it.
   cargo run -- coprocessor install <image> --board 4d  # see "a new board" below
   cargo run -- coprocessor uninstall --board 4d        # remove the wireless stack
   cargo run -- bootloader --board 4d       # reboot into the rom bootloader
+  cargo run -- reports watch               # print the boards' sensor reports as they arrive
+  cargo run -- reports export              # serve them to prometheus
 #+end_src
 
 =network init= puts every attached board on one network, each joining in
@@ -56,6 +58,28 @@ attached boards to it. the saved file holds the network key.
 the host makes the dataset; a board is only ever told to join one. a board
 keeps its dataset in flash and rejoins at every power-up, until =network
 leave=.
+
+** sensor reports
+
+every board sends its readings to all the boards on its network every ten
+seconds. =reports watch= and =reports export= take them in through one board,
+which has to stay attached: it passes on what reaches it, its own reports
+among them, for as long as the command runs. if that board goes away
+(unplugged, reflashed) the command waits for it. any board will do, and
+every board needs a firmware that sends reports in the same layout; one that
+does not is not heard.
+
+=reports export= serves the latest readings at
+=http://127.0.0.1:9469/metrics= (=--listen= names another address), with how
+many reports came from each board and how many were lost on the way. for
+prometheus:
+
+#+begin_src yaml
+  scrape_configs:
+    - job_name: sensor-board
+      static_configs:
+        - targets: ["127.0.0.1:9469"]
+#+end_src
 
 * getting into the bootloader
 

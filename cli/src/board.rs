@@ -6,15 +6,16 @@ use anyhow::{Context, Result, anyhow, bail};
 use postcard_rpc::{
     Endpoint,
     header::VarSeqKind,
-    host_client::{HostClient, HostErr},
+    host_client::{HostClient, HostErr, MultiSubscription},
     standard_icd::{ERROR_PATH, WireError},
 };
 use protocol::{
     BeginInstall, BoardInfo, CoprocessorResult, CoprocessorStatus, Dataset, EnterBootloader,
     FinishInstall, GetBoardInfo, GetCoprocessorStatus, GetNetworkDataset, GetNetworkNeighbors,
     GetNetworkRouters, GetNetworkStatus, ImageChunk, ImageSize, JoinNetwork, LeaveNetwork,
-    NeighborTable, NetworkError, NetworkStatus, ReadSensorValue, RouterTable, Sensor,
-    SensorReadReq, SensorReadResult, USB_PID, USB_VID, UninstallStack, WriteInstall,
+    NeighborTable, NetworkError, NetworkStatus, ReadSensorValue, Report, ReportReceived,
+    RouterTable, Sensor, SensorReadReq, SensorReadResult, StartCollecting, StopCollecting, USB_PID,
+    USB_VID, UninstallStack, WriteInstall,
 };
 
 /// How long a board gets to answer. The slowest it can be is a join or leave
@@ -132,6 +133,25 @@ impl Board {
     /// message to it.
     pub async fn routers(&self) -> Result<RouterTable> {
         let result = self.call::<GetNetworkRouters>(&()).await?;
+        self.network_result(result)
+    }
+
+    /// The reports the board passes on from now on. It passes on none until
+    /// it is told to collect them.
+    pub async fn reports(&self) -> Result<MultiSubscription<Report>> {
+        let subscription = self.client.subscribe_multi::<ReportReceived>(64).await;
+        subscription.map_err(|_| anyhow!("board {} is gone", self.serial))
+    }
+
+    /// Have the board take in the reports that boards on its network send,
+    /// its own among them, and pass them on.
+    pub async fn start_collecting(&self) -> Result<()> {
+        let result = self.call::<StartCollecting>(&()).await?;
+        self.network_result(result)
+    }
+
+    pub async fn stop_collecting(&self) -> Result<()> {
+        let result = self.call::<StopCollecting>(&()).await?;
         self.network_result(result)
     }
 

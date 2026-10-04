@@ -1,11 +1,17 @@
 //! Thread networking, on the OpenThread stack that runs on CPU2.
 //!
-//! [`init`] makes the two ends of it. The [`Service`] is the only thing that
+//! [`init`] makes the ends of it. The [`Service`] is the only thing that
 //! talks to that stack, and it runs inside the coprocessor task. The rest of
-//! the firmware goes through the [`Handle`]: a request is handed over and its
-//! outcome awaited for a bounded time, and the status is whatever was last
-//! published. A CPU2 that has stopped answering therefore costs a caller a
-//! timeout, not its life, and no call into CPU2 is ever abandoned halfway.
+//! the firmware goes through the [`Handle`], for the network itself, and
+//! through [`Datagrams`], for what is sent over it: a request is handed over
+//! and its outcome awaited for a bounded time, and the status is whatever was
+//! last published. A CPU2 that has stopped answering therefore costs a caller
+//! a timeout, not its life, and no call into CPU2 is ever abandoned halfway.
+//!
+//! The service does one thing at a time: it answers a request, or it takes a
+//! notification from the stack, and a notification is acknowledged only when
+//! it has been dealt with. That is the order ST's own code keeps, and what
+//! receiving needs: a datagram is CPU2's to take back at the acknowledgement.
 //!
 //! The only memory CPU2 is ever pointed at is `'static` and set aside for it
 //! in [`init`] (see the buffers in `ot.rs`), so that it has nothing of anyone
@@ -15,11 +21,12 @@
 //! entry at a time.
 
 use core::cell::Cell;
+use core::net::Ipv6Addr;
 
 use defmt::info;
 use embassy_futures::{
-    join::join3,
-    select::{Either, Either3, select, select3},
+    join::join,
+    select::{Either, Either4, select, select4},
 };
 use embassy_stm32::flash::{Blocking, Flash};
 use embassy_stm32_wpan::{
@@ -31,7 +38,7 @@ use embassy_stm32_wpan::{
 };
 use embassy_sync::{
     blocking_mutex::{Mutex, raw::ThreadModeRawMutex},
-    signal::Signal,
+    channel::{self, Channel},
 };
 use embassy_time::Duration;
 use protocol::{
@@ -49,6 +56,19 @@ mod ffi;
 mod ot;
 
 use ot::OpenThread as _;
+pub use ot::{Datagram, MAX_DATAGRAM_LEN};
+
+/// Where a datagram to every board goes: all the devices of the network,
+/// whatever addresses they have and however many hops away they are.
+const ALL_BOARDS: Ipv6Addr = Ipv6Addr::new(0xff03, 0, 0, 0, 0, 0, 0, 1);
+
+/// The UDP port that boards send each other datagrams on. It is one of the
+/// sixteen that 6LoWPAN writes in four bits.
+const DATAGRAM_PORT: u16 = 61620;
+
+/// How many datagrams that have arrived can wait to be taken. One more than
+/// that is dropped.
+const RECEIVED_DEPTH: usize = 4;
 
 /// What the [`Handle`] can ask for that changes the network the board is on.
 enum Request {
@@ -60,6 +80,13 @@ enum Request {
 /// Each has an answer of its own type, and so a channel of its own.
 struct NeighborsRequest;
 struct RoutersRequest;
+
+/// What [`Datagrams`] can ask for.
+enum DatagramRequest {
+    /// Start taking in what boards send to all of them, or stop.
+    Listen(bool),
+    Broadcast(Datagram),
+}
 
 /// Where the board stands with its network, as last published.
 struct Status(Mutex<ThreadModeRawMutex, Cell<NetworkStatus>>);
@@ -79,11 +106,13 @@ impl Status {
 /// so for a table) and at most one flash page, done in well under a second.
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(5);
 
-/// What the two ends have between them, and what CPU2 gets pointed at.
+/// What the ends have between them, and what CPU2 gets pointed at.
 struct Shared {
     requests: request::Channel<Request, NetworkResult>,
     neighbor_requests: request::Channel<NeighborsRequest, NeighborsResult>,
     router_requests: request::Channel<RoutersRequest, RoutersResult>,
+    datagram_requests: request::Channel<DatagramRequest, NetworkResult>,
+    received: Channel<ThreadModeRawMutex, Datagram, RECEIVED_DEPTH>,
     status: Status,
     buffers: Buffers,
 }
@@ -94,44 +123,89 @@ struct Buffers {
     active_dataset: ot::DatasetBuffer,
     next_neighbor: ot::NeighborBuffer,
     next_hop: ot::NextHopBuffer,
+    udp: ot::UdpBuffer,
 }
 
-/// Make the two ends of Thread: the handle for the rest of the firmware, and
-/// the service for the coprocessor task to run. Panics if called a second
-/// time: the firmware has one of each.
-pub fn init() -> (Handle, Service) {
+/// Make the ends of Thread: the handle and the datagrams for the rest of the
+/// firmware, and the service for the coprocessor task to run. Panics if
+/// called a second time: the firmware has one of each.
+pub fn init() -> (Handle, Datagrams, Service) {
     static SHARED: StaticCell<Shared> = StaticCell::new();
     let shared: &'static Shared = SHARED.init(Shared {
         requests: request::Channel::new(),
         neighbor_requests: request::Channel::new(),
         router_requests: request::Channel::new(),
+        datagram_requests: request::Channel::new(),
+        received: Channel::new(),
         status: Status(Mutex::new(Cell::new(NetworkStatus::Starting))),
         buffers: Buffers {
             active_dataset: ot::DatasetBuffer::new(),
             next_neighbor: ot::NeighborBuffer::new(),
             next_hop: ot::NextHopBuffer::new(),
+            udp: ot::UdpBuffer::new(),
         },
     });
 
     let (client, server) = shared.requests.split();
     let (neighbor_client, neighbor_server) = shared.neighbor_requests.split();
     let (router_client, router_server) = shared.router_requests.split();
+    let (datagram_client, datagram_server) = shared.datagram_requests.split();
     let handle = Handle {
         requests: client,
         neighbor_requests: neighbor_client,
         router_requests: router_client,
         status: &shared.status,
     };
+    let datagrams = Datagrams {
+        requests: datagram_client,
+        received: shared.received.receiver(),
+    };
     let service = Service {
         requests: Requests {
             changes: server,
             neighbors: neighbor_server,
             routers: router_server,
+            datagrams: datagram_server,
         },
+        received: shared.received.sender(),
         status: &shared.status,
         buffers: &shared.buffers,
     };
-    (handle, service)
+    (handle, datagrams, service)
+}
+
+/// What boards say to each other over Thread: datagrams that go to every
+/// board on the network, and those that arrive.
+pub struct Datagrams {
+    requests: request::Client<DatagramRequest, NetworkResult>,
+    received: channel::Receiver<'static, ThreadModeRawMutex, Datagram, RECEIVED_DEPTH>,
+}
+
+impl Datagrams {
+    /// Send `datagram` to every board on the network. Nothing tells whether
+    /// any of them got it.
+    pub async fn broadcast(&mut self, datagram: Datagram) -> NetworkResult {
+        self.request(DatagramRequest::Broadcast(datagram)).await
+    }
+
+    /// Start taking in what boards broadcast, this one among them, or stop.
+    /// A board that is not listening is not troubled by any of it.
+    pub async fn listen(&mut self, on: bool) -> NetworkResult {
+        self.request(DatagramRequest::Listen(on)).await
+    }
+
+    /// The next datagram that has arrived. None does unless the board is
+    /// listening.
+    pub async fn receive(&mut self) -> Datagram {
+        self.received.receive().await
+    }
+
+    async fn request(&mut self, request: DatagramRequest) -> NetworkResult {
+        self.requests
+            .ask(request, REQUEST_TIMEOUT)
+            .await
+            .unwrap_or(Err(NetworkError::Unresponsive))
+    }
 }
 
 /// How the rest of the firmware reaches Thread.
@@ -206,12 +280,13 @@ pub struct Thread<'d> {
     pub flash: Flash<'d, Blocking>,
 }
 
-/// The serving ends of what the [`Handle`] asks through.
+/// The serving ends of what the [`Handle`] and [`Datagrams`] ask through.
 #[derive(Clone, Copy)]
 struct Requests {
     changes: request::Server<Request, NetworkResult>,
     neighbors: request::Server<NeighborsRequest, NeighborsResult>,
     routers: request::Server<RoutersRequest, RoutersResult>,
+    datagrams: request::Server<DatagramRequest, NetworkResult>,
 }
 
 /// A request that has been taken, and is owed an answer.
@@ -219,19 +294,22 @@ enum Asked {
     Change(request::Pending, Request),
     Neighbors(request::Pending),
     Routers(request::Pending),
+    Datagram(request::Pending, DatagramRequest),
 }
 
 impl Requests {
     async fn receive(&self) -> Asked {
-        let next = select3(
+        let next = select4(
             self.changes.receive(),
             self.neighbors.receive(),
             self.routers.receive(),
+            self.datagrams.receive(),
         );
         match next.await {
-            Either3::First((pending, request)) => Asked::Change(pending, request),
-            Either3::Second((pending, NeighborsRequest)) => Asked::Neighbors(pending),
-            Either3::Third((pending, RoutersRequest)) => Asked::Routers(pending),
+            Either4::First((pending, request)) => Asked::Change(pending, request),
+            Either4::Second((pending, NeighborsRequest)) => Asked::Neighbors(pending),
+            Either4::Third((pending, RoutersRequest)) => Asked::Routers(pending),
+            Either4::Fourth((pending, request)) => Asked::Datagram(pending, request),
         }
     }
 
@@ -241,13 +319,15 @@ impl Requests {
             Asked::Change(pending, _) => self.changes.answer(pending, Err(error)),
             Asked::Neighbors(pending) => self.neighbors.answer(pending, Err(error)),
             Asked::Routers(pending) => self.routers.answer(pending, Err(error)),
+            Asked::Datagram(pending, _) => self.datagrams.answer(pending, Err(error)),
         }
     }
 }
 
-/// The end of Thread that answers the [`Handle`].
+/// The end of Thread that answers the [`Handle`] and [`Datagrams`].
 pub struct Service {
     requests: Requests,
+    received: channel::Sender<'static, ThreadModeRawMutex, Datagram, RECEIVED_DEPTH>,
     status: &'static Status,
     buffers: &'static Buffers,
 }
@@ -263,30 +343,23 @@ impl Service {
             flash,
         } = thread;
 
-        // Raised when the stack reports a change (of role, for one), so that
-        // a fresh status gets published.
-        let state_changed = Signal::new();
         let network = Network {
             ot,
+            notif_rx,
             sys,
             flash,
             requests: self.requests,
+            received: self.received,
             status: self.status,
             buffers: self.buffers,
-            state_changed: &state_changed,
+            listening: false,
         };
 
-        // The stack stalls unless its notifications and its CLI output are
-        // acknowledged. (The CLI itself is on CPU1 in this stack version and
-        // nothing uses it, but starting the stack never finishes with its
-        // channel left unanswered.)
-        join3(
-            acknowledge_notifications(notif_rx, &state_changed),
-            drain_cli(cli_rx),
-            network.run(),
-        )
-        .await
-        .0
+        // The stack stalls unless its CLI output is acknowledged. (The CLI
+        // itself is on CPU1 in this stack version and nothing uses it, but
+        // starting the stack never finishes with its channel left
+        // unanswered.)
+        join(drain_cli(cli_rx), network.run()).await.0
     }
 
     /// Stand in for Thread on a board where thread init has failed. Responds with an Unavailable
@@ -304,19 +377,6 @@ async fn unavailable(requests: Requests, status: &Status, error: NetworkError) -
     }
 }
 
-async fn acknowledge_notifications(
-    mut notif_rx: ThreadNotifRx<'_>,
-    state_changed: &Signal<ThreadModeRawMutex, ()>,
-) -> ! {
-    loop {
-        let notification = notif_rx.receive().await;
-        defmt::trace!("cpu2: notification {}", notification.id);
-        if notification.id == ffi::MsgId_M0toM4_Enum_t::MSG_M0TOM4_NOTIFY_STATE_CHANGE as u32 {
-            state_changed.signal(());
-        }
-    }
-}
-
 async fn drain_cli(mut cli_rx: ThreadCliRx<'_>) -> ! {
     let mut output = [0; 64];
     loop {
@@ -327,12 +387,15 @@ async fn drain_cli(mut cli_rx: ThreadCliRx<'_>) -> ! {
 
 struct Network<'d> {
     ot: ThreadOt<'d>,
+    notif_rx: ThreadNotifRx<'d>,
     sys: Sys<'d>,
     flash: Flash<'d, Blocking>,
     requests: Requests,
+    received: channel::Sender<'static, ThreadModeRawMutex, Datagram, RECEIVED_DEPTH>,
     status: &'static Status,
     buffers: &'static Buffers,
-    state_changed: &'d Signal<ThreadModeRawMutex, ()>,
+    /// Whether the socket is bound to the datagram port.
+    listening: bool,
 }
 
 impl Network<'_> {
@@ -347,34 +410,54 @@ impl Network<'_> {
         {
             defmt::warn!("thread: could not rejoin the stored network: {}", e);
         }
+        self.publish_status().await;
 
         loop {
-            let status = self.status().await;
-            self.status.publish(status);
+            let notification =
+                ot::notification(&mut self.notif_rx, &mut self.ot, &self.buffers.udp);
+            match select(self.requests.receive(), notification).await {
+                Either::First(asked) => self.answer(asked).await,
+                Either::Second(ot::Notification::StateChanged) => self.publish_status().await,
+                Either::Second(ot::Notification::UdpReceived(datagram)) => {
+                    if self.received.try_send(datagram).is_err() {
+                        defmt::warn!("thread: nothing is taking datagrams; dropped one");
+                    }
+                }
+                Either::Second(ot::Notification::Other(id)) => {
+                    defmt::trace!("cpu2: notification {}", id);
+                }
+            }
+        }
+    }
 
-            match select(self.requests.receive(), self.state_changed.wait()).await {
-                Either::First(Asked::Change(pending, request)) => {
-                    let outcome = match request {
-                        Request::Join(dataset) => self.join(&dataset).await,
-                        Request::Leave => self.leave().await,
-                    };
-                    // The status is published before the outcome, so that
-                    // whoever asked never reads a status older than the
-                    // answer.
-                    let status = self.status().await;
-                    self.status.publish(status);
-                    self.requests.changes.answer(pending, outcome);
-                }
-                Either::First(Asked::Neighbors(pending)) => {
-                    let neighbors = self.neighbors().await;
-                    self.requests.neighbors.answer(pending, neighbors);
-                }
-                Either::First(Asked::Routers(pending)) => {
-                    let routers = self.routers().await;
-                    self.requests.routers.answer(pending, routers);
-                }
-                // The status at the top of the loop is all there is to do.
-                Either::Second(()) => {}
+    async fn answer(&mut self, asked: Asked) {
+        match asked {
+            Asked::Change(pending, request) => {
+                let outcome = match request {
+                    Request::Join(dataset) => self.join(&dataset).await,
+                    Request::Leave => self.leave().await,
+                };
+                // The status is published before the outcome, so that whoever
+                // asked never reads a status older than the answer.
+                self.publish_status().await;
+                self.requests.changes.answer(pending, outcome);
+            }
+            Asked::Neighbors(pending) => {
+                let neighbors = self.neighbors().await;
+                self.requests.neighbors.answer(pending, neighbors);
+            }
+            Asked::Routers(pending) => {
+                let routers = self.routers().await;
+                self.requests.routers.answer(pending, routers);
+            }
+            Asked::Datagram(pending, request) => {
+                let outcome = match request {
+                    DatagramRequest::Listen(on) => self.listen(on).await,
+                    DatagramRequest::Broadcast(datagram) => self.broadcast(&datagram).await,
+                };
+                self.requests
+                    .datagrams
+                    .answer(pending, outcome.map_err(NetworkError::from));
             }
         }
     }
@@ -387,7 +470,36 @@ impl Network<'_> {
         }
         self.ot.instance_init_single().await;
         self.ot.set_state_changed_callback().await?;
+        self.ot.udp_open(&self.buffers.udp).await?;
         Ok(())
+    }
+
+    /// Have the socket take in what is sent to the datagram port, or not.
+    async fn listen(&mut self, on: bool) -> ot::Result<()> {
+        if on == self.listening {
+            return Ok(());
+        }
+        // A socket cannot be taken off a port again, so either way it is a
+        // fresh one.
+        self.ot.udp_close(&self.buffers.udp).await?;
+        self.ot.udp_open(&self.buffers.udp).await?;
+        self.listening = false;
+        if on {
+            self.ot.udp_bind(&self.buffers.udp, DATAGRAM_PORT).await?;
+            self.listening = true;
+        }
+        Ok(())
+    }
+
+    async fn broadcast(&mut self, datagram: &Datagram) -> ot::Result<()> {
+        self.ot
+            .udp_send(&self.buffers.udp, ALL_BOARDS, DATAGRAM_PORT, datagram)
+            .await
+    }
+
+    async fn publish_status(&mut self) {
+        let status = self.status().await;
+        self.status.publish(status);
     }
 
     async fn join(&mut self, dataset: &Dataset) -> NetworkResult {

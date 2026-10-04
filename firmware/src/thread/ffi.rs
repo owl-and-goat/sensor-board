@@ -228,6 +228,11 @@ impl otError {
 #[doc = " Represents error codes used throughout OpenThread."]
 #[derive(Debug, Copy, Clone, Hash, PartialEq, Eq)]
 pub struct otError(pub core::ffi::c_uchar);
+#[repr(C)]
+#[derive(Debug, Copy, Clone)]
+pub struct otMessage {
+    _unused: [u8; 0],
+}
 #[doc = " Represents the IEEE 802.15.4 PAN ID."]
 pub type otPanId = u16;
 #[doc = " @struct otExtAddress\n\n Represents the IEEE 802.15.4 Extended Address."]
@@ -288,6 +293,192 @@ pub union otIp6Address__bindgen_ty_1 {
     pub m32: [u32; 4usize],
     #[doc = "< IPv6 address components"]
     pub mComponents: otIp6AddressComponents,
+}
+#[doc = " Represents an IPv6 socket address."]
+#[repr(C)]
+#[derive(Copy, Clone)]
+pub struct otSockAddr {
+    #[doc = "< An IPv6 address."]
+    pub mAddress: otIp6Address,
+    #[doc = "< A transport-layer port."]
+    pub mPort: u16,
+}
+#[doc = " Represents the local and peer IPv6 socket addresses."]
+#[repr(C)]
+#[derive(Copy, Clone)]
+pub struct otMessageInfo {
+    #[doc = "< The local IPv6 address."]
+    pub mSockAddr: otIp6Address,
+    #[doc = "< The peer IPv6 address."]
+    pub mPeerAddr: otIp6Address,
+    #[doc = "< The local transport-layer port."]
+    pub mSockPort: u16,
+    #[doc = "< The peer transport-layer port."]
+    pub mPeerPort: u16,
+    #[doc = "< The IPv6 Hop Limit value. Only applies if `mAllowZeroHopLimit` is FALSE.\n< If `0`, IPv6 Hop Limit is default value `OPENTHREAD_CONFIG_IP6_HOP_LIMIT_DEFAULT`.\n< Otherwise, specifies the IPv6 Hop Limit."]
+    pub mHopLimit: u8,
+    pub _bitfield_align_1: [u8; 0],
+    pub _bitfield_1: __BindgenBitfieldUnit<[u8; 1usize]>,
+}
+impl otMessageInfo {
+    #[inline]
+    pub fn mEcn(&self) -> u8 {
+        unsafe { ::core::mem::transmute(self._bitfield_1.get(0usize, 2u8) as u8) }
+    }
+    #[inline]
+    pub fn set_mEcn(&mut self, val: u8) {
+        unsafe {
+            let val: u8 = ::core::mem::transmute(val);
+            self._bitfield_1.set(0usize, 2u8, val as u64)
+        }
+    }
+    #[inline]
+    pub unsafe fn mEcn_raw(this: *const Self) -> u8 {
+        unsafe {
+            ::core::mem::transmute(<__BindgenBitfieldUnit<[u8; 1usize]>>::raw_get(
+                ::core::ptr::addr_of!((*this)._bitfield_1),
+                0usize,
+                2u8,
+            ) as u8)
+        }
+    }
+    #[inline]
+    pub unsafe fn set_mEcn_raw(this: *mut Self, val: u8) {
+        unsafe {
+            let val: u8 = ::core::mem::transmute(val);
+            <__BindgenBitfieldUnit<[u8; 1usize]>>::raw_set(
+                ::core::ptr::addr_of_mut!((*this)._bitfield_1),
+                0usize,
+                2u8,
+                val as u64,
+            )
+        }
+    }
+    #[inline]
+    pub fn mIsHostInterface(&self) -> bool {
+        unsafe { ::core::mem::transmute(self._bitfield_1.get(2usize, 1u8) as u8) }
+    }
+    #[inline]
+    pub fn set_mIsHostInterface(&mut self, val: bool) {
+        unsafe {
+            let val: u8 = ::core::mem::transmute(val);
+            self._bitfield_1.set(2usize, 1u8, val as u64)
+        }
+    }
+    #[inline]
+    pub unsafe fn mIsHostInterface_raw(this: *const Self) -> bool {
+        unsafe {
+            ::core::mem::transmute(<__BindgenBitfieldUnit<[u8; 1usize]>>::raw_get(
+                ::core::ptr::addr_of!((*this)._bitfield_1),
+                2usize,
+                1u8,
+            ) as u8)
+        }
+    }
+    #[inline]
+    pub unsafe fn set_mIsHostInterface_raw(this: *mut Self, val: bool) {
+        unsafe {
+            let val: u8 = ::core::mem::transmute(val);
+            <__BindgenBitfieldUnit<[u8; 1usize]>>::raw_set(
+                ::core::ptr::addr_of_mut!((*this)._bitfield_1),
+                2usize,
+                1u8,
+                val as u64,
+            )
+        }
+    }
+    #[inline]
+    pub fn mAllowZeroHopLimit(&self) -> bool {
+        unsafe { ::core::mem::transmute(self._bitfield_1.get(3usize, 1u8) as u8) }
+    }
+    #[inline]
+    pub fn set_mAllowZeroHopLimit(&mut self, val: bool) {
+        unsafe {
+            let val: u8 = ::core::mem::transmute(val);
+            self._bitfield_1.set(3usize, 1u8, val as u64)
+        }
+    }
+    #[inline]
+    pub unsafe fn mAllowZeroHopLimit_raw(this: *const Self) -> bool {
+        unsafe {
+            ::core::mem::transmute(<__BindgenBitfieldUnit<[u8; 1usize]>>::raw_get(
+                ::core::ptr::addr_of!((*this)._bitfield_1),
+                3usize,
+                1u8,
+            ) as u8)
+        }
+    }
+    #[inline]
+    pub unsafe fn set_mAllowZeroHopLimit_raw(this: *mut Self, val: bool) {
+        unsafe {
+            let val: u8 = ::core::mem::transmute(val);
+            <__BindgenBitfieldUnit<[u8; 1usize]>>::raw_set(
+                ::core::ptr::addr_of_mut!((*this)._bitfield_1),
+                3usize,
+                1u8,
+                val as u64,
+            )
+        }
+    }
+    #[inline]
+    pub fn mMulticastLoop(&self) -> bool {
+        unsafe { ::core::mem::transmute(self._bitfield_1.get(4usize, 1u8) as u8) }
+    }
+    #[inline]
+    pub fn set_mMulticastLoop(&mut self, val: bool) {
+        unsafe {
+            let val: u8 = ::core::mem::transmute(val);
+            self._bitfield_1.set(4usize, 1u8, val as u64)
+        }
+    }
+    #[inline]
+    pub unsafe fn mMulticastLoop_raw(this: *const Self) -> bool {
+        unsafe {
+            ::core::mem::transmute(<__BindgenBitfieldUnit<[u8; 1usize]>>::raw_get(
+                ::core::ptr::addr_of!((*this)._bitfield_1),
+                4usize,
+                1u8,
+            ) as u8)
+        }
+    }
+    #[inline]
+    pub unsafe fn set_mMulticastLoop_raw(this: *mut Self, val: bool) {
+        unsafe {
+            let val: u8 = ::core::mem::transmute(val);
+            <__BindgenBitfieldUnit<[u8; 1usize]>>::raw_set(
+                ::core::ptr::addr_of_mut!((*this)._bitfield_1),
+                4usize,
+                1u8,
+                val as u64,
+            )
+        }
+    }
+    #[inline]
+    pub fn new_bitfield_1(
+        mEcn: u8,
+        mIsHostInterface: bool,
+        mAllowZeroHopLimit: bool,
+        mMulticastLoop: bool,
+    ) -> __BindgenBitfieldUnit<[u8; 1usize]> {
+        let mut __bindgen_bitfield_unit: __BindgenBitfieldUnit<[u8; 1usize]> = Default::default();
+        __bindgen_bitfield_unit.set(0usize, 2u8, {
+            let mEcn: u8 = unsafe { ::core::mem::transmute(mEcn) };
+            mEcn as u64
+        });
+        __bindgen_bitfield_unit.set(2usize, 1u8, {
+            let mIsHostInterface: u8 = unsafe { ::core::mem::transmute(mIsHostInterface) };
+            mIsHostInterface as u64
+        });
+        __bindgen_bitfield_unit.set(3usize, 1u8, {
+            let mAllowZeroHopLimit: u8 = unsafe { ::core::mem::transmute(mAllowZeroHopLimit) };
+            mAllowZeroHopLimit as u64
+        });
+        __bindgen_bitfield_unit.set(4usize, 1u8, {
+            let mMulticastLoop: u8 = unsafe { ::core::mem::transmute(mMulticastLoop) };
+            mMulticastLoop as u64
+        });
+        __bindgen_bitfield_unit
+    }
 }
 #[doc = " @struct otNetworkKey\n\n Represents a Thread Network Key."]
 #[repr(C, packed)]
@@ -1202,6 +1393,47 @@ pub struct otPingSenderConfig {
     pub mAllowZeroHopLimit: bool,
     #[doc = "< Allow looping back pings to multicast address that device is subscribed to."]
     pub mMulticastLoop: bool,
+}
+#[doc = " This callback allows OpenThread to inform the application of a received UDP message."]
+pub type otUdpReceive = ::core::option::Option<
+    unsafe extern "C" fn(
+        aContext: *mut core::ffi::c_void,
+        aMessage: *mut otMessage,
+        aMessageInfo: *const otMessageInfo,
+    ),
+>;
+impl otNetifIdentifier {
+    #[doc = "< Unspecified network interface."]
+    pub const OT_NETIF_UNSPECIFIED: otNetifIdentifier = otNetifIdentifier(0);
+    #[doc = "< The host Thread interface - allow use of platform UDP."]
+    pub const OT_NETIF_THREAD_HOST: otNetifIdentifier = otNetifIdentifier(1);
+    #[doc = "< The internal Thread interface (within OpenThread) - do not use platform UDP."]
+    pub const OT_NETIF_THREAD_INTERNAL: otNetifIdentifier = otNetifIdentifier(2);
+    #[doc = "< The Backbone interface."]
+    pub const OT_NETIF_BACKBONE: otNetifIdentifier = otNetifIdentifier(3);
+}
+#[repr(transparent)]
+#[doc = " Defines the OpenThread network interface identifiers."]
+#[derive(Debug, Copy, Clone, Hash, PartialEq, Eq)]
+pub struct otNetifIdentifier(pub core::ffi::c_uchar);
+#[doc = " Represents a UDP socket."]
+#[repr(C)]
+#[derive(Copy, Clone)]
+pub struct otUdpSocket {
+    #[doc = "< The local IPv6 socket address."]
+    pub mSockName: otSockAddr,
+    #[doc = "< The peer IPv6 socket address."]
+    pub mPeerName: otSockAddr,
+    #[doc = "< A function pointer to the application callback."]
+    pub mHandler: otUdpReceive,
+    #[doc = "< A pointer to application-specific context."]
+    pub mContext: *mut core::ffi::c_void,
+    #[doc = "< A handle to platform's UDP."]
+    pub mHandle: *mut core::ffi::c_void,
+    #[doc = "< A pointer to the next UDP socket (internal use only)."]
+    pub mNext: *mut otUdpSocket,
+    #[doc = "< The network interface identifier."]
+    pub mNetifId: otNetifIdentifier,
 }
 pub mod MsgId_M4toM0_Enum_t {
     pub type Type = core::ffi::c_ushort;

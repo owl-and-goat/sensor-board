@@ -37,6 +37,7 @@ cat > "$work/wrapper.h" <<'HDR'
 #include <openthread/thread.h>
 #include <openthread/dataset.h>
 #include <openthread/ping_sender.h>
+#include <openthread/udp.h>
 #include "stm32wbxx_core_interface_def.h"
 HDR
 
@@ -58,6 +59,7 @@ $nix run nixpkgs#rust-bindgen -- "$work/wrapper.h" -o "$out" \
   --allowlist-type 'otError|otDeviceRole|otIp6Address|otExtAddress|otNeighborInfo|otNeighborInfoIterator' \
   --allowlist-type 'otOperationalDataset|otOperationalDatasetTlvs|otPingSender.*|otRouterInfo' \
   --allowlist-type 'otPanId|otExtendedPanId|otNetworkName|otMeshLocalPrefix|MsgId_.*' \
+  --allowlist-type 'otUdpSocket|otSockAddr|otMessageInfo|otNetifIdentifier' \
   -- -target thumbv7em-none-eabihf -fshort-enums -nostdinc \
      -isystem "$(clang -print-resource-dir)/include" \
      -isystem "$arm/arm-none-eabi/include" \

@@ -11,9 +11,9 @@ embassy-time = { version = "0.5.1", features = ["defmt", "defmt-timestamp-uptime
 embassy-usb = { version = "0.6.0", default-features = false, features = ["defmt"] }
 embassy-futures = "0.1.2"
 # Fork of embassy-stm32-wpan adding a Thread subsystem, CPU2 traces, and the
-# FUS commands needed to install coprocessor firmware. The branch keeps the
-# upstreamable work in its first commit and the "use released embassy crates
-# rather than path deps" change on top; drop that one when opening the PR.
+# FUS commands needed to install coprocessor firmware. All of the branch is
+# upstreamable but its "NOT FOR UPSTREAM" commit, which uses released embassy
+# crates rather than path deps; drop that one when opening the PR.
 # https://github.com/glittershark/embassy/tree/wb55-thread
 embassy-sync = { version = "0.8.0", features = ["defmt"] }
 
@@ -30,6 +30,7 @@ panic-probe = { version = "1.0.0", features = ["print-defmt"] }
 
 protocol = { path = "../protocol", features = ["defmt"] }
 static_cell = "2.1"
+heapless = "0.9"
 
 bitvec = { version = "1.1", default-features = false }
 
@@ -41,7 +42,7 @@ features = ["embassy-usb-0_6-server"]
 
 [dependencies.embassy-stm32-wpan]
 git = "https://github.com/glittershark/embassy.git"
-rev = "ea46134a5225e6d94f8290cc2f4d693e65899de2"
+rev = "ebbabe3b4c979d0c9815b663649c5b85c59dfd30"
 features = ["defmt", "stm32wb55cg", "wb55_thread"]
 
 [profile.release]

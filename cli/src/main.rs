@@ -3,8 +3,9 @@
 mod board;
 mod coprocessor;
 mod network;
+mod reports;
 
-use std::path::PathBuf;
+use std::{net::SocketAddr, path::PathBuf};
 
 use anyhow::{Context, Result, bail};
 use clap::{Args, Parser, Subcommand};
@@ -34,6 +35,25 @@ enum Command {
     Bootloader(Target),
     #[command(subcommand)]
     Sensor(SensorCommand),
+    /// Take in the sensor reports that boards send over their network, through a board that stays
+    /// attached
+    #[command(subcommand)]
+    Reports(ReportsCommand),
+}
+
+#[derive(Subcommand)]
+enum ReportsCommand {
+    /// Print the reports as they arrive
+    Watch(Target),
+    /// Serve the readings in the reports to Prometheus
+    Export {
+        /// The address to serve them at, under /metrics
+        #[arg(long, value_name = "ADDR", default_value = "127.0.0.1:9469")]
+        listen: SocketAddr,
+
+        #[command(flatten)]
+        target: Target,
+    },
 }
 
 #[derive(Subcommand)]
@@ -214,6 +234,12 @@ async fn main() -> Result<()> {
             board.enter_bootloader().await?;
             println!("Board {} is rebooting into its bootloader.", board.serial());
             Ok(())
+        }
+        Command::Reports(ReportsCommand::Watch(target)) => {
+            reports::watch(target.board.as_deref()).await
+        }
+        Command::Reports(ReportsCommand::Export { listen, target }) => {
+            reports::export(target.board.as_deref(), listen).await
         }
         Command::Sensor(SensorCommand::Read { sensor, target }) => {
             let board = target.board().await?;

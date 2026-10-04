@@ -6,6 +6,7 @@ mod dfu;
 mod fault;
 mod i2c_device;
 mod persistent_config;
+mod report;
 mod request;
 mod rpc;
 mod sensor;
@@ -79,6 +80,11 @@ async fn bootloader(task: dfu::Task) -> ! {
 }
 
 #[embassy_executor::task]
+async fn reports(task: report::Task, publisher: rpc::Publisher) -> ! {
+    task.run(publisher).await
+}
+
+#[embassy_executor::task]
 async fn watchdog(iwdg: Peri<'static, peripherals::IWDG>) -> ! {
     // 32 s because this chip pins the IWDG prescaler at /256 whatever is written, and that is the
     // period /256 expresses with the driver's reload maths (measurements in AGENTS.md).
@@ -119,7 +125,7 @@ async fn main(spawner: Spawner) {
     let (bootloader_task, bootloader_handle) = dfu::init();
     spawner.spawn(bootloader(bootloader_task).unwrap());
 
-    let (coprocessor_task, coprocessor_handle, thread_handle) = coprocessor::Builder {
+    let (coprocessor_task, coprocessor_handle, thread_handle, datagrams) = coprocessor::Builder {
         ipcc: p.IPCC,
         flash: p.FLASH,
     }
@@ -147,13 +153,23 @@ async fn main(spawner: Spawner) {
         Irqs,
         i2c::Config::default(),
     )));
-    let capacitance = CapacitanceSensor::new(p.PB4, i2c);
+    static CAPACITANCE: StaticCell<sensor::Shared<CapacitanceSensor<'static>>> = StaticCell::new();
+    let capacitance = &*CAPACITANCE.init(Mutex::new(CapacitanceSensor::new(p.PB4, i2c)));
+
+    let (report_task, report_handle) = report::Builder {
+        datagrams,
+        capacitance,
+    }
+    .init();
 
     let context = rpc::Context {
         thread: thread_handle,
         coprocessor: coprocessor_handle,
         bootloader: bootloader_handle,
+        reports: report_handle,
         capacitance,
     };
-    spawner.spawn(rpc(rpc::server(spawner, link, context)).unwrap());
+    let (server, publisher) = rpc::server(spawner, link, context);
+    spawner.spawn(rpc(server).unwrap());
+    spawner.spawn(reports(report_task, publisher).unwrap());
 }

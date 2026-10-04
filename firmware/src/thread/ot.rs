@@ -4,15 +4,17 @@
 
 use core::cell::UnsafeCell;
 use core::mem::MaybeUninit;
-use core::ptr::{read_volatile, write_volatile};
+use core::net::Ipv6Addr;
+use core::ptr::{copy_nonoverlapping, read_volatile, write_volatile};
 
-use embassy_stm32_wpan::sub::thread::ThreadOt;
+use embassy_futures::block_on;
+use embassy_stm32_wpan::sub::thread::{OtNotification, ThreadNotifRx, ThreadOt};
 use protocol::{Dataset, ExtAddress, Neighbor, NeighborKind, OtError, Role, Route, RouterId};
 
 // TODO: move ffi module to a submodule of this one?
 use super::ffi;
 
-// use ffi::MsgId_M0toM4_Enum_t as ffi_notification;
+use ffi::MsgId_M0toM4_Enum_t as ffi_notification;
 use ffi::MsgId_M4toM0_Enum_t as ffi_command;
 
 /// `Ok(())` is `OT_ERROR_NONE`.
@@ -137,6 +139,133 @@ impl NextHopBuffer {
             next_hop_rloc16: UnsafeCell::new(0),
             path_cost: UnsafeCell::new(0),
         }
+    }
+}
+
+/// CPU1 memory for the UDP socket: what the `otUdp` and `otMessage` calls
+/// point CPU2 at. The socket itself CPU2 links into its list of sockets and
+/// goes on using, from `otUdpOpen` until `otUdpClose`, so this buffer more
+/// than any has to be `&'static`. The rest CPU2 reads or writes within one
+/// call.
+pub struct UdpBuffer {
+    socket: UnsafeCell<MaybeUninit<ffi::otUdpSocket>>,
+    name: UnsafeCell<MaybeUninit<ffi::otSockAddr>>,
+    peer: UnsafeCell<MaybeUninit<ffi::otMessageInfo>>,
+    payload: UnsafeCell<[u8; MAX_DATAGRAM_LEN]>,
+}
+
+impl UdpBuffer {
+    pub const fn new() -> Self {
+        UdpBuffer {
+            socket: UnsafeCell::new(MaybeUninit::zeroed()),
+            name: UnsafeCell::new(MaybeUninit::zeroed()),
+            peer: UnsafeCell::new(MaybeUninit::zeroed()),
+            payload: UnsafeCell::new([0; MAX_DATAGRAM_LEN]),
+        }
+    }
+}
+
+/// The longest payload the UDP socket sends or takes in.
+pub const MAX_DATAGRAM_LEN: usize = 256;
+
+/// The payload of a UDP datagram.
+pub type Datagram = heapless::Vec<u8, MAX_DATAGRAM_LEN>;
+
+fn ip6_address(address: Ipv6Addr) -> ffi::otIp6Address {
+    ffi::otIp6Address {
+        mFields: ffi::otIp6Address__bindgen_ty_1 {
+            m8: address.octets(),
+        },
+    }
+}
+
+/// A callback from the stack, as far as the firmware has a use for it.
+pub enum Notification {
+    /// The device's role, one of its addresses or the like has changed.
+    StateChanged,
+    /// A datagram has arrived on the UDP socket: its payload.
+    UdpReceived(Datagram),
+    /// Anything else, by its ID, and a datagram that was too long to take.
+    Other(u32),
+}
+
+/// Wait for the stack's next callback.
+///
+/// CPU2 is inside that callback until its notification is acknowledged, and
+/// the message a datagram arrives in is only there that long. So the payload
+/// is read out before the acknowledgement, which is why this takes `ot`, and
+/// with calls that are blocked on, as nothing can be awaited at that point.
+/// CPU2 answers them in well under a millisecond.
+pub async fn notification(
+    notif_rx: &mut ThreadNotifRx<'_>,
+    ot: &mut ThreadOt<'_>,
+    buffer: &'static UdpBuffer,
+) -> Notification {
+    const STATE_CHANGE: u32 = ffi_notification::MSG_M0TOM4_NOTIFY_STATE_CHANGE as u32;
+    const UDP_RECEIVE: u32 = ffi_notification::MSG_M0TOM4_UDP_RECEIVE as u32;
+
+    let acknowledged_after = |raw: OtNotification| match raw.id {
+        STATE_CHANGE => Notification::StateChanged,
+        UDP_RECEIVE => {
+            // The arguments of the socket's receive callback: its context,
+            // the message, and the message's otMessageInfo.
+            let message = raw.data[1];
+            let datagram = unsafe {
+                // SAFETY: the notification that brought the message is not
+                // acknowledged until this closure returns.
+                block_on(udp_read(ot, buffer, message))
+            };
+            match datagram {
+                Some(datagram) => Notification::UdpReceived(datagram),
+                None => Notification::Other(raw.id),
+            }
+        }
+        other => Notification::Other(other),
+    };
+    notif_rx.receive_with(acknowledged_after).await
+}
+
+/// The payload of the datagram in `message`, a `const otMessage *`. `None`
+/// if it is longer than a [`Datagram`].
+///
+/// SAFETY: `message` has to be one that CPU2 still holds: the argument of a
+/// receive callback whose notification has not been acknowledged yet.
+async unsafe fn udp_read(
+    ot: &mut impl OpenThread,
+    buffer: &'static UdpBuffer,
+    message: u32,
+) -> Option<Datagram> {
+    let payload = buffer.payload.get().cast::<u8>();
+    unsafe {
+        // SAFETY: both expect a pointer to an otMessage. The message is the
+        // whole packet, and its offset is where the UDP payload starts.
+        let length = ot
+            .ffi_call(ffi_command::MSG_M4TOM0_OT_MESSAGE_GET_LENGTH, &[message])
+            .await as u16;
+        let offset = ot
+            .ffi_call(ffi_command::MSG_M4TOM0_OT_MESSAGE_GET_OFFSET, &[message])
+            .await as u16;
+        let len = usize::from(length.checked_sub(offset)?);
+        if len > MAX_DATAGRAM_LEN {
+            return None;
+        }
+
+        // SAFETY: expects the message, an offset into it, a pointer to write
+        // to and the number of bytes to write there at most, and answers
+        // with the number it wrote. The payload buffer has room for `len`,
+        // and CPU1 touches it only here and in `udp_send`, never through a
+        // reference and never while CPU2 has a call to answer.
+        let read = ot
+            .ffi_call(
+                ffi_command::MSG_M4TOM0_OT_MESSAGE_READ,
+                &[message, offset as u32, payload as u32, len as u32],
+            )
+            .await as usize;
+
+        let mut datagram = Datagram::new();
+        datagram.resize_default(read.min(len)).ok()?;
+        copy_nonoverlapping(payload, datagram.as_mut_ptr(), datagram.len());
+        Some(datagram)
     }
 }
 
@@ -371,6 +500,128 @@ pub unsafe trait OpenThread {
             (read_volatile(next_hop_out), read_volatile(path_cost_out))
         };
         route_from_raw(destination, next_hop, cost)
+    }
+
+    /// Open the UDP socket. It can send from then on.
+    async fn udp_open(&mut self, buffer: &'static UdpBuffer) -> Result<()> {
+        unsafe {
+            // SAFETY: expects a pointer to an otUdpSocket, which CPU2 fills
+            // in and keeps until the socket is closed, and the context of
+            // its receive callback, which nothing here has a use for. The
+            // callback is no argument: its calls arrive as notifications.
+            self.ffi_try(
+                ffi_command::MSG_M4TOM0_OT_UDP_OPEN,
+                &[buffer.socket.get() as u32, 0],
+            )
+            .await
+        }
+    }
+
+    async fn udp_close(&mut self, buffer: &'static UdpBuffer) -> Result<()> {
+        unsafe {
+            // SAFETY: expects a pointer to an open otUdpSocket.
+            self.ffi_try(
+                ffi_command::MSG_M4TOM0_OT_UDP_CLOSE,
+                &[buffer.socket.get() as u32],
+            )
+            .await
+        }
+    }
+
+    /// Have the open socket receive what is sent to `port`, on any address
+    /// of the device.
+    async fn udp_bind(&mut self, buffer: &'static UdpBuffer, port: u16) -> Result<()> {
+        let name = ffi::otSockAddr {
+            mAddress: ip6_address(Ipv6Addr::UNSPECIFIED),
+            mPort: port,
+        };
+        let name_in = buffer.name.get().cast::<ffi::otSockAddr>();
+        unsafe {
+            // SAFETY: this is the only place CPU1 touches the name in the
+            // buffer, never through a reference, and CPU2 only reads it.
+            write_volatile(name_in, name);
+            // SAFETY: expects pointers to an open otUdpSocket and to an
+            // otSockAddr, which it copies, and an otNetifIdentifier.
+            self.ffi_try(
+                ffi_command::MSG_M4TOM0_OT_UDP_BIND,
+                &[
+                    buffer.socket.get() as u32,
+                    name_in as u32,
+                    ffi::otNetifIdentifier::OT_NETIF_THREAD_HOST.0 as u32,
+                ],
+            )
+            .await
+        }
+    }
+
+    /// Send `payload` from the open socket to `port` at `address`. Of what
+    /// goes to a multicast address, a copy comes back to the device itself.
+    async fn udp_send(
+        &mut self,
+        buffer: &'static UdpBuffer,
+        address: Ipv6Addr,
+        port: u16,
+        payload: &Datagram,
+    ) -> Result<()> {
+        // SAFETY: the fields of an otMessageInfo are numbers, all of them
+        // valid as zero: the default source address, port and hop limit.
+        let mut peer: ffi::otMessageInfo = unsafe { MaybeUninit::zeroed().assume_init() };
+        peer.mPeerAddr = ip6_address(address);
+        peer.mPeerPort = port;
+        peer.set_mMulticastLoop(true);
+        let peer_in = buffer.peer.get().cast::<ffi::otMessageInfo>();
+        let payload_in = buffer.payload.get().cast::<u8>();
+
+        let message = unsafe {
+            // SAFETY: expects a pointer to an otMessageSettings, or null for
+            // the default ones. It answers with a pointer to a new
+            // otMessage, null if the stack has no buffer left for one.
+            self.ffi_call(ffi_command::MSG_M4TOM0_OT_UDP_NEW_MESSAGE, &[0])
+                .await
+        };
+        if message == 0 {
+            return Err(OtError::NoBufs);
+        }
+
+        let sent = unsafe {
+            // SAFETY: CPU1 touches the payload and the peer in the buffer
+            // only here and in `udp_read`, never through a reference and
+            // never while CPU2 has a call to answer. A `Datagram` is no
+            // longer than the payload buffer.
+            copy_nonoverlapping(payload.as_ptr(), payload_in, payload.len());
+            write_volatile(peer_in, peer);
+            // SAFETY: expects the message, a pointer to bytes that it copies
+            // onto the end of it, and how many of them there are.
+            let appended = self
+                .ffi_try(
+                    ffi_command::MSG_M4TOM0_OT_MESSAGE_APPEND,
+                    &[message, payload_in as u32, payload.len() as u32],
+                )
+                .await;
+            match appended {
+                // SAFETY: expects pointers to an open otUdpSocket, to the
+                // message, and to an otMessageInfo, which it copies.
+                Ok(()) => {
+                    self.ffi_try(
+                        ffi_command::MSG_M4TOM0_OT_UDP_SEND,
+                        &[buffer.socket.get() as u32, message, peer_in as u32],
+                    )
+                    .await
+                }
+                Err(e) => Err(e),
+            }
+        };
+        if sent.is_err() {
+            // The stack takes over a message that it accepts for sending.
+            // This one it did not.
+            unsafe {
+                // SAFETY: expects a pointer to an otMessage that is still
+                // the caller's.
+                self.ffi_call(ffi_command::MSG_M4TOM0_OT_MESSAGE_FREE, &[message])
+                    .await;
+            }
+        }
+        sent
     }
 
     /// Set the radio's transmit power, in dBm. The STM32WB55's radio covers

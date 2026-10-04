@@ -4,7 +4,7 @@
 
 use core::{fmt, str::FromStr};
 
-use postcard_rpc::{TopicDirection, endpoints, topics};
+use postcard_rpc::{Topic, TopicDirection, endpoints, topics};
 use postcard_schema::Schema;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
@@ -33,6 +33,8 @@ endpoints! {
     | FinishInstall        | ()            | CoprocessorResult | "coprocessor/install/finish" |
     | UninstallStack       | ()            | CoprocessorResult | "coprocessor/uninstall"      |
     | ReadSensorValue      | SensorReadReq | SensorReadResult  | "sensor/read"                |
+    | StartCollecting      | ()            | NetworkResult     | "reports/collect/start"      |
+    | StopCollecting       | ()            | NetworkResult     | "reports/collect/stop"       |
 }
 
 topics! {
@@ -45,8 +47,9 @@ topics! {
 topics! {
     list = TOPICS_OUT_LIST;
     direction = TopicDirection::ToClient;
-    | TopicTy | MessageTy | Path | Cfg |
-    | ------- | --------- | ---- | --- |
+    | TopicTy        | MessageTy | Path               | Cfg |
+    | -------        | --------- | ----               | --- |
+    | ReportReceived | Report    | "reports/received" |     |
 }
 
 /// The dataset of the network a board is configured for, which it rejoins at
@@ -574,6 +577,71 @@ pub enum SensorReadError {
 
 pub type SensorReadResult = Result<SensorValue, SensorReadError>;
 
+/// A board's identity: its chip's unique ID, which is also its USB serial
+/// number. Written the way that serial is, as upper-case hex.
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize, Schema,
+)]
+#[cfg_attr(feature = "defmt", derive(defmt::Format))]
+pub struct BoardId(pub [u8; 12]);
+
+impl fmt::Display for BoardId {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        self.0.iter().try_for_each(|b| write!(f, "{b:02X}"))
+    }
+}
+
+/// What a board says about itself. Every board sends one to all the others on
+/// its network at intervals. A board that has been told to collect
+/// ([`StartCollecting`]) passes those that reach it, its own among them, on to
+/// the host ([`ReportReceived`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Schema)]
+#[cfg_attr(feature = "defmt", derive(defmt::Format))]
+pub struct Report {
+    pub board: BoardId,
+    /// Counts up by one with each report, from 0 when the board starts:
+    /// whoever collects them can tell that one was lost, or that the board
+    /// has restarted.
+    pub sequence: u32,
+    pub readings: Readings,
+}
+
+/// The readings in a [`Report`]: one of every sensor that the firmware has a
+/// driver for.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Schema)]
+#[cfg_attr(feature = "defmt", derive(defmt::Format))]
+pub struct Readings {
+    /// The four channels of the capacitance sensor.
+    pub capacitance: [SensorReadResult; 4],
+}
+
+impl Report {
+    /// The most bytes a report may take up on its way between boards.
+    pub const MAX_LEN: usize = 256;
+
+    /// The report as boards send it to each other: the key of
+    /// [`ReportReceived`], which stands for the layout of this type, and then
+    /// the report in postcard's encoding. `None` if `buf` is too short.
+    pub fn encode<'a>(&self, buf: &'a mut [u8]) -> Option<&'a [u8]> {
+        let key = Self::key();
+        let (head, body) = buf.split_at_mut_checked(key.len())?;
+        head.copy_from_slice(&key);
+        let body = postcard_rpc::postcard::to_slice(self, body).ok()?.len();
+        Some(&buf[..key.len() + body])
+    }
+
+    /// `None` for anything but a report of this very layout. A board whose
+    /// firmware has another one is not understood, rather than misread.
+    pub fn decode(bytes: &[u8]) -> Option<Report> {
+        let body = bytes.strip_prefix(&Self::key())?;
+        postcard_rpc::postcard::from_bytes(body).ok()
+    }
+
+    fn key() -> [u8; 8] {
+        <ReportReceived as Topic>::TOPIC_KEY.to_bytes()
+    }
+}
+
 /// How a request went. `Ok` from [`FinishInstall`] or [`UninstallStack`]
 /// means that the work has begun, not that it is done.
 pub type CoprocessorResult = Result<(), CoprocessorError>;
@@ -702,6 +770,51 @@ mod tests {
         let mut message = [0; 4096];
         let message = postcard_rpc::postcard::to_slice(&result, &mut message).unwrap();
         assert!(13 + message.len() <= 1024, "{} bytes", message.len());
+    }
+
+    fn report() -> Report {
+        Report {
+            board: BoardId([
+                0x4b, 0x00, 0x41, 0x00, 0x03, 0x50, 0x47, 0x55, 0x32, 0x30, 0x31, 0x20,
+            ]),
+            sequence: u32::MAX,
+            readings: Readings {
+                capacitance: [
+                    Ok(SensorValue { value: u32::MAX }),
+                    Ok(SensorValue { value: 0 }),
+                    Err(SensorReadError::Nack),
+                    Err(SensorReadError::WatchdogTimeoutError),
+                ],
+            },
+        }
+    }
+
+    #[test]
+    fn report_survives_the_trip_between_boards() {
+        let mut buf = [0; Report::MAX_LEN];
+        let encoded = report().encode(&mut buf).unwrap();
+        assert_eq!(Report::decode(encoded), Some(report()));
+    }
+
+    #[test]
+    fn report_of_another_layout_is_not_understood() {
+        let mut buf = [0; Report::MAX_LEN];
+        let encoded = report().encode(&mut buf).unwrap();
+        let mut other = encoded.to_vec();
+        other[0] ^= 1;
+        assert_eq!(Report::decode(&other), None);
+        assert_eq!(Report::decode(&encoded[..encoded.len() - 1]), None);
+        assert_eq!(Report::decode(&[]), None);
+    }
+
+    #[test]
+    fn report_does_not_fit_a_buffer_that_is_too_short() {
+        assert_eq!(report().encode(&mut [0; 16]), None);
+    }
+
+    #[test]
+    fn board_id_is_written_like_the_usb_serial() {
+        assert_eq!(report().board.to_string(), "4B0041000350475532303120");
     }
 
     #[test]

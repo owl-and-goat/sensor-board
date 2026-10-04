@@ -169,3 +169,23 @@ Things learned the hard way:
   neither an error nor a reset: it stays idle. Only a minute of that is taken
   as "nothing was installed".
 - After installing a stack, FUS starts it by itself on its last reset.
+- CPU2 is inside an OpenThread callback until its notification is
+  acknowledged, and what the notification points at is only valid until then:
+  the message of a received UDP datagram has to be read out first.
+  `ThreadNotifRx::receive_with` in embassy-stm32-wpan is for that, and the
+  calls made inside it are blocked on (`thread/ot.rs`). CPU2 answers calls
+  while a notification is outstanding. ST's own code never acknowledges one
+  while a call is waiting for its answer, and neither does the Thread service.
+- A UDP datagram sent to a multicast address comes back to the sender's own
+  socket if `mMulticastLoop` is set. That is how a collecting board hears its
+  own report.
+
+## Sensor reports
+
+`firmware/src/report.rs` sends a `protocol::Report` to every board
+(`ff03::1`, UDP port 61620) every ten seconds. A board that the host has told
+to collect binds that port and passes on what arrives as the `ReportReceived`
+topic. A new sensor goes into `protocol::Readings`, `Task::readings` in
+`report.rs`, and `describe` and `Metrics` in `cli/src/reports.rs`. Changing
+`Report` changes the key its datagrams start with, so boards with the old
+layout and boards with the new one do not hear each other.

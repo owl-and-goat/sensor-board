@@ -12,7 +12,7 @@ postcard-schema = "0.2.5"
 protocol = { path = "../protocol", features = ["clap"] }
 rand = "0.10"
 serde = "1.0"
-tokio = { version = "1.53", features = ["macros", "rt", "rt-multi-thread", "time"] }
+tokio = { version = "1.53", features = ["io-util", "macros", "net", "rt", "rt-multi-thread", "signal", "time"] }
 
 # Same revision as the protocol crate, which says why it is not a release.
 [dependencies.postcard-rpc]
