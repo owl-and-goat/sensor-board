@@ -59,6 +59,8 @@ enum NetworkCommand {
     Leave(Target),
     /// Print the dataset of a board's network. It contains the network key
     Dataset(Target),
+    /// Print a board's neighbor table: the devices it has a direct radio link with
+    Neighbors(Target),
 }
 
 #[derive(Subcommand)]
@@ -155,6 +157,16 @@ async fn main() -> Result<()> {
             match board.dataset().await? {
                 Some(dataset) => println!("{dataset}"),
                 None => bail!("board {} has no network", board.serial()),
+            }
+            Ok(())
+        }
+        Command::Network(NetworkCommand::Neighbors(target)) => {
+            let board = target.board().await?;
+            let table = board.neighbors().await?;
+            if table.neighbors.is_empty() {
+                println!("Board {} has no neighbors.", board.serial());
+            } else {
+                print!("{}", network::describe_neighbors(&table));
             }
             Ok(())
         }

@@ -35,6 +35,7 @@ unique id, and =--board= takes any unambiguous start of it.
   cargo run -- list                        # every board: firmware build, network status
   cargo run -- network init                # all attached boards onto one thread network
   cargo run -- network dataset --board 4b  # that network's dataset, hex (holds the network key)
+  cargo run -- network neighbors --board 4b  # who that board hears directly, and how well
   cargo run -- network leave --board 4d
   cargo run -- coprocessor status --board 4d           # what cpu2 has installed and runs
   cargo run -- coprocessor install <image> --board 4d  # see "a new board" below

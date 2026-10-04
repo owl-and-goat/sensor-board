@@ -11,7 +11,7 @@ use std::{
 };
 
 use anyhow::{Context, Result, bail};
-use protocol::{Dataset, Link, NetworkStatus};
+use protocol::{Dataset, Link, Neighbor, NeighborTable, NetworkStatus};
 use rand::RngExt;
 
 use crate::board::Board;
@@ -304,9 +304,76 @@ pub fn describe_link(link: &Link) -> String {
     }
 }
 
+/// The table as text: a heading, then a line for each neighbor.
+pub fn describe_neighbors(table: &NeighborTable) -> String {
+    let mut text = format!(
+        "{:<6}  {:<6}  {:<16}  {:>7}  {:>7}  {:>8}  {:>9}  {:>6}\n",
+        "Kind", "RLOC16", "Extended address", "Age", "Quality", "Avg RSSI", "Last RSSI", "Margin"
+    );
+    for neighbor in &table.neighbors {
+        let Neighbor {
+            kind,
+            rloc16,
+            ext_address,
+            age_secs,
+            link_quality_in,
+            average_rssi,
+            last_rssi,
+            link_margin,
+        } = neighbor;
+        let (age, average_rssi, last_rssi, link_margin) = (
+            format!("{age_secs} s"),
+            format!("{average_rssi} dBm"),
+            format!("{last_rssi} dBm"),
+            format!("{link_margin} dB"),
+        );
+        text += &format!(
+            "{kind:<6}  {rloc16:#06x}  {ext_address:<16}  {age:>7}  {link_quality_in:>7}  \
+             {average_rssi:>8}  {last_rssi:>9}  {link_margin:>6}\n",
+        );
+    }
+    if table.truncated {
+        text += "The board has more neighbors than these.\n";
+    }
+    text
+}
+
 #[cfg(test)]
 mod tests {
+    use protocol::{ExtAddress, NeighborKind};
+
     use super::*;
+
+    #[test]
+    fn neighbors_line_up_under_their_headings() {
+        let neighbor = Neighbor {
+            kind: NeighborKind::Child,
+            rloc16: 0xd401,
+            ext_address: ExtAddress([0x02, 0xa1, 0, 0, 0, 0, 0x0f, 0xff]),
+            age_secs: 3,
+            link_quality_in: 3,
+            average_rssi: -18,
+            last_rssi: -20,
+            link_margin: 82,
+        };
+        let mut table = NeighborTable::default();
+        table.neighbors.push(neighbor).unwrap();
+        let router = Neighbor {
+            kind: NeighborKind::Router,
+            rloc16: 0x0c00,
+            age_secs: 120,
+            average_rssi: -101,
+            ..neighbor
+        };
+        table.neighbors.push(router).unwrap();
+
+        assert_eq!(
+            describe_neighbors(&table),
+            "Kind    RLOC16  Extended address      Age  Quality  Avg RSSI  Last RSSI  Margin\n\
+             child   0xd401  02a1000000000fff      3 s        3   -18 dBm    -20 dBm   82 dB\n\
+             router  0x0c00  02a1000000000fff    120 s        3  -101 dBm    -20 dBm   82 dB\n"
+        );
+    }
 
     fn dataset(byte: u8) -> Dataset {
         Dataset::from_tlvs(&[0, 1, byte]).unwrap()

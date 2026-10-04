@@ -4,10 +4,10 @@
 
 use core::cell::UnsafeCell;
 use core::mem::MaybeUninit;
-use core::ptr::write_volatile;
+use core::ptr::{read_volatile, write_volatile};
 
 use embassy_stm32_wpan::sub::thread::ThreadOt;
-use protocol::{Dataset, OtError, Role};
+use protocol::{Dataset, ExtAddress, Neighbor, NeighborKind, OtError, Role};
 
 // TODO: move ffi module to a submodule of this one?
 use super::ffi;
@@ -52,16 +52,59 @@ fn role_from_raw(raw: u32) -> Role {
     }
 }
 
-/// The only CPU1 memory that CPU2 is ever given a pointer to, and it only
-/// reads it: the dataset argument of `otDatasetSetActiveTlvs`. It has to be
-/// handed over as `&'static`, because CPU2 keeps reading until it has
-/// answered the call, whatever has become of the future that made it.
+fn neighbor_from_raw(info: &ffi::otNeighborInfo) -> Neighbor {
+    Neighbor {
+        kind: if info.mIsChild() {
+            NeighborKind::Child
+        } else {
+            NeighborKind::Router
+        },
+        rloc16: info.mRloc16,
+        ext_address: ExtAddress(info.mExtAddress.m8),
+        age_secs: info.mAge,
+        link_quality_in: info.mLinkQualityIn,
+        average_rssi: info.mAverageRssi,
+        last_rssi: info.mLastRssi,
+        link_margin: info.mLinkMargin,
+    }
+}
+
+/// CPU1 memory that CPU2 is given a pointer to, and only reads: the dataset
+/// argument of `otDatasetSetActiveTlvs`. It has to be handed over as
+/// `&'static`, because CPU2 keeps reading until it has answered the call,
+/// whatever has become of the future that made it.
 pub struct DatasetBuffer(UnsafeCell<MaybeUninit<ffi::otOperationalDatasetTlvs>>);
 
 impl DatasetBuffer {
     pub const fn new() -> Self {
         DatasetBuffer(UnsafeCell::new(MaybeUninit::zeroed()))
     }
+}
+
+/// CPU1 memory that CPU2 is given pointers to, and writes: the two out
+/// arguments of `otThreadGetNextNeighborInfo`. `&'static` for the same reason
+/// as [`DatasetBuffer`], and more so: CPU2 writes here until it has answered.
+pub struct NeighborBuffer {
+    iterator: UnsafeCell<ffi::otNeighborInfoIterator>,
+    info: UnsafeCell<MaybeUninit<ffi::otNeighborInfo>>,
+}
+
+impl NeighborBuffer {
+    pub const fn new() -> Self {
+        NeighborBuffer {
+            iterator: UnsafeCell::new(NeighborIterator::INIT.0),
+            info: UnsafeCell::new(MaybeUninit::zeroed()),
+        }
+    }
+}
+
+/// A place in the stack's neighbor table (`otNeighborInfoIterator`).
+#[derive(Clone, Copy)]
+pub struct NeighborIterator(ffi::otNeighborInfoIterator);
+
+impl NeighborIterator {
+    /// Before the first entry (`OT_NEIGHBOR_INFO_ITERATOR_INIT`).
+    pub const INIT: Self = NeighborIterator(0);
 }
 
 /// Trait for stuff that supports OpenThread's API, based around its
@@ -196,6 +239,49 @@ pub unsafe trait OpenThread {
             )
             .await
         }
+    }
+
+    /// The entry of the neighbor table that comes after `iterator`, which is
+    /// moved on past it. `None` once the table has been gone through.
+    async fn thread_get_next_neighbor_info(
+        &mut self,
+        buffer: &'static NeighborBuffer,
+        iterator: &mut NeighborIterator,
+    ) -> Result<Option<Neighbor>> {
+        let iterator_out = buffer.iterator.get();
+        let info_out = buffer.info.get().cast::<ffi::otNeighborInfo>();
+
+        let found = unsafe {
+            // SAFETY: this function is the only place CPU1 touches what is in
+            // the buffer, never through a reference. If an earlier call was
+            // dropped while CPU2 was still working on it, that abandoned call
+            // may overwrite the iterator written here before the call below,
+            // queued up behind it, is looked at: an entry of the table is
+            // then skipped or repeated, and nothing worse.
+            write_volatile(iterator_out, iterator.0);
+            // SAFETY: expects a pointer to an otNeighborInfoIterator, which
+            // it reads and writes, and one to an otNeighborInfo, which it
+            // writes. Both stay valid for as long as CPU2 could use them.
+            self.ffi_try(
+                ffi_command::MSG_M4TOM0_OT_THREAD_GET_NEXT_NEIGHBOR_INFO,
+                &[iterator_out as u32, info_out as u32],
+            )
+            .await
+        };
+        match found {
+            Ok(()) => {}
+            Err(OtError::NotFound) => return Ok(None),
+            Err(e) => return Err(e),
+        }
+
+        let info = unsafe {
+            // SAFETY: CPU2 has answered, so it has done its writing. Both are
+            // plain numbers, valid whatever they hold, and the buffer started
+            // out zeroed.
+            iterator.0 = read_volatile(iterator_out);
+            read_volatile(info_out)
+        };
+        Ok(Some(neighbor_from_raw(&info)))
     }
 
     /// Set the radio's transmit power, in dBm. The STM32WB55's radio covers

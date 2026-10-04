@@ -7,16 +7,18 @@
 //! published. A CPU2 that has stopped answering therefore costs a caller a
 //! timeout, not its life, and no call into CPU2 is ever abandoned halfway.
 //!
-//! CPU2 is also never handed memory to write into. The one pointer it gets is
-//! to a dataset that it reads (see `ot.rs`), which is why a board is given
-//! the dataset of the network to join rather than asked to make one up.
+//! The only memory CPU2 is ever pointed at is `'static` and set aside for it
+//! in [`init`] (see the buffers in `ot.rs`), so that it has nothing of anyone
+//! else's to read or write, however a call ends. It reads the dataset to
+//! join, which is why a board is given one rather than asked to make one up,
+//! and it writes the neighbor table an entry at a time.
 
 use core::cell::Cell;
 
 use defmt::info;
 use embassy_futures::{
     join::join3,
-    select::{Either, select},
+    select::{Either, Either3, select, select3},
 };
 use embassy_stm32::flash::{Blocking, Flash};
 use embassy_stm32_wpan::{
@@ -31,7 +33,9 @@ use embassy_sync::{
     signal::Signal,
 };
 use embassy_time::Duration;
-use protocol::{Dataset, Link, NetworkError, NetworkResult, NetworkStatus};
+use protocol::{
+    Dataset, Link, NeighborTable, NeighborsResult, NetworkError, NetworkResult, NetworkStatus,
+};
 use static_cell::StaticCell;
 
 use crate::{
@@ -44,11 +48,15 @@ mod ot;
 
 use ot::OpenThread as _;
 
-/// What the [`Handle`] can ask for.
+/// What the [`Handle`] can ask for that changes the network the board is on.
 enum Request {
     Join(Dataset),
     Leave,
 }
+
+/// The [`Handle`] asking for the neighbor table. It has an answer of another
+/// type, and so a channel of its own.
+struct NeighborsRequest;
 
 /// Where the board stands with its network, as last published.
 struct Status(Mutex<ThreadModeRawMutex, Cell<NetworkStatus>>);
@@ -64,15 +72,18 @@ impl Status {
     }
 }
 
-/// How long a request gets. Each one is a handful of calls into CPU2 and at
-/// most one flash page, done in well under a second.
+/// How long a request gets. Each one is a few calls into CPU2 (a few dozen
+/// for a full neighbor table) and at most one flash page, done in well under
+/// a second.
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(5);
 
 /// What the two ends have between them, and what CPU2 gets pointed at.
 struct Shared {
     requests: request::Channel<Request, NetworkResult>,
+    neighbor_requests: request::Channel<NeighborsRequest, NeighborsResult>,
     status: Status,
     active_dataset: ot::DatasetBuffer,
+    next_neighbor: ot::NeighborBuffer,
 }
 
 /// Make the two ends of Thread: the handle for the rest of the firmware, and
@@ -82,19 +93,25 @@ pub fn init() -> (Handle, Service) {
     static SHARED: StaticCell<Shared> = StaticCell::new();
     let shared: &'static Shared = SHARED.init(Shared {
         requests: request::Channel::new(),
+        neighbor_requests: request::Channel::new(),
         status: Status(Mutex::new(Cell::new(NetworkStatus::Starting))),
         active_dataset: ot::DatasetBuffer::new(),
+        next_neighbor: ot::NeighborBuffer::new(),
     });
 
     let (client, server) = shared.requests.split();
+    let (neighbor_client, neighbor_server) = shared.neighbor_requests.split();
     let handle = Handle {
         requests: client,
+        neighbor_requests: neighbor_client,
         status: &shared.status,
     };
     let service = Service {
         requests: server,
+        neighbor_requests: neighbor_server,
         status: &shared.status,
         active_dataset: &shared.active_dataset,
+        next_neighbor: &shared.next_neighbor,
     };
     (handle, service)
 }
@@ -102,6 +119,7 @@ pub fn init() -> (Handle, Service) {
 /// How the rest of the firmware reaches Thread.
 pub struct Handle {
     requests: request::Client<Request, NetworkResult>,
+    neighbor_requests: request::Client<NeighborsRequest, NeighborsResult>,
     status: &'static Status,
 }
 
@@ -126,6 +144,14 @@ impl Handle {
     /// Drop off the network and forget it.
     pub async fn leave(&mut self) -> NetworkResult {
         self.request(Request::Leave).await
+    }
+
+    /// The Thread devices the board has a direct radio link with right now.
+    pub async fn neighbors(&mut self) -> NeighborsResult {
+        self.neighbor_requests
+            .ask(NeighborsRequest, REQUEST_TIMEOUT)
+            .await
+            .unwrap_or(Err(NetworkError::Unresponsive))
     }
 
     async fn request(&mut self, request: Request) -> NetworkResult {
@@ -154,8 +180,10 @@ pub struct Thread<'d> {
 /// The end of Thread that answers the [`Handle`].
 pub struct Service {
     requests: request::Server<Request, NetworkResult>,
+    neighbor_requests: request::Server<NeighborsRequest, NeighborsResult>,
     status: &'static Status,
     active_dataset: &'static ot::DatasetBuffer,
+    next_neighbor: &'static ot::NeighborBuffer,
 }
 
 impl Service {
@@ -177,8 +205,10 @@ impl Service {
             sys,
             flash,
             requests: self.requests,
+            neighbor_requests: self.neighbor_requests,
             status: self.status,
             active_dataset: self.active_dataset,
+            next_neighbor: self.next_neighbor,
             state_changed: &state_changed,
         };
 
@@ -198,19 +228,24 @@ impl Service {
     /// Stand in for Thread on a board where thread init has failed. Responds with an Unavailable
     /// error to every request
     pub async fn unavailable(self, error: NetworkError) -> ! {
-        unavailable(self.requests, self.status, error).await
+        unavailable(self.requests, self.neighbor_requests, self.status, error).await
     }
 }
 
 async fn unavailable(
     requests: request::Server<Request, NetworkResult>,
+    neighbor_requests: request::Server<NeighborsRequest, NeighborsResult>,
     status: &Status,
     error: NetworkError,
 ) -> ! {
     status.publish(NetworkStatus::Unavailable(error));
     loop {
-        let (pending, _) = requests.receive().await;
-        requests.answer(pending, Err(error));
+        match select(requests.receive(), neighbor_requests.receive()).await {
+            Either::First((pending, _)) => requests.answer(pending, Err(error)),
+            Either::Second((pending, NeighborsRequest)) => {
+                neighbor_requests.answer(pending, Err(error))
+            }
+        }
     }
 }
 
@@ -240,8 +275,10 @@ struct Network<'d> {
     sys: Sys<'d>,
     flash: Flash<'d, Blocking>,
     requests: request::Server<Request, NetworkResult>,
+    neighbor_requests: request::Server<NeighborsRequest, NeighborsResult>,
     status: &'static Status,
     active_dataset: &'static ot::DatasetBuffer,
+    next_neighbor: &'static ot::NeighborBuffer,
     state_changed: &'d Signal<ThreadModeRawMutex, ()>,
 }
 
@@ -249,7 +286,7 @@ impl Network<'_> {
     async fn run(mut self) -> ! {
         if let Err(e) = self.start().await {
             // A call into a stack that did not start might never come back.
-            unavailable(self.requests, self.status, e).await
+            unavailable(self.requests, self.neighbor_requests, self.status, e).await
         }
 
         if let Some(dataset) = stored_dataset()
@@ -262,8 +299,13 @@ impl Network<'_> {
             let status = self.status().await;
             self.status.publish(status);
 
-            match select(self.requests.receive(), self.state_changed.wait()).await {
-                Either::First((pending, request)) => {
+            let next = select3(
+                self.requests.receive(),
+                self.neighbor_requests.receive(),
+                self.state_changed.wait(),
+            );
+            match next.await {
+                Either3::First((pending, request)) => {
                     let outcome = match request {
                         Request::Join(dataset) => self.join(&dataset).await,
                         Request::Leave => self.leave().await,
@@ -275,8 +317,12 @@ impl Network<'_> {
                     self.status.publish(status);
                     self.requests.answer(pending, outcome);
                 }
+                Either3::Second((pending, NeighborsRequest)) => {
+                    let neighbors = self.neighbors().await;
+                    self.neighbor_requests.answer(pending, neighbors);
+                }
                 // The status at the top of the loop is all there is to do.
-                Either::Second(()) => {}
+                Either3::Third(()) => {}
             }
         }
     }
@@ -338,6 +384,23 @@ impl Network<'_> {
     async fn down(&mut self) -> ot::Result<()> {
         self.ot.thread_set_enabled(false).await?;
         self.ot.ip6_set_enabled(false).await
+    }
+
+    /// The stack's neighbor table, as far as it fits in a [`NeighborTable`].
+    async fn neighbors(&mut self) -> NeighborsResult {
+        let mut table = NeighborTable::default();
+        let mut iterator = ot::NeighborIterator::INIT;
+        while let Some(neighbor) = self
+            .ot
+            .thread_get_next_neighbor_info(self.next_neighbor, &mut iterator)
+            .await?
+        {
+            if table.neighbors.push(neighbor).is_err() {
+                table.truncated = true;
+                break;
+            }
+        }
+        Ok(table)
     }
 
     async fn status(&mut self) -> NetworkStatus {

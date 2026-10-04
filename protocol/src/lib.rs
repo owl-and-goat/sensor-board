@@ -4,7 +4,7 @@
 
 use core::{fmt, str::FromStr};
 
-use postcard_rpc::{endpoints, topics, TopicDirection};
+use postcard_rpc::{TopicDirection, endpoints, topics};
 use postcard_schema::Schema;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
@@ -25,6 +25,7 @@ endpoints! {
     | GetNetworkDataset    | ()            | StoredDataset     | "network/dataset"            |
     | JoinNetwork          | Dataset       | NetworkResult     | "network/join"               |
     | LeaveNetwork         | ()            | NetworkResult     | "network/leave"              |
+    | GetNetworkNeighbors  | ()            | NeighborsResult   | "network/neighbors"          |
     | GetCoprocessorStatus | ()            | CoprocessorStatus | "coprocessor/status"         |
     | BeginInstall         | ImageSize     | CoprocessorResult | "coprocessor/install/begin"  |
     | WriteInstall         | ImageChunk    | CoprocessorResult | "coprocessor/install/write"  |
@@ -265,6 +266,79 @@ impl FromStr for Dataset {
             tlvs.push(byte).map_err(|_| ParseDatasetError::TooLong)?;
         }
         Ok(Dataset(tlvs))
+    }
+}
+
+/// The result of [`GetNetworkNeighbors`].
+pub type NeighborsResult = Result<NeighborTable, NetworkError>;
+
+/// A board's neighbor table: the Thread devices it has a direct radio link
+/// with. Empty while the board is not attached to a network.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, Schema)]
+#[cfg_attr(feature = "defmt", derive(defmt::Format))]
+pub struct NeighborTable {
+    pub neighbors: heapless::Vec<Neighbor, { NeighborTable::MAX_LEN }>,
+    /// The board has more neighbors than these.
+    pub truncated: bool,
+}
+
+impl NeighborTable {
+    /// As many neighbors as one message is sure to have room for: the
+    /// firmware sends from a buffer of 1024 bytes.
+    pub const MAX_LEN: usize = 32;
+}
+
+/// A Thread device that a board has a direct radio link with
+/// (`otNeighborInfo`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Schema)]
+#[cfg_attr(feature = "defmt", derive(defmt::Format))]
+pub struct Neighbor {
+    pub kind: NeighborKind,
+    /// Its 16-bit routing locator.
+    pub rloc16: u16,
+    pub ext_address: ExtAddress,
+    /// Seconds since the board last heard from it.
+    pub age_secs: u32,
+    /// How well the board receives it, from 0 (not at all) to 3 (best).
+    pub link_quality_in: u8,
+    /// The strength the board receives it at, in dBm, averaged.
+    pub average_rssi: i8,
+    /// The same, of the last frame alone.
+    pub last_rssi: i8,
+    /// How far above its noise floor the board receives it, in dB.
+    pub link_margin: u8,
+}
+
+/// What a neighbor is to the board.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Schema)]
+#[cfg_attr(feature = "defmt", derive(defmt::Format))]
+pub enum NeighborKind {
+    /// A child of the board.
+    Child,
+    /// A router: another one, if the board is a router itself, or else the
+    /// board's parent.
+    Router,
+}
+
+impl fmt::Display for NeighborKind {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        // `pad`, so that it can be lined up in a table.
+        f.pad(match self {
+            NeighborKind::Child => "child",
+            NeighborKind::Router => "router",
+        })
+    }
+}
+
+/// The IEEE 802.15.4 extended address a device has on its network. Written
+/// as hex.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Schema)]
+#[cfg_attr(feature = "defmt", derive(defmt::Format))]
+pub struct ExtAddress(pub [u8; 8]);
+
+impl fmt::Display for ExtAddress {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        self.0.iter().try_for_each(|b| write!(f, "{b:02x}"))
     }
 }
 
@@ -536,5 +610,39 @@ mod tests {
             Err(ParseDatasetError::TooLong)
         );
         assert_eq!(Dataset::from_tlvs(&[0; 255]), None);
+    }
+
+    /// With every field at its longest encoding, behind the longest header
+    /// postcard-rpc writes: a 1-byte discriminant, an 8-byte key and a
+    /// 4-byte sequence number.
+    #[test]
+    fn full_neighbor_table_fits_the_firmwares_send_buffer() {
+        let neighbor = Neighbor {
+            kind: NeighborKind::Router,
+            rloc16: u16::MAX,
+            ext_address: ExtAddress([0xff; 8]),
+            age_secs: u32::MAX,
+            link_quality_in: u8::MAX,
+            average_rssi: i8::MIN,
+            last_rssi: i8::MIN,
+            link_margin: u8::MAX,
+        };
+        let mut table = NeighborTable {
+            truncated: true,
+            ..NeighborTable::default()
+        };
+        while table.neighbors.push(neighbor).is_ok() {}
+        assert_eq!(table.neighbors.len(), NeighborTable::MAX_LEN);
+
+        let result: NeighborsResult = Ok(table);
+        let mut message = [0; 4096];
+        let message = postcard_rpc::postcard::to_slice(&result, &mut message).unwrap();
+        assert!(13 + message.len() <= 1024, "{} bytes", message.len());
+    }
+
+    #[test]
+    fn ext_address_is_written_as_hex() {
+        let address = ExtAddress([0x02, 0xa1, 0, 0, 0, 0, 0x0f, 0xff]);
+        assert_eq!(address.to_string(), "02a1000000000fff");
     }
 }

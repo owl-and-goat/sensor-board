@@ -6,15 +6,15 @@ use anyhow::{Context, Result, anyhow, bail};
 use postcard_rpc::{
     Endpoint,
     header::VarSeqKind,
-    host_client::HostClient,
+    host_client::{HostClient, HostErr},
     standard_icd::{ERROR_PATH, WireError},
 };
 use protocol::{
     BeginInstall, BoardInfo, CoprocessorResult, CoprocessorStatus, Dataset, EnterBootloader,
-    FinishInstall, GetBoardInfo, GetCoprocessorStatus, GetNetworkDataset, GetNetworkStatus,
-    ImageChunk, ImageSize, JoinNetwork, LeaveNetwork, NetworkResult, NetworkStatus,
-    ReadSensorValue, Sensor, SensorReadReq, SensorReadResult, USB_PID, USB_VID, UninstallStack,
-    WriteInstall,
+    FinishInstall, GetBoardInfo, GetCoprocessorStatus, GetNetworkDataset, GetNetworkNeighbors,
+    GetNetworkStatus, ImageChunk, ImageSize, JoinNetwork, LeaveNetwork, NeighborTable,
+    NetworkError, NetworkStatus, ReadSensorValue, Sensor, SensorReadReq, SensorReadResult, USB_PID,
+    USB_VID, UninstallStack, WriteInstall,
 };
 
 /// How long a board gets to answer. The slowest it can be is a join or leave
@@ -121,7 +121,13 @@ impl Board {
         self.network_result(result)
     }
 
-    fn network_result(&self, result: NetworkResult) -> Result<()> {
+    /// The Thread devices the board has a direct radio link with.
+    pub async fn neighbors(&self) -> Result<NeighborTable> {
+        let result = self.call::<GetNetworkNeighbors>(&()).await?;
+        self.network_result(result)
+    }
+
+    fn network_result<T>(&self, result: Result<T, NetworkError>) -> Result<T> {
         result.map_err(|e| anyhow!("board {}: {e}", self.serial))
     }
 
@@ -176,6 +182,14 @@ impl Board {
     {
         match tokio::time::timeout(TIMEOUT, self.client.send_resp::<E>(request)).await {
             Ok(Ok(response)) => Ok(response),
+            // An endpoint is known by its path and its types together, so
+            // this is a firmware built from another version of `protocol`.
+            Ok(Err(HostErr::Wire(WireError::UnknownKey))) => bail!(
+                "board {}: its firmware does not know {} as this CLI does; flash a build that \
+                 matches",
+                self.serial,
+                E::PATH
+            ),
             Ok(Err(e)) => bail!("board {}: {} failed: {e:?}", self.serial, E::PATH),
             Err(_) => bail!("board {} did not answer {}", self.serial, E::PATH),
         }
