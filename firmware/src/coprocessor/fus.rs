@@ -27,7 +27,7 @@ use protocol::{
 };
 
 use super::Status;
-use crate::{dfu, persistent_config, request};
+use crate::{dfu, request, update};
 
 pub enum Request {
     Begin(ImageSize),
@@ -184,9 +184,11 @@ const PAGE: u32 = 4096;
 /// Flash is written in words of this many bytes.
 const WORD: u32 = 8;
 
-/// Where the application's part of flash ends, as an offset into flash: its
-/// last page is the stored configuration.
-const APPLICATION_END: u32 = persistent_config::PAGE_OFFSET + PAGE;
+/// Where the application's part of flash ends, as an offset into flash: the
+/// last of it is where a firmware update is staged.
+fn application_end() -> u32 {
+    update::staging_end()
+}
 
 /// `FUS_STATE_IDLE` and `FUS_STATE_ERROR`; everything in between is one
 /// operation or another in progress (AN5185).
@@ -370,7 +372,7 @@ impl Installer<'_> {
         let start = secure_start
             .checked_sub(len)
             .map(|start| start - start % PAGE)
-            .filter(|&start| len > 0 && start >= APPLICATION_END)
+            .filter(|&start| len > 0 && start >= application_end())
             .ok_or(CoprocessorError::DoesNotFit)?;
 
         defmt::info!("fus: staging {} bytes at {:#x}", len, 0x0800_0000 + start);

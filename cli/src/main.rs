@@ -2,6 +2,7 @@
 
 mod board;
 mod coprocessor;
+mod firmware;
 mod network;
 mod reports;
 
@@ -39,6 +40,24 @@ enum Command {
     /// attached
     #[command(subcommand)]
     Reports(ReportsCommand),
+    /// Update a board's firmware without its ROM bootloader
+    #[command(subcommand)]
+    Firmware(FirmwareCommand),
+}
+
+#[derive(Subcommand)]
+enum FirmwareCommand {
+    /// Show which build of the firmware a board runs, and where it stands with updates
+    Status(Target),
+    /// Send a board a firmware image and have it restart into it. The firmware it replaces comes
+    /// back if the new one does not get the board back on its network
+    Update {
+        /// The image, as `just firmware-image` makes it
+        image: PathBuf,
+
+        #[command(flatten)]
+        target: Target,
+    },
 }
 
 #[derive(Subcommand)]
@@ -234,6 +253,23 @@ async fn main() -> Result<()> {
             board.enter_bootloader().await?;
             println!("Board {} is rebooting into its bootloader.", board.serial());
             Ok(())
+        }
+        Command::Firmware(FirmwareCommand::Status(target)) => {
+            let board = target.board().await?;
+            let info = board.info().await?;
+            let status = board.firmware_status().await?;
+            println!(
+                "{}  build {} (built {})  {}",
+                board.serial(),
+                status.build,
+                info.firmware_built,
+                firmware::describe(&status.update)
+            );
+            Ok(())
+        }
+        Command::Firmware(FirmwareCommand::Update { image, target }) => {
+            let image = firmware::Image::read(&image)?;
+            firmware::update(target.board().await?, &image).await
         }
         Command::Reports(ReportsCommand::Watch(target)) => {
             reports::watch(target.board.as_deref()).await

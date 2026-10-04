@@ -18,28 +18,57 @@ _image file sha256:
   @[ -f {{file}} ] || { echo "Fetching {{file_name(file)}}"; curl -fL --remove-on-error -o {{file}} {{coprocessor_url}}/{{file_name(file)}}; }
   @echo "{{sha256}}  {{file}}" | sha256sum --check --quiet
 
-# Set up a new board over USB: our firmware on CPU1, then FUS and the Thread stack on CPU2. A blank chip sits in its ROM bootloader, which is where this starts
-new-board: coprocessor-images _firmware-bin _dfu-download
+# The firmware alone, which is what a board takes as an update, and everything
+# of ours that goes into flash: the bootloader, the page it keeps its state
+# in (blank), and the firmware.
+firmware_image := "firmware/target/sensor-board-firmware.bin"
+flash_image := "firmware/target/sensor-board-flash.bin"
+objcopy := '"$(rustc --print sysroot)"/lib/rustlib/*/bin/llvm-objcopy'
+
+# Set up a new board over USB: our bootloader and firmware on CPU1, then FUS and the Thread stack on CPU2. A blank chip sits in its ROM bootloader, which is where this starts
+new-board: coprocessor-images _flash-image _dfu-download
   {{just_executable()}} cli coprocessor install {{fus_image}}
   {{just_executable()}} cli coprocessor install {{stack_image}}
 
-# Flash the firmware through the debug probe
-flash:
-    ( cd firmware && cargo flash --release --chip STM32WB55CG )
+# Flash the bootloader and the firmware through the debug probe
+flash: _flash-image
+    probe-rs download --chip STM32WB55CG --binary-format bin --base-address 0x08000000 --verify {{flash_image}}
+    probe-rs reset --chip STM32WB55CG
 
-# Flash the firmware over USB, onto a board that is running it. With several boards attached, say which: just dfu-flash --board <serial>
-dfu-flash *board: _firmware-bin
+# Update the firmware of a board over USB, through the firmware that it runs. With several boards attached, say which: just update --board <serial>
+update *board: firmware-image
+    {{just_executable()}} cli firmware update {{firmware_image}} {{board}}
+
+# Flash the bootloader and the firmware over USB through the ROM bootloader, onto a board that is running a firmware. With several boards attached, say which: just dfu-flash --board <serial>
+dfu-flash *board: _flash-image
     {{just_executable()}} cli bootloader {{board}}
     {{just_executable()}} _dfu-download -w
 
-# The firmware as the raw image that dfu-util takes. Built before anything is done to a board
-_firmware-bin:
-    ( cd firmware && cargo build --release && "$(rustc --print sysroot)"/lib/rustlib/*/bin/llvm-objcopy -O binary target/thumbv7em-none-eabihf/release/sensor-board-firmware target/sensor-board-firmware.bin )
+# The same, for every attached board, one after the other
+dfu-flash-all: _flash-image
+    #!/usr/bin/env bash
+    set -euo pipefail
+    for serial in $({{just_executable()}} cli list | cut -d' ' -f1); do
+        echo "Board $serial"
+        {{just_executable()}} cli bootloader --board "$serial"
+        {{just_executable()}} _dfu-download -w
+        # Time for it to be out of the ROM bootloader before the next goes in.
+        sleep 3
+    done
+
+# The firmware as a raw image. Built before anything is done to a board
+firmware-image:
+    ( cd firmware && cargo build --release && {{objcopy}} -O binary target/thumbv7em-none-eabihf/release/sensor-board-firmware ../{{firmware_image}} )
+
+# The bootloader, filled up with blank flash to where the firmware starts, and the firmware after it
+_flash-image: firmware-image
+    ( cd bootloader && cargo build --release && {{objcopy}} -O binary --gap-fill 0xff --pad-to 0x08007000 target/thumbv7em-none-eabihf/release/sensor-board-bootloader target/sensor-board-bootloader.bin )
+    cat bootloader/target/sensor-board-bootloader.bin {{firmware_image}} > {{flash_image}}
 
 # Write that image to the board in its ROM bootloader, and start it. With -w, wait for a board to get there (the long form, --wait, is one that dfu-util 0.11 lists but does not take)
 _dfu-download *flags:
     # dfu-util ends in an error whether this works or not: at ":leave" the chip starts the firmware, and is gone when dfu-util asks it how that went. So go by its own report of the download.
-    dfu-util {{flags}} -d 0483:df11 -a 0 -s 0x08000000:leave -D firmware/target/sensor-board-firmware.bin | tee /dev/stderr | grep "File downloaded successfully" > /dev/null
+    dfu-util {{flags}} -d 0483:df11 -a 0 -s 0x08000000:leave -D {{flash_image}} | tee /dev/stderr | grep "File downloaded successfully" > /dev/null
 
 attach:
     probe-rs attach --chip STM32WB55CG --no-catch-reset firmware/target/thumbv7em-none-eabihf/release/sensor-board-firmware
@@ -47,9 +76,11 @@ attach:
 build *args:
     ( cd protocol && cargo build {{args}} )
     ( cd firmware && cargo build {{args}} )
+    ( cd bootloader && cargo build {{args}} )
     ( cd cli && cargo build {{args}} )
 
 fmt *args:
     ( cd protocol && cargo fmt {{args}} )
     ( cd firmware && cargo fmt {{args}} )
+    ( cd bootloader && cargo fmt {{args}} )
     ( cd cli && cargo fmt {{args}} )

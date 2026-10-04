@@ -17,18 +17,20 @@ use postcard_rpc::{
 #[allow(unused_imports)]
 use postcard_rpc::server::impls::embassy_usb_v0_6::dispatch_impl::spawn_fn;
 use protocol::{
-    BeginInstall, BoardInfo, CoprocessorResult, CoprocessorStatus, Dataset, ENDPOINT_LIST,
-    EnterBootloader, FinishInstall, GetBoardInfo, GetCoprocessorStatus, GetNetworkDataset,
-    GetNetworkNeighbors, GetNetworkRouters, GetNetworkStatus, ImageChunk, ImageSize, JoinNetwork,
-    LeaveNetwork, NeighborsResult, NetworkResult, NetworkStatus, ReadSensorValue, Report,
-    ReportReceived, RoutersResult, SensorReadReq, SensorReadResult, SensorValue, StartCollecting,
-    StopCollecting, TOPICS_IN_LIST, TOPICS_OUT_LIST, UninstallStack, WriteInstall,
+    ApplyUpdate, BeginInstall, BeginUpdate, BoardInfo, CoprocessorResult, CoprocessorStatus,
+    Dataset, ENDPOINT_LIST, EnterBootloader, FinishInstall, FinishUpdate, FirmwareStatus,
+    GetBoardInfo, GetCoprocessorStatus, GetFirmwareStatus, GetNetworkDataset, GetNetworkNeighbors,
+    GetNetworkRouters, GetNetworkStatus, ImageChunk, ImageSize, JoinNetwork, LeaveNetwork,
+    NeighborsResult, NetworkResult, NetworkStatus, ReadSensorValue, Report, ReportReceived,
+    RoutersResult, SensorReadReq, SensorReadResult, SensorValue, StartCollecting, StopCollecting,
+    TOPICS_IN_LIST, TOPICS_OUT_LIST, UninstallStack, UpdateImage, UpdateResult, WriteInstall,
+    WriteUpdate,
 };
 
 use crate::{
     coprocessor, dfu, report,
     sensor::{self, capacitance},
-    thread, usb,
+    thread, update, usb,
 };
 
 /// What the handlers act on.
@@ -36,6 +38,7 @@ pub struct Context {
     pub thread: thread::Handle,
     pub coprocessor: coprocessor::Handle,
     pub bootloader: dfu::Handle,
+    pub update: update::Handle,
     pub reports: report::Handle,
     // TODO(aspen): Make nicer
     pub capacitance: &'static sensor::Shared<capacitance::CapacitanceSensor<'static>>,
@@ -69,6 +72,11 @@ define_dispatch! {
         | ReadSensorValue      | async    | read_sensor        |
         | StartCollecting      | async    | start_collecting   |
         | StopCollecting       | async    | stop_collecting    |
+        | GetFirmwareStatus    | blocking | firmware_status    |
+        | BeginUpdate          | async    | begin_update       |
+        | WriteUpdate          | async    | write_update       |
+        | FinishUpdate         | async    | finish_update      |
+        | ApplyUpdate          | async    | apply_update       |
     };
     topics_in: {
         list: TOPICS_IN_LIST;
@@ -181,6 +189,37 @@ async fn finish_install(context: &mut Context, _header: VarHeader, (): ()) -> Co
 
 async fn uninstall_stack(context: &mut Context, _header: VarHeader, (): ()) -> CoprocessorResult {
     context.coprocessor.uninstall_stack().await
+}
+
+fn firmware_status(context: &mut Context, _header: VarHeader, (): ()) -> FirmwareStatus {
+    FirmwareStatus {
+        build: update::build(),
+        update: context.update.status(),
+    }
+}
+
+async fn begin_update(
+    context: &mut Context,
+    _header: VarHeader,
+    image: UpdateImage,
+) -> UpdateResult {
+    context.update.begin(image).await
+}
+
+async fn write_update(
+    context: &mut Context,
+    _header: VarHeader,
+    chunk: ImageChunk,
+) -> UpdateResult {
+    context.update.write(chunk).await
+}
+
+async fn finish_update(context: &mut Context, _header: VarHeader, (): ()) -> UpdateResult {
+    context.update.finish().await
+}
+
+async fn apply_update(context: &mut Context, _header: VarHeader, (): ()) -> UpdateResult {
+    context.update.apply().await
 }
 
 async fn start_collecting(context: &mut Context, _header: VarHeader, (): ()) -> NetworkResult {

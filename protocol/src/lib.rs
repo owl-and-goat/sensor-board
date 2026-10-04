@@ -35,6 +35,11 @@ endpoints! {
     | ReadSensorValue      | SensorReadReq | SensorReadResult  | "sensor/read"                |
     | StartCollecting      | ()            | NetworkResult     | "reports/collect/start"      |
     | StopCollecting       | ()            | NetworkResult     | "reports/collect/stop"       |
+    | GetFirmwareStatus    | ()            | FirmwareStatus    | "firmware/status"            |
+    | BeginUpdate          | UpdateImage   | UpdateResult      | "firmware/update/begin"      |
+    | WriteUpdate          | ImageChunk    | UpdateResult      | "firmware/update/write"      |
+    | FinishUpdate         | ()            | UpdateResult      | "firmware/update/finish"     |
+    | ApplyUpdate          | ()            | UpdateResult      | "firmware/update/apply"      |
 }
 
 topics! {
@@ -62,6 +67,53 @@ pub struct BoardInfo {
     /// When the running firmware was built, in the build machine's local
     /// time: tells images apart after a reflash.
     pub firmware_built: heapless::String<24>,
+}
+
+/// Which build of the firmware an image is: when it was built, in seconds
+/// since 1970.
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize, Schema,
+)]
+#[cfg_attr(feature = "defmt", derive(defmt::Format))]
+pub struct BuildId(pub u32);
+
+impl fmt::Display for BuildId {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        self.0.fmt(f)
+    }
+}
+
+/// What tells an image file to be this firmware, and which build of it: the
+/// firmware has one of these somewhere in it.
+#[repr(C)]
+pub struct BuildMarker {
+    magic: [u8; 16],
+    /// The [`BuildId`], least significant byte first.
+    build: [u8; 4],
+}
+
+impl BuildMarker {
+    const MAGIC: [u8; 16] = *b"sensor-board-fw\0";
+
+    pub const fn new(build: BuildId) -> BuildMarker {
+        BuildMarker {
+            magic: Self::MAGIC,
+            build: build.0.to_le_bytes(),
+        }
+    }
+
+    pub const fn build(&self) -> BuildId {
+        BuildId(u32::from_le_bytes(self.build))
+    }
+
+    /// The build of the firmware that `image` is, if it is the firmware.
+    pub fn find(image: &[u8]) -> Option<BuildId> {
+        let at = image
+            .windows(Self::MAGIC.len())
+            .position(|w| w == Self::MAGIC)?;
+        let build = image.get(at + Self::MAGIC.len()..)?.first_chunk()?;
+        Some(BuildId(u32::from_le_bytes(*build)))
+    }
 }
 
 /// The result of [`JoinNetwork`] or [`LeaveNetwork`]. `Ok` from a join means the board has taken
@@ -599,6 +651,8 @@ impl fmt::Display for BoardId {
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]
 pub struct Report {
     pub board: BoardId,
+    /// The firmware the board runs.
+    pub firmware: BuildId,
     /// Counts up by one with each report, from 0 when the board starts:
     /// whoever collects them can tell that one was lost, or that the board
     /// has restarted.
@@ -683,6 +737,94 @@ impl fmt::Display for CoprocessorError {
             CoprocessorError::Flash => "the image could not be written to flash",
             CoprocessorError::Rejected => "FUS turned the upgrade down",
             CoprocessorError::Unresponsive => "the radio coprocessor is not responding",
+        })
+    }
+}
+
+/// The result of a request about a firmware update. `Ok` from [`ApplyUpdate`]
+/// means that the board is about to restart into the update.
+pub type UpdateResult = Result<(), UpdateError>;
+
+/// A firmware image that a board is to update to.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Schema)]
+#[cfg_attr(feature = "defmt", derive(defmt::Format))]
+pub struct UpdateImage {
+    pub build: BuildId,
+    pub size: ImageSize,
+    pub digest: ImageDigest,
+}
+
+/// The SHA-256 of an image, which a board checks what it has received
+/// against.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Schema)]
+#[cfg_attr(feature = "defmt", derive(defmt::Format))]
+pub struct ImageDigest(pub [u8; 32]);
+
+/// The firmware a board runs, and where the board stands with updates of it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Schema)]
+#[cfg_attr(feature = "defmt", derive(defmt::Format))]
+pub struct FirmwareStatus {
+    pub build: BuildId,
+    pub update: UpdateStatus,
+}
+
+/// Where a board stands with updates of its firmware.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Schema)]
+#[cfg_attr(feature = "defmt", derive(defmt::Format))]
+pub enum UpdateStatus {
+    /// The board is still starting its radio coprocessor.
+    Starting,
+    /// The board cannot take an update: its radio coprocessor runs no
+    /// wireless stack, and it is in step with one that flash is written.
+    Unavailable,
+    /// The firmware that runs has shown that it works, and the board can take
+    /// an update.
+    Settled,
+    /// An update is arriving, and so many bytes of it are here.
+    Receiving { image: UpdateImage, received: u32 },
+    /// An update is here, whole and checked. [`ApplyUpdate`] switches to it.
+    Staged(UpdateImage),
+    /// The firmware that runs is an update that has yet to show that it
+    /// works. Once the board is back on its network it is kept. If the board
+    /// restarts first, or takes too long, the firmware it replaced comes
+    /// back.
+    OnTrial,
+    /// The last update did not show that it works, and the firmware it
+    /// replaced is back. The board can take another.
+    RolledBack,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Schema)]
+#[cfg_attr(feature = "defmt", derive(defmt::Format))]
+pub enum UpdateError {
+    /// See [`UpdateStatus::Unavailable`], or the board is still starting.
+    Unavailable,
+    /// The board takes no update while it is trying one out.
+    OnTrial,
+    /// The image is longer than the room there is for one.
+    DoesNotFit,
+    /// A chunk that does not continue the image where the last one stopped,
+    /// a finish before the image is complete, or an apply with nothing
+    /// staged.
+    OutOfSequence,
+    /// The image could not be written to flash.
+    Flash,
+    /// What arrived is not the image that was announced.
+    DigestMismatch,
+    /// The board did not get the request done in time.
+    Unresponsive,
+}
+
+impl fmt::Display for UpdateError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(match self {
+            UpdateError::Unavailable => "the board cannot take an update as it is",
+            UpdateError::OnTrial => "the board is still trying out its last update",
+            UpdateError::DoesNotFit => "the image is too long",
+            UpdateError::OutOfSequence => "the update arrived out of order",
+            UpdateError::Flash => "the update could not be written to flash",
+            UpdateError::DigestMismatch => "the update arrived damaged",
+            UpdateError::Unresponsive => "the board did not get to the update in time",
         })
     }
 }
@@ -777,6 +919,7 @@ mod tests {
             board: BoardId([
                 0x4b, 0x00, 0x41, 0x00, 0x03, 0x50, 0x47, 0x55, 0x32, 0x30, 0x31, 0x20,
             ]),
+            firmware: BuildId(u32::MAX),
             sequence: u32::MAX,
             readings: Readings {
                 capacitance: [
@@ -810,6 +953,22 @@ mod tests {
     #[test]
     fn report_does_not_fit_a_buffer_that_is_too_short() {
         assert_eq!(report().encode(&mut [0; 16]), None);
+    }
+
+    #[test]
+    fn build_marker_is_found_wherever_in_an_image_it_is() {
+        let marker = BuildMarker::new(BuildId(1_791_145_757));
+        assert_eq!(marker.build(), BuildId(1_791_145_757));
+
+        let mut image = std::vec![0xa5; 1000];
+        image.extend_from_slice(&marker.magic);
+        image.extend_from_slice(&marker.build);
+        image.extend_from_slice(&[0x5a; 333]);
+        assert_eq!(BuildMarker::find(&image), Some(BuildId(1_791_145_757)));
+
+        // No marker, and one that the end of the file cuts short.
+        assert_eq!(BuildMarker::find(&[0xa5; 1000]), None);
+        assert_eq!(BuildMarker::find(&image[..1018]), None);
     }
 
     #[test]

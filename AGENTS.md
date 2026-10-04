@@ -4,6 +4,8 @@ The board is built on an STM32WB55CG, which has two cores. CPU1 runs the
 firmware in this repository. CPU2, the radio coprocessor, runs ST's signed
 firmware: FUS (the firmware upgrade service) and the Thread stack it installs.
 
+- `bootloader/`: what runs first on CPU1. It swaps a staged firmware update
+  in, or back out, and starts the firmware.
 - `firmware/`: the Embassy firmware for CPU1.
 - `protocol/`: the postcard-rpc endpoints and every type in them. The firmware
   serves them (`firmware/src/rpc.rs`) and the CLI calls them.
@@ -48,11 +50,17 @@ run recipes from the top of the repository as `nix-shell --run 'just <recipe>'`.
 
 ## probe-rs
 
-`cargo run --release` in `firmware/` flashes over SWD and then stays attached,
-printing the log; it does not return by itself. `cargo flash --release --chip
-STM32WB55CG` flashes, resets and exits. Both erase only the pages the image
-covers, so the stored configuration in the last application page and
-everything CPU2 owns are left alone.
+`just flash` writes the bootloader and the firmware over SWD as one image,
+resets and exits. `cargo run --release` in `firmware/` writes the firmware
+alone, behind a bootloader that has to be there already, and then stays
+attached, printing the log; it does not return by itself. Both erase only the
+pages the image covers, so the stored configuration and everything CPU2 owns
+are left alone.
+
+`cargo run` leaves the bootloader's state page as it is. If the firmware it
+replaces was an update still on trial, the bootloader takes the reset for a
+failed trial and swaps the older firmware over what was just flashed. `just
+flash` does not have that problem: its image blanks the state page.
 
 Keep `--no-catch-reset` in the runner in `firmware/.cargo/config.toml`. The
 firmware resets itself on purpose (a bootloader request, a panic, a launch by
@@ -75,32 +83,79 @@ probe-rs attach --chip STM32WB55CG --no-catch-reset target/thumbv7em-none-eabihf
 ```
 
 A panic goes to panic-probe, which logs the message over defmt and raises a
-HardFault. What happens next depends on the probe (all three measured on
-2026-10-03):
+HardFault. What happens next depends on the probe (the first and the last
+measured on 2026-10-03, with the firmware of that day):
 
 - Under `cargo run`: probe-rs stops on the fault, prints a backtrace and
   exits, leaving the core halted.
-- No probe-rs session since power-up: `fault.rs` reboots into the ROM
-  bootloader, about a second later.
+- No probe-rs session since power-up: `fault.rs` counts a failed boot and
+  restarts the board. Not measured since it was changed from a jump to the
+  ROM bootloader.
 - A probe-rs session ran earlier and has exited: its hard-fault catch stays
   armed until a power cycle. The core sits halted until the watchdog resets
-  it, 32 s later, and only then reaches the bootloader.
+  it, 32 s later.
+
+A watchdog reset counts as a failed boot too. A restart after a failure
+undoes a firmware update that is on trial. Three failed boots in a row end in
+the ROM bootloader (`MAX_FAILED_BOOTS` in `dfu.rs`), so that a firmware which
+cannot stay up can still be replaced over USB; a minute of running clears
+the count. None of the counting has been seen on hardware yet.
 
 ## The ROM bootloader
 
 `firmware/src/dfu.rs` gets there with a magic word in an `.uninit` RAM word
-and a system reset: the first statement of `main` checks the word and jumps to
-system memory (0x1FFF0000) before any clock or peripheral is touched. A
-watchdog reset takes the same jump, so a hang ends in the bootloader too. The
-hardware path, JP1 shorted at plug-in, is independent of all this.
+and a system reset: the first statement of the firmware's `main` checks the
+word and jumps to system memory (0x1FFF0000) before any clock or peripheral is
+touched. Our own bootloader has run by then, which is why it does not call
+`embassy_stm32::init` and touches nothing but the flash controller. The same
+jump is taken after several failed boots in a row (see above). The hardware
+path, JP1 shorted at plug-in, is independent of all this.
 
 Do not:
 
 - Use `dfu-util` alt settings 1 (option bytes) or 2 (OTP). Alt 0 only.
 - Set read protection (RDP) or write option bytes over DFU.
-- Let the application image grow past the address CPU2's stack is installed
-  at. `firmware/memory.x` caps it at 256 KB, the last 4 KB of which is the
-  stored configuration.
+- Move the regions in `firmware/memory.x` without `bootloader/memory.x`: the
+  two have to agree, and nothing of CPU1's may reach the address CPU2's stack
+  is installed at (0x0808C000).
+
+## Firmware updates
+
+Flash below CPU2's stack is laid out like this (`memory.x` in `bootloader/`
+and `firmware/`):
+
+| From       | Size  | What                                                |
+|------------|-------|-----------------------------------------------------|
+| 0x08000000 | 24 K  | bootloader (embassy-boot, about 3.5 K of it used)   |
+| 0x08006000 | 4 K   | the bootloader's state page                         |
+| 0x08007000 | 224 K | the firmware                                        |
+| 0x0803F000 | 4 K   | stored configuration (`persistent_config.rs`)       |
+| 0x08040000 | 228 K | the staging area for an update                      |
+
+`firmware/src/update.rs` takes an image into the staging area, checks its
+SHA-256, and marks the state page; at the next reset the bootloader swaps the
+staging area with the firmware. The update then runs on trial (see the module
+doc), and any reset before it has vouched for itself swaps the old firmware
+back. Seen on a board on 2026-10-04: the swap, the trial being kept, the
+rollback after a reset during the trial, and an update from the rolled-back
+state. Not seen: the five-minute limit of a trial.
+
+Things learned the hard way:
+
+- A page that a flash loader (probe-rs's, or the ROM bootloader's) has put
+  its 0xff filler in reads as erased but cannot be programmed: every write
+  ends in PROGERR, an all-zero one too, until the page is erased again. The
+  whole flash image leaves the state page that way, so `update.rs` erases it
+  before marking it.
+- Flash is only written through `RadioFlash` while a stack runs on CPU2
+  (`radio_flash.rs`). The Thread service and the update service share it
+  behind a mutex inside the coprocessor task.
+- The bootloader has to fit 24 K in any profile. Unoptimized it does not, so
+  its dev profile is as size-optimized as its release one.
+- Boards and the CLI are often on different builds. Add endpoints; do not
+  change the request or response type of one that exists. Old firmware runs
+  the handler of an endpoint whose response type has changed, and the CLI,
+  waiting for the new type, times out.
 
 ## Clocks and the watchdog
 
@@ -135,8 +190,8 @@ secure flash area. That is also where ST's release notes put each image
 then installs it, resetting the chip a few times, and starts an installed
 stack without being asked. FUS only installs while it is the one running.
 
-A join stores the dataset in the last 4 KB page of the application's flash
-(`firmware/src/persistent_config.rs`, 0x0803F000), because CPU2 forgets its
+A join stores the dataset in a 4 KB page of its own, between the firmware and
+the staging area (`firmware/src/persistent_config.rs`, 0x0803F000), because CPU2 forgets its
 own settings when it restarts. At power-up a board with a stored dataset hands
 it back to the stack and rejoins by itself.
 

@@ -10,12 +10,13 @@ use postcard_rpc::{
     standard_icd::{ERROR_PATH, WireError},
 };
 use protocol::{
-    BeginInstall, BoardInfo, CoprocessorResult, CoprocessorStatus, Dataset, EnterBootloader,
-    FinishInstall, GetBoardInfo, GetCoprocessorStatus, GetNetworkDataset, GetNetworkNeighbors,
+    ApplyUpdate, BeginInstall, BeginUpdate, BoardInfo, CoprocessorResult, CoprocessorStatus,
+    Dataset, EnterBootloader, FinishInstall, FinishUpdate, FirmwareStatus, GetBoardInfo,
+    GetCoprocessorStatus, GetFirmwareStatus, GetNetworkDataset, GetNetworkNeighbors,
     GetNetworkRouters, GetNetworkStatus, ImageChunk, ImageSize, JoinNetwork, LeaveNetwork,
     NeighborTable, NetworkError, NetworkStatus, ReadSensorValue, Report, ReportReceived,
     RouterTable, Sensor, SensorReadReq, SensorReadResult, StartCollecting, StopCollecting, USB_PID,
-    USB_VID, UninstallStack, WriteInstall,
+    USB_VID, UninstallStack, UpdateImage, UpdateResult, WriteInstall, WriteUpdate,
 };
 
 /// How long a board gets to answer. The slowest it can be is a join or leave
@@ -193,6 +194,41 @@ impl Board {
             .await
     }
 
+    pub async fn firmware_status(&self) -> Result<FirmwareStatus> {
+        self.call::<GetFirmwareStatus>(&()).await
+    }
+
+    /// Have the board take in a firmware image, in place of whatever it had
+    /// staged or arriving.
+    pub async fn begin_update(&self, image: &UpdateImage) -> Result<()> {
+        let result = self.call::<BeginUpdate>(image).await?;
+        self.update_result(result)
+    }
+
+    /// The next piece of that image.
+    pub async fn write_update(&self, chunk: &ImageChunk) -> Result<()> {
+        let result = self.call::<WriteUpdate>(chunk).await?;
+        self.update_result(result)
+    }
+
+    /// Have the board check the image it has taken in. From then on it has
+    /// it staged.
+    pub async fn finish_update(&self) -> Result<()> {
+        let result = self.call::<FinishUpdate>(&()).await?;
+        self.update_result(result)
+    }
+
+    /// Have the board restart into the image it has staged. It drops off USB
+    /// for as long as its bootloader takes to swap the two.
+    pub async fn apply_update(&self) -> Result<()> {
+        let result = self.call::<ApplyUpdate>(&()).await?;
+        self.update_result(result)
+    }
+
+    fn update_result(&self, result: UpdateResult) -> Result<()> {
+        result.map_err(|e| anyhow!("board {}: {e}", self.serial))
+    }
+
     fn coprocessor_result(&self, result: CoprocessorResult) -> Result<()> {
         result.map_err(|e| anyhow!("board {}: {e}", self.serial))
     }
@@ -219,7 +255,14 @@ impl Board {
                 E::PATH
             ),
             Ok(Err(e)) => bail!("board {}: {} failed: {e:?}", self.serial, E::PATH),
-            Err(_) => bail!("board {} did not answer {}", self.serial, E::PATH),
+            // No answer at all, or one of another type than this CLI waits
+            // for, which is what a firmware built from another version of
+            // `protocol` sends when only the answer's type has changed.
+            Err(_) => bail!(
+                "board {} did not answer {}; its firmware may not match this CLI",
+                self.serial,
+                E::PATH
+            ),
         }
     }
 }

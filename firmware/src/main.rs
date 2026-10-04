@@ -6,11 +6,13 @@ mod dfu;
 mod fault;
 mod i2c_device;
 mod persistent_config;
+mod radio_flash;
 mod report;
 mod request;
 mod rpc;
 mod sensor;
 mod thread;
+mod update;
 mod usb;
 
 use defmt_rtt as _;
@@ -125,9 +127,11 @@ async fn main(spawner: Spawner) {
     let (bootloader_task, bootloader_handle) = dfu::init();
     spawner.spawn(bootloader(bootloader_task).unwrap());
 
+    let (update_handle, update_service) = update::init();
     let (coprocessor_task, coprocessor_handle, thread_handle, datagrams) = coprocessor::Builder {
         ipcc: p.IPCC,
         flash: p.FLASH,
+        update: update_service,
     }
     .init();
     spawner.spawn(coprocessor(coprocessor_task).unwrap());
@@ -167,6 +171,7 @@ async fn main(spawner: Spawner) {
         coprocessor: coprocessor_handle,
         bootloader: bootloader_handle,
         reports: report_handle,
+        update: update_handle,
         capacitance,
     };
     let (server, publisher) = rpc::server(spawner, link, context);

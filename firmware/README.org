@@ -2,25 +2,54 @@
 
 * build and flash
 
-over swd with probe-rs, st-link plugged into the jtag port:
+two images go on a board: the bootloader in =../bootloader=, at the start of
+flash, and this firmware behind it. the bootloader only swaps a firmware
+update in (see below) and starts the firmware. from the top of the
+repository:
 
 #+begin_src sh
-  cargo run --release                        # flash, reset, stay attached (ctrl-c to leave)
-  cargo flash --release --chip stm32wb55cg   # flash, reset, exit
+  just flash                  # both, through the st-link on the jtag port
+  just update                 # the firmware, over usb, through the firmware that runs
+  just dfu-flash              # both, over usb, through the rom bootloader
+  just dfu-flash-all          # the same for every attached board, one after the other
 #+end_src
 
-** without a probe: usb dfu
-
-for a board that is not on the swd cable, the rom bootloader takes the image
-over usb. ask the running firmware for its bootloader first; with several
-boards in the bootloader pick one with =dfu-util -p <usb path>= (=lsusb -t=).
+=just update= and =just dfu-flash= take =--board <serial>= with several boards
+attached. to watch the log of a board on the probe, flashing only the
+firmware (the bootloader has to be there already):
 
 #+begin_src sh
-  sensor-board-cli bootloader --board <serial>
-  elf=target/thumbv7em-none-eabihf/release/sensor-board-firmware
-  $(rustc --print sysroot)/lib/rustlib/*/bin/llvm-objcopy -O binary $elf app.bin
-  dfu-util -d 0483:df11 -a 0 -s 0x08000000:leave -D app.bin
+  cargo run --release         # flash, reset, stay attached (ctrl-c to leave)
 #+end_src
+
+** firmware updates
+
+=just update= is =sensor-board-cli firmware update <image>=, with the image
+that =just firmware-image= makes. the board takes the image into the half of
+flash it keeps for that, checks it, and restarts; its bootloader swaps the
+two firmwares, which takes about ten seconds. the new one then runs on
+trial. once the board is back on its network (or has none to join) the
+update is kept. if the board restarts first, or is not back within five
+minutes, the bootloader puts the old firmware back. =firmware status= says
+which build runs and where that stands.
+
+a board keeps its network through all of this: its stored configuration is
+in a page of its own that neither firmware slot covers.
+
+** without the firmware: usb dfu
+
+=just dfu-flash= asks the running firmware for the rom bootloader and then
+does this, which also works on a board that got there another way (see
+"getting into the bootloader"). with several boards in the rom bootloader
+pick one with =dfu-util -p <usb path>= (=lsusb -t=).
+
+#+begin_src sh
+  dfu-util -d 0483:df11 -a 0 -s 0x08000000:leave -D target/sensor-board-flash.bin
+#+end_src
+
+the image is the bootloader, filled up to 0x08007000 with blank flash, and
+the firmware after it (=just firmware-image=, then the bootloader's part of
+=_flash-image= in the =Justfile=).
 
 * talking to a board: sensor-board-cli
 
@@ -42,6 +71,8 @@ unique id, and =--board= takes any unambiguous start of it.
   cargo run -- coprocessor install <image> --board 4d  # see "a new board" below
   cargo run -- coprocessor uninstall --board 4d        # remove the wireless stack
   cargo run -- bootloader --board 4d       # reboot into the rom bootloader
+  cargo run -- firmware status --board 4d  # which build runs, and where an update stands
+  cargo run -- firmware update <image> --board 4d  # see "firmware updates" above
   cargo run -- reports watch               # print the boards' sensor reports as they arrive
   cargo run -- reports export              # serve them to prometheus
 #+end_src
@@ -90,7 +121,8 @@ usb dfu mode (=lsusb= shows =0483:df11=):
   works no matter what is in flash. take the coin cell out first: vbus and the
   cell share a net.
 - =sensor-board-cli bootloader=, while the app runs.
-- a panic, hard fault or watchdog reset in the app.
+- three boots in a row that end in a panic, a hard fault or a watchdog reset.
+  one such failure is only a restart.
 
 * cpu2: fus, the thread stack, and openthread
 
@@ -103,7 +135,7 @@ a chip comes blank, with an old fus and no wireless stack. from the top of
 the repository, with the board on usb and nothing else:
 
 #+begin_src sh
-  just new-board          # this firmware over dfu, then fus and the thread stack; under a minute
+  just new-board          # bootloader and firmware over dfu, then fus and the thread stack; under a minute
   just cli network init   # onto the network saved by an earlier run
 #+end_src
 
@@ -111,7 +143,7 @@ the repository, with the board on usb and nothing else:
 and then does this:
 
 #+begin_src sh
-  dfu-util -d 0483:df11 -a 0 -s 0x08000000:leave -D sensor-board-firmware.bin
+  dfu-util -d 0483:df11 -a 0 -s 0x08000000:leave -D sensor-board-flash.bin
   sensor-board-cli coprocessor install stm32wb5x_FUS_fw.bin          # fus 1.2.0 -> 2.2.0, a few seconds
   sensor-board-cli coprocessor install stm32wb5x_Thread_FTD_fw.bin   # about half a minute
 #+end_src

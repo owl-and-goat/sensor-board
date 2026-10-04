@@ -1,15 +1,24 @@
 use core::mem::MaybeUninit;
 use core::ptr;
 
+use embassy_futures::select::{Either, select};
 use embassy_stm32::pac::RCC;
 use embassy_sync::{blocking_mutex::raw::ThreadModeRawMutex, signal::Signal};
-use embassy_time::Timer;
+use embassy_time::{Duration, Timer};
 use static_cell::StaticCell;
 
 const MAGIC: u32 = 0xB007_10AD;
 
 /// System memory (ROM bootloader) base on STM32WB55, per AN2606.
 const SYSTEM_MEMORY: u32 = 0x1FFF_0000;
+
+/// How many boots in a row may end in a panic, a fault or a watchdog reset
+/// before the next one goes to the ROM bootloader instead. A firmware that
+/// cannot stay up is then one that can be replaced over USB.
+const MAX_FAILED_BOOTS: u32 = 3;
+
+/// A firmware that has run for this long has not failed to boot.
+const HEALTHY_AFTER: Duration = Duration::from_secs(60);
 
 /// Lives in `.uninit`, so cortex-m-rt leaves it alone during RAM init and it
 /// keeps its value across a software reset (SRAM1 is retained; only a
@@ -24,8 +33,26 @@ static mut DFU_FLAG: MaybeUninit<u32> = MaybeUninit::uninit();
 static mut FUS_BUSY: MaybeUninit<u32> = MaybeUninit::uninit();
 const BUSY_MAGIC: u32 = 0xF05B_0511;
 
+/// How many boots in a row have failed, on top of `FAILED_MAGIC`: whatever
+/// else is here is what RAM holds after power-up, and counts as none.
+#[unsafe(link_section = ".uninit.FAILED_BOOTS")]
+static mut FAILED_BOOTS: MaybeUninit<u32> = MaybeUninit::uninit();
+const FAILED_MAGIC: u32 = 0xFA11_0000;
+
 fn flag() -> *mut u32 {
     (&raw mut DFU_FLAG).cast()
+}
+
+fn failed_boots() -> u32 {
+    let word = unsafe { ptr::read_volatile((&raw const FAILED_BOOTS).cast::<u32>()) };
+    match word & 0xFFFF_0000 {
+        FAILED_MAGIC => word & 0xFFFF,
+        _ => 0,
+    }
+}
+
+fn set_failed_boots(count: u32) {
+    unsafe { ptr::write_volatile((&raw mut FAILED_BOOTS).cast::<u32>(), FAILED_MAGIC | count) };
 }
 
 pub fn fus_busy(busy: bool) {
@@ -42,8 +69,11 @@ pub fn is_fus_busy() -> bool {
 }
 
 /// Jumps to the ROM bootloader if the previous boot asked for it, or if the
-/// previous boot ended in an independent-watchdog reset (a hang, for example
-/// waiting for a crystal that never started).
+/// last few boots all failed: ended in a panic, a fault, or an
+/// independent-watchdog reset (a hang, for example waiting for a crystal
+/// that never started). One failure is only a restart. If it was a firmware
+/// update on trial that failed, the bootloader has put the old firmware
+/// back by now.
 pub fn enter_bootloader_if_requested() {
     let watchdog_reset = RCC
         .csr()
@@ -54,6 +84,9 @@ pub fn enter_bootloader_if_requested() {
     RCC.csr().modify(|w|
                      // Remove reset flag
                      w.set_rmvf(true));
+    if watchdog_reset {
+        set_failed_boots(failed_boots() + 1);
+    }
 
     let flag = flag();
     // SAFETY: `flag` is a linker-reserved, aligned RAM word that nothing else
@@ -61,7 +94,8 @@ pub fn enter_bootloader_if_requested() {
     unsafe {
         let requested = ptr::read_volatile(flag) == MAGIC;
         ptr::write_volatile(flag, 0);
-        if requested || watchdog_reset {
+        if requested || failed_boots() >= MAX_FAILED_BOOTS {
+            set_failed_boots(0);
             jump_to_bootloader();
         }
     }
@@ -111,7 +145,11 @@ pub struct Task {
 
 impl Task {
     pub async fn run(self) -> ! {
-        self.requested.wait().await;
+        if let Either::Second(()) = select(self.requested.wait(), Timer::after(HEALTHY_AFTER)).await
+        {
+            set_failed_boots(0);
+            self.requested.wait().await;
+        }
         // Time for the answer to whoever asked to reach the USB host.
         Timer::after_millis(100).await;
         reboot_into_bootloader()
@@ -122,6 +160,12 @@ impl Task {
 pub fn reboot_into_bootloader() -> ! {
     // SAFETY: see `enter_bootloader_if_requested`.
     unsafe { ptr::write_volatile(flag(), MAGIC) };
+    cortex_m::peripheral::SCB::sys_reset()
+}
+
+/// Reset after a panic or a fault, and count this boot as one that failed.
+pub fn reset_after_failure() -> ! {
+    set_failed_boots(failed_boots() + 1);
     cortex_m::peripheral::SCB::sys_reset()
 }
 

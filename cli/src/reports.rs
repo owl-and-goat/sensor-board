@@ -107,12 +107,13 @@ async fn collect_through(board: &Board, on_report: &mut impl FnMut(Report)) -> R
 pub fn describe(report: &Report) -> String {
     let Report {
         board,
+        firmware,
         sequence,
         readings,
     } = report;
     let capacitance: Vec<String> = readings.capacitance.iter().map(describe_reading).collect();
     format!(
-        "{board}  #{sequence}  capacitance {}",
+        "{board}  build {firmware}  #{sequence}  capacitance {}",
         capacitance.join(", ")
     )
 }
@@ -183,6 +184,11 @@ impl Metrics {
             "gauge",
             "When the last report from a board was received, in Unix time.",
         );
+        let mut firmware = Family::new(
+            "sensor_board_firmware_build",
+            "gauge",
+            "The build of the firmware a board runs: when it was built, in Unix time.",
+        );
         let mut capacitance = Family::new(
             "sensor_board_capacitance",
             "gauge",
@@ -200,6 +206,7 @@ impl Metrics {
             lost.sample(&labels, board.lost);
             let since_epoch = board.last_at.duration_since(UNIX_EPOCH).unwrap_or_default();
             last_at.sample(&labels, since_epoch.as_secs());
+            firmware.sample(&labels, board.last.firmware.0);
 
             // A clock that was set back makes the report look like it is
             // from the future: fresh.
@@ -216,10 +223,17 @@ impl Metrics {
             }
         }
 
-        [received, lost, last_at, capacitance, capacitance_errors]
-            .iter()
-            .map(Family::render)
-            .collect()
+        [
+            received,
+            lost,
+            last_at,
+            firmware,
+            capacitance,
+            capacitance_errors,
+        ]
+        .iter()
+        .map(Family::render)
+        .collect()
     }
 }
 
@@ -326,7 +340,7 @@ fn is_for_metrics(request_line: &str) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use protocol::{Readings, SensorReadError, SensorValue};
+    use protocol::{BuildId, Readings, SensorReadError, SensorValue};
 
     use super::*;
 
@@ -335,6 +349,7 @@ mod tests {
             board: BoardId([
                 0x4b, 0x00, 0x41, 0x00, 0x03, 0x50, 0x47, 0x55, 0x32, 0x30, 0x31, 0x20,
             ]),
+            firmware: BuildId(1_791_145_757),
             sequence,
             readings: Readings {
                 capacitance: [
@@ -355,7 +370,7 @@ mod tests {
     fn a_report_is_one_line() {
         assert_eq!(
             describe(&report(7)),
-            "4B0041000350475532303120  #7  capacitance 1234567, 0, \
+            "4B0041000350475532303120  build 1791145757  #7  capacitance 1234567, 0, \
              failed (I2C ACK Not Received), 42"
         );
     }
@@ -377,6 +392,10 @@ mod tests {
              board was received, in Unix time.\n\
              # TYPE sensor_board_last_report_timestamp_seconds gauge\n\
              sensor_board_last_report_timestamp_seconds{board=\"4B0041000350475532303120\"} 1000\n\
+             # HELP sensor_board_firmware_build The build of the firmware a board runs: when it \
+             was built, in Unix time.\n\
+             # TYPE sensor_board_firmware_build gauge\n\
+             sensor_board_firmware_build{board=\"4B0041000350475532303120\"} 1791145757\n\
              # HELP sensor_board_capacitance Raw reading of a capacitance channel, from a \
              report of the last minute.\n\
              # TYPE sensor_board_capacitance gauge\n\

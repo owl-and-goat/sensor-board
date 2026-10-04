@@ -1,0 +1,30 @@
+[package]
+name = "sensor-board-bootloader"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+[dependencies]
+embassy-boot-stm32 = "0.8.0"
+embassy-stm32 = { version = "0.6.0", features = ["stm32wb55cg", "unstable-pac"] }
+embassy-sync = "0.8.0"
+
+cortex-m = { version = "0.7.7", features = ["inline-asm", "critical-section-single-core"] }
+# set-vtor: the ROM bootloader jumps here without a reset after a DFU
+# ":leave", with VTOR still on its own vector table.
+cortex-m-rt = { version = "0.7.5", features = ["set-vtor"] }
+
+[profile.release]
+debug = 2
+lto = "fat"
+opt-level = "z"
+codegen-units = 1
+
+# The same, for a plain `cargo build`: unoptimized, the bootloader is half as
+# big again as the 24 KB it has to fit in, and does not link.
+[profile.dev]
+debug = 2
+lto = "fat"
+opt-level = "z"
+codegen-units = 1
+incremental = false

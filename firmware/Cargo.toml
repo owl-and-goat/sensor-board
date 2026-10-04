@@ -32,6 +32,15 @@ protocol = { path = "../protocol", features = ["defmt"] }
 static_cell = "2.1"
 heapless = "0.9"
 
+# Firmware updates: the state page that tells bootloader/ what to do at the
+# next reset, flash as the regions it is divided into, and the check of an
+# image that has arrived.
+embassy-boot = { version = "0.7.0", features = ["defmt"] }
+embassy-embedded-hal = "0.6.0"
+embedded-storage = "0.3.1"
+embedded-storage-async = "0.4.1"
+sha2 = { version = "0.10", default-features = false }
+
 bitvec = { version = "1.1", default-features = false }
 
 # Same revision as the protocol crate, which says why it is not a release.

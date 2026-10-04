@@ -15,7 +15,7 @@ use crate::{
         self,
         capacitance::{CapacitanceSensor, Channel},
     },
-    thread,
+    thread, update,
 };
 
 /// How often a board reports.
@@ -103,6 +103,7 @@ impl Task {
     async fn report(&mut self) {
         let report = Report {
             board: self.board,
+            firmware: update::build(),
             sequence: self.sequence,
             readings: self.readings().await,
         };

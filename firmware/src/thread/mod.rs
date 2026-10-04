@@ -28,13 +28,9 @@ use embassy_futures::{
     join::join,
     select::{Either, Either4, select, select4},
 };
-use embassy_stm32::flash::{Blocking, Flash};
 use embassy_stm32_wpan::{
     shci::SchiCommandStatus,
-    sub::{
-        sys::Sys,
-        thread::{ThreadCliRx, ThreadNotifRx, ThreadOt},
-    },
+    sub::thread::{ThreadCliRx, ThreadNotifRx, ThreadOt},
 };
 use embassy_sync::{
     blocking_mutex::{Mutex, raw::ThreadModeRawMutex},
@@ -49,7 +45,7 @@ use static_cell::StaticCell;
 
 use crate::{
     persistent_config::{self, Config},
-    request,
+    radio_flash, request,
 };
 
 mod ffi;
@@ -208,6 +204,19 @@ impl Datagrams {
     }
 }
 
+/// A look at where the board stands with its network, for what only needs
+/// that.
+#[derive(Clone, Copy)]
+pub struct Monitor {
+    status: &'static Status,
+}
+
+impl Monitor {
+    pub fn status(&self) -> NetworkStatus {
+        self.status.get()
+    }
+}
+
 /// How the rest of the firmware reaches Thread.
 pub struct Handle {
     requests: request::Client<Request, NetworkResult>,
@@ -272,12 +281,11 @@ fn stored_dataset() -> Option<Dataset> {
 
 /// What it takes to run Thread: the stack's ends of the CPU2 mailbox, and the
 /// means to keep a dataset in flash next to a running radio stack.
-pub struct Thread<'d> {
+pub struct Thread<'a, 'd> {
     pub ot: ThreadOt<'d>,
     pub cli_rx: ThreadCliRx<'d>,
     pub notif_rx: ThreadNotifRx<'d>,
-    pub sys: Sys<'d>,
-    pub flash: Flash<'d, Blocking>,
+    pub flash: &'a radio_flash::Shared<'d>,
 }
 
 /// The serving ends of what the [`Handle`] and [`Datagrams`] ask through.
@@ -333,20 +341,24 @@ pub struct Service {
 }
 
 impl Service {
+    pub fn monitor(&self) -> Monitor {
+        Monitor {
+            status: self.status,
+        }
+    }
+
     /// Run Thread on a CPU2 that has a Thread stack.
-    pub async fn run(self, thread: Thread<'_>) -> ! {
+    pub async fn run(self, thread: Thread<'_, '_>) -> ! {
         let Thread {
             ot,
             cli_rx,
             notif_rx,
-            sys,
             flash,
         } = thread;
 
         let network = Network {
             ot,
             notif_rx,
-            sys,
             flash,
             requests: self.requests,
             received: self.received,
@@ -385,11 +397,10 @@ async fn drain_cli(mut cli_rx: ThreadCliRx<'_>) -> ! {
     }
 }
 
-struct Network<'d> {
+struct Network<'a, 'd> {
     ot: ThreadOt<'d>,
     notif_rx: ThreadNotifRx<'d>,
-    sys: Sys<'d>,
-    flash: Flash<'d, Blocking>,
+    flash: &'a radio_flash::Shared<'d>,
     requests: Requests,
     received: channel::Sender<'static, ThreadModeRawMutex, Datagram, RECEIVED_DEPTH>,
     status: &'static Status,
@@ -398,7 +409,7 @@ struct Network<'d> {
     listening: bool,
 }
 
-impl Network<'_> {
+impl Network<'_, '_> {
     async fn run(mut self) -> ! {
         if let Err(e) = self.start().await {
             // A call into a stack that did not start might never come back.
@@ -464,7 +475,8 @@ impl Network<'_> {
 
     /// Start the Thread stack on CPU2.
     async fn start(&mut self) -> NetworkResult {
-        match self.sys.shci_c2_thread_init().await {
+        let started = self.flash.lock().await.sys().shci_c2_thread_init().await;
+        match started {
             Ok(SchiCommandStatus::ShciSuccess) => {}
             _ => return Err(NetworkError::StartFailed),
         }
@@ -518,14 +530,14 @@ impl Network<'_> {
         self.up().await?;
 
         let config = Config::new(dataset.as_tlvs());
-        persistent_config::save(&mut self.flash, &mut self.sys, &config)
+        persistent_config::save(&mut *self.flash.lock().await, &config)
             .await
             .map_err(|_| NetworkError::Storage)
     }
 
     async fn leave(&mut self) -> NetworkResult {
         self.down().await?;
-        persistent_config::erase(&mut self.flash, &mut self.sys)
+        persistent_config::erase(&mut *self.flash.lock().await)
             .await
             .map_err(|_| NetworkError::Storage)
     }

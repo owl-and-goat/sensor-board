@@ -11,7 +11,7 @@ use core::cell::Cell;
 
 use defmt::debug;
 use embassy_futures::{
-    join::join,
+    join::{join, join3},
     select::{Either, select},
 };
 use embassy_stm32::{
@@ -33,7 +33,10 @@ use protocol::{
 };
 use static_cell::StaticCell;
 
-use crate::{request, thread};
+use crate::{
+    radio_flash::{self, RadioFlash},
+    request, thread, update,
+};
 
 mod fus;
 
@@ -74,6 +77,9 @@ const REQUEST_TIMEOUT: Duration = Duration::from_secs(5);
 pub struct Builder<'d> {
     pub ipcc: Peri<'d, IPCC>,
     pub flash: Peri<'d, FLASH>,
+    /// The firmware-update service, which this task runs: it writes flash in
+    /// step with CPU2.
+    pub update: update::Service,
 }
 
 impl<'d> Builder<'d> {
@@ -93,6 +99,7 @@ impl<'d> Builder<'d> {
             requests: server,
             status: &shared.status,
             thread,
+            update: self.update,
         };
         let handle = Handle {
             requests: client,
@@ -150,6 +157,7 @@ pub struct Task<'d> {
     requests: request::Server<fus::Request, CoprocessorResult>,
     status: &'static Status,
     thread: thread::Service,
+    update: update::Service,
 }
 
 impl<'d> Task<'d> {
@@ -175,18 +183,21 @@ impl<'d> Task<'d> {
                     self.status.publish(CoprocessorStatus::Stack(firmware));
 
                     let installer = fus::serve_beside_stack(self.requests, self.status);
+                    // From here on flash is only written in step with the
+                    // stack, by Thread for its dataset and by the updates.
+                    let flash = radio_flash::Shared::new(RadioFlash::new(flash, sys));
+                    let update = self.update.run(&flash, self.thread.monitor());
                     if firmware.stack.map(|s| s.kind) == Some(StackKind::ThreadFtd) {
                         let thread = thread::Thread {
                             ot,
                             cli_rx,
                             notif_rx,
-                            sys,
-                            flash,
+                            flash: &flash,
                         };
-                        join(self.thread.run(thread), installer).await.0
+                        join3(self.thread.run(thread), installer, update).await.0
                     } else {
                         let thread = self.thread.unavailable(NetworkError::NoThreadStack);
-                        join(thread, installer).await.0
+                        join3(thread, installer, update).await.0
                     }
                 }
                 Running::Fus(firmware) => {
@@ -197,9 +208,10 @@ impl<'d> Task<'d> {
                         requests: self.requests,
                         status: self.status,
                     };
-                    join(
+                    join3(
                         self.thread.unavailable(NetworkError::NoThreadStack),
                         installer.run(),
+                        self.update.unavailable(),
                     )
                     .await
                     .0

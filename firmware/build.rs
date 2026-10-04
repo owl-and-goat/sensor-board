@@ -14,13 +14,18 @@ fn main() {
     // defmt's string table, which probe-rs decodes the RTT log stream with.
     println!("cargo:rustc-link-arg-bins=-Tdefmt.x");
 
-    // Build stamp shown on the console heartbeat, so you can tell which image
-    // is running after a reflash.
-    let stamp = Command::new("date")
-        .arg("+%Y-%m-%d %H:%M:%S")
-        .output()
-        .ok()
-        .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
-        .unwrap_or_else(|| "unknown".into());
-    println!("cargo:rustc-env=BUILD_STAMP={stamp}");
+    // When this build was made: as seconds since 1970, which is what an
+    // update is compared by, and as a time to read, so you can tell which
+    // image is running after a reflash.
+    let date = |args: &[&str]| {
+        let output = Command::new("date").args(args).output().ok()?;
+        Some(String::from_utf8_lossy(&output.stdout).trim().to_string())
+    };
+    let id = date(&["+%s"]).unwrap_or_else(|| "0".into());
+    let stamp = date(&["-d", &format!("@{id}"), "+%Y-%m-%d %H:%M:%S"]);
+    println!("cargo:rustc-env=BUILD_ID={id}");
+    println!(
+        "cargo:rustc-env=BUILD_STAMP={}",
+        stamp.unwrap_or_else(|| "unknown".into())
+    );
 }
