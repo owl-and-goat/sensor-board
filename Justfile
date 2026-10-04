@@ -19,12 +19,27 @@ _image file sha256:
   @echo "{{sha256}}  {{file}}" | sha256sum --check --quiet
 
 # Set up a new board over USB: our firmware on CPU1, then FUS and the Thread stack on CPU2. A blank chip sits in its ROM bootloader, which is where this starts
-new-board: coprocessor-images
-  ( cd firmware && cargo build --release && "$(rustc --print sysroot)"/lib/rustlib/*/bin/llvm-objcopy -O binary target/thumbv7em-none-eabihf/release/sensor-board-firmware target/sensor-board-firmware.bin )
-  # dfu-util ends in an error whether this works or not: at ":leave" the chip starts the firmware, and is gone when dfu-util asks it how that went. So go by its own report of the download.
-  dfu-util -d 0483:df11 -a 0 -s 0x08000000:leave -D firmware/target/sensor-board-firmware.bin | tee /dev/stderr | grep "File downloaded successfully" > /dev/null
+new-board: coprocessor-images _firmware-bin _dfu-download
   {{just_executable()}} cli coprocessor install {{fus_image}}
   {{just_executable()}} cli coprocessor install {{stack_image}}
+
+# Flash the firmware through the debug probe
+flash:
+    ( cd firmware && cargo flash --release --chip STM32WB55CG )
+
+# Flash the firmware over USB, onto a board that is running it. With several boards attached, say which: just dfu-flash --board <serial>
+dfu-flash *board: _firmware-bin
+    {{just_executable()}} cli bootloader {{board}}
+    {{just_executable()}} _dfu-download -w
+
+# The firmware as the raw image that dfu-util takes. Built before anything is done to a board
+_firmware-bin:
+    ( cd firmware && cargo build --release && "$(rustc --print sysroot)"/lib/rustlib/*/bin/llvm-objcopy -O binary target/thumbv7em-none-eabihf/release/sensor-board-firmware target/sensor-board-firmware.bin )
+
+# Write that image to the board in its ROM bootloader, and start it. With -w, wait for a board to get there (the long form, --wait, is one that dfu-util 0.11 lists but does not take)
+_dfu-download *flags:
+    # dfu-util ends in an error whether this works or not: at ":leave" the chip starts the firmware, and is gone when dfu-util asks it how that went. So go by its own report of the download.
+    dfu-util {{flags}} -d 0483:df11 -a 0 -s 0x08000000:leave -D firmware/target/sensor-board-firmware.bin | tee /dev/stderr | grep "File downloaded successfully" > /dev/null
 
 attach:
     probe-rs attach --chip STM32WB55CG --no-catch-reset firmware/target/thumbv7em-none-eabihf/release/sensor-board-firmware
@@ -33,3 +48,8 @@ build *args:
     ( cd protocol && cargo build {{args}} )
     ( cd firmware && cargo build {{args}} )
     ( cd cli && cargo build {{args}} )
+
+fmt *args:
+    ( cd protocol && cargo fmt {{args}} )
+    ( cd firmware && cargo fmt {{args}} )
+    ( cd cli && cargo fmt {{args}} )
