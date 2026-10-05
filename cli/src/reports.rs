@@ -9,7 +9,7 @@ use std::{
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
-use anyhow::{Context, Result};
+use anyhow::{Context, Result, bail};
 use postcard_rpc::host_client::MultiSubRxError;
 use protocol::{BoardId, Report, SensorReadResult};
 use tokio::{
@@ -97,7 +97,7 @@ async fn collect_through(board: &Board, on_report: &mut impl FnMut(Report)) -> R
             report = reports.recv() => match report {
                 Ok(report) => on_report(report),
                 Err(MultiSubRxError::Lagged(n)) => eprintln!("Fell behind: skipped {n} reports."),
-                Err(MultiSubRxError::IoClosed) => anyhow::bail!("board {} is gone", board.serial()),
+                Err(MultiSubRxError::IoClosed) => bail!("board {} is gone", board.serial()),
             },
         }
     }
