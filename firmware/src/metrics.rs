@@ -15,9 +15,11 @@ use core::net::SocketAddrV6;
 use embassy_futures::select::{Either, select};
 use embassy_sync::blocking_mutex::{Mutex, raw::ThreadModeRawMutex};
 use embassy_time::{Duration, Instant, Timer};
-use protocol::{BoardConfig, BoardId, MetricsChunk, PowerMode, Sensor};
+use protocol::{
+    BoardConfig, BoardId, MetricsChunk, PowerMode, Precision, Sensor, TempRh, TempRhReq,
+};
 use static_cell::StaticCell;
-use tinymetrics::{Counter, FmtLabels, IntGauge, MetricBuilder, MetricFamily};
+use tinymetrics::{Counter, FmtLabels, Gauge, IntGauge, MetricBuilder, MetricFamily};
 
 use crate::{
     board_config, http,
@@ -25,6 +27,7 @@ use crate::{
         self,
         capacitance::{self, CapacitanceSensor},
         color::{self, ColorSensor},
+        temp_rh::TempRhSensor,
     },
     thread, update,
 };
@@ -46,12 +49,14 @@ const RETRY: Duration = Duration::from_secs(5);
 const MIN_INTERVAL: Duration = Duration::from_millis(100);
 
 /// The sensors that have a driver.
-const SENSORS: [Sensor; 5] = [
+const SENSORS: [Sensor; 7] = [
     Sensor::Capacitance0,
     Sensor::Capacitance1,
     Sensor::Capacitance2,
     Sensor::Capacitance3,
     Sensor::Color,
+    Sensor::Temperature,
+    Sensor::Humidity,
 ];
 
 /// The capacitance channels, indexed by the channel number in their metrics.
@@ -108,6 +113,9 @@ struct Metrics {
     capacitance_errors: CapacitanceFamily<Counter>,
     color: ColorFamily<IntGauge>,
     color_errors: ColorFamily<Counter>,
+    temperature: BoardFamily<Gauge>,
+    humidity: BoardFamily<Gauge>,
+    temp_rh_errors: BoardFamily<Counter>,
     scrapes: BoardFamily<Counter>,
     pushes: BoardFamily<Counter>,
     push_failures: BoardFamily<Counter>,
@@ -131,6 +139,15 @@ impl Metrics {
                 .build_labeled(),
             color_errors: MetricBuilder::new("sensor_board_color_errors_total")
                 .with_help("Failed readings of a color channel.")
+                .build_labeled(),
+            temperature: MetricBuilder::new("sensor_board_temperature_celsius")
+                .with_help("Temperature, in °C.")
+                .build_labeled(),
+            humidity: MetricBuilder::new("sensor_board_relative_humidity_percent")
+                .with_help("Relative humidity, in percent.")
+                .build_labeled(),
+            temp_rh_errors: MetricBuilder::new("sensor_board_temp_rh_errors_total")
+                .with_help("Failed measurements of the temperature & humidity sensor.")
                 .build_labeled(),
             scrapes: MetricBuilder::new("sensor_board_scrapes_total")
                 .with_help("Scrapes of the board's metrics endpoint.")
@@ -156,6 +173,9 @@ impl Metrics {
         self.capacitance_errors.fmt_metric(text)?;
         self.color.fmt_metric(text)?;
         self.color_errors.fmt_metric(text)?;
+        self.temperature.fmt_metric(text)?;
+        self.humidity.fmt_metric(text)?;
+        self.temp_rh_errors.fmt_metric(text)?;
         self.scrapes.fmt_metric(text)?;
         self.pushes.fmt_metric(text)?;
         self.push_failures.fmt_metric(text)?;
@@ -186,6 +206,7 @@ pub struct Builder {
     pub config: board_config::Monitor,
     pub capacitance: &'static sensor::Shared<CapacitanceSensor<'static>>,
     pub color: Option<&'static sensor::Shared<ColorSensor<'static>>>,
+    pub temp_rh: Option<&'static sensor::Shared<TempRhSensor<'static>>>,
 }
 
 impl Builder {
@@ -202,6 +223,7 @@ impl Builder {
                 tcp: self.tcp,
                 capacitance: self.capacitance,
                 color: self.color,
+                temp_rh: self.temp_rh,
                 board: BoardId(embassy_stm32::uid::uid()),
                 metrics: shared,
                 text: TEXT.init(Text::new()),
@@ -286,6 +308,7 @@ struct Exporter {
     tcp: thread::Tcp,
     capacitance: &'static sensor::Shared<CapacitanceSensor<'static>>,
     color: Option<&'static sensor::Shared<ColorSensor<'static>>>,
+    temp_rh: Option<&'static sensor::Shared<TempRhSensor<'static>>>,
     /// This board's ID.
     board: BoardId,
     metrics: &'static SharedMetrics,
@@ -474,8 +497,19 @@ impl Exporter {
             Sensor::Capacitance2 => self.read_capacitance(2).await,
             Sensor::Capacitance3 => self.read_capacitance(3).await,
             Sensor::Color => self.read_color().await,
+            Sensor::Temperature => {
+                self.read_temp_rh(
+                    |metrics| &metrics.temperature,
+                    |reading| reading.temperature,
+                )
+                .await
+            }
+            Sensor::Humidity => {
+                self.read_temp_rh(|metrics| &metrics.humidity, |reading| reading.humidity)
+                    .await
+            }
             // Not in `SENSORS`: these have no driver.
-            Sensor::Distance | Sensor::Temperature | Sensor::Humidity | Sensor::Acceleration => {}
+            Sensor::Distance | Sensor::Acceleration => {}
         }
     }
 
@@ -528,6 +562,33 @@ impl Exporter {
                 }
             });
         }
+    }
+
+    /// Measure with the temperature & humidity sensor, and set `gauge` to
+    /// `value` of the measurement. On a board without one, every measurement
+    /// fails.
+    async fn read_temp_rh(
+        &mut self,
+        gauge: impl FnOnce(&Metrics) -> &BoardFamily<Gauge>,
+        value: impl FnOnce(TempRh) -> f32,
+    ) {
+        let reading = match self.temp_rh {
+            Some(temp_rh) => {
+                let req = TempRhReq::Plain(Precision::High);
+                temp_rh.lock().await.read(req).await.ok()
+            }
+            None => None,
+        };
+        self.count(
+            |metrics| &metrics.temp_rh_errors,
+            usize::from(reading.is_none()),
+        );
+        self.metrics.with(|metrics| {
+            let gauge = gauge(metrics).register(BoardLabels(self.board));
+            if let (Some(reading), Some(gauge)) = (reading, gauge) {
+                gauge.set_value(value(reading).into());
+            }
+        });
     }
 
     /// Add `n` to a per-board counter.

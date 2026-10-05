@@ -6,7 +6,8 @@ use defmt::debug;
 use embassy_futures::select::{Either3, select3};
 use embassy_time::{Duration, Ticker};
 use protocol::{
-    BoardId, NetworkError, NetworkResult, Readings, Report, SensorReadError, SensorValue,
+    BoardId, NetworkError, NetworkResult, Precision, Readings, Report, SensorReadError,
+    SensorValue, TempRhReq,
 };
 use static_cell::StaticCell;
 
@@ -16,6 +17,7 @@ use crate::{
         self,
         capacitance::{CapacitanceSensor, Channel},
         color::{self, ColorSensor},
+        temp_rh::TempRhSensor,
     },
     thread, update,
 };
@@ -38,6 +40,7 @@ pub struct Builder {
     pub socket: thread::Socket,
     pub capacitance: &'static sensor::Shared<CapacitanceSensor<'static>>,
     pub color: Option<&'static sensor::Shared<ColorSensor<'static>>>,
+    pub temp_rh: Option<&'static sensor::Shared<TempRhSensor<'static>>>,
 }
 
 impl Builder {
@@ -50,6 +53,7 @@ impl Builder {
             socket: self.socket,
             capacitance: self.capacitance,
             color: self.color,
+            temp_rh: self.temp_rh,
             requests: server,
             board: BoardId(embassy_stm32::uid::uid()),
             sequence: 0,
@@ -77,6 +81,7 @@ pub struct Task {
     socket: thread::Socket,
     capacitance: &'static sensor::Shared<CapacitanceSensor<'static>>,
     color: Option<&'static sensor::Shared<ColorSensor<'static>>>,
+    temp_rh: Option<&'static sensor::Shared<TempRhSensor<'static>>>,
     requests: request::Server<Collect, NetworkResult>,
     board: BoardId,
     sequence: u32,
@@ -177,6 +182,18 @@ impl Task {
             }
         };
 
-        Readings { capacitance, color }
+        let temp_rh = match self.temp_rh {
+            None => Err(SensorReadError::NotInitialized),
+            Some(temp_rh) => {
+                let req = TempRhReq::Plain(Precision::High);
+                temp_rh.lock().await.read(req).await
+            }
+        };
+
+        Readings {
+            capacitance,
+            color,
+            temp_rh,
+        }
     }
 }

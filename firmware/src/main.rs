@@ -35,7 +35,7 @@ use embassy_sync::{blocking_mutex::raw::ThreadModeRawMutex, mutex::Mutex};
 use embassy_time::{Duration, Timer};
 use static_cell::StaticCell;
 
-use crate::sensor::{capacitance::CapacitanceSensor, color::ColorSensor};
+use crate::sensor::{capacitance::CapacitanceSensor, color::ColorSensor, temp_rh::TempRhSensor};
 
 bind_interrupts!(struct Irqs {
     I2C1_EV => i2c::EventInterruptHandler<I2C1>;
@@ -169,31 +169,41 @@ async fn main(spawner: Spawner) {
 
     let scl = p.PB8;
     let sda = p.PB9;
+    let mut config = i2c::Config::default();
+    config.timeout = Duration::from_millis(10);
+
     static I2C: StaticCell<Mutex<ThreadModeRawMutex, i2c::I2c<'static, Async, i2c::Master>>> =
         StaticCell::new();
     let i2c = I2C.init(Mutex::new(i2c::I2c::new(
-        p.I2C1,
-        scl,
-        sda,
-        p.DMA1_CH1,
-        p.DMA2_CH1,
-        Irqs,
-        i2c::Config::default(),
+        p.I2C1, scl, sda, p.DMA1_CH1, p.DMA2_CH1, Irqs, config,
     )));
+
     static CAPACITANCE: StaticCell<sensor::Shared<CapacitanceSensor<'static>>> = StaticCell::new();
     let capacitance = &*CAPACITANCE.init(Mutex::new(CapacitanceSensor::new(p.PB4, i2c)));
-    // TODO: boards without a color sensor panic here.
-    static COLOR: StaticCell<sensor::Shared<ColorSensor<'static>>> = StaticCell::new();
 
-    let color = ColorSensor::init(i2c)
-        .await
-        .ok()
-        .map(|sensor| &*COLOR.init(Mutex::new(sensor)));
+    static COLOR: StaticCell<sensor::Shared<ColorSensor<'static>>> = StaticCell::new();
+    let color = match ColorSensor::init(i2c).await {
+        Ok(sensor) => Some(&*COLOR.init(Mutex::new(sensor))),
+        Err(e) => {
+            defmt::warn!("color sensor failed to initialize: {}", e);
+            None
+        }
+    };
+
+    static TEMP_RH: StaticCell<sensor::Shared<TempRhSensor<'static>>> = StaticCell::new();
+    let temp_rh = match TempRhSensor::init(i2c).await {
+        Ok(sensor) => Some(&*TEMP_RH.init(Mutex::new(sensor))),
+        Err(e) => {
+            defmt::warn!("temp-rh sensor failed to initialize: {}", e);
+            None
+        }
+    };
 
     let (report_task, report_handle) = report::Builder {
         socket: report_socket,
         capacitance,
         color,
+        temp_rh,
     }
     .init();
 
@@ -202,6 +212,7 @@ async fn main(spawner: Spawner) {
         config: config_monitor,
         capacitance,
         color,
+        temp_rh,
     }
     .init();
     spawner.spawn(metrics(metrics_task).unwrap());
@@ -215,6 +226,7 @@ async fn main(spawner: Spawner) {
         config: config_handle,
         metrics: metrics_handle,
         capacitance,
+        temp_rh,
     };
     let (server, publisher) = rpc::server(spawner, link, context);
     spawner.spawn(rpc(server).unwrap());

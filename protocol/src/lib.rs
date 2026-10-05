@@ -37,6 +37,7 @@ endpoints! {
     | FinishInstall        | ()            | CoprocessorResult | "coprocessor/install/finish" |
     | UninstallStack       | ()            | CoprocessorResult | "coprocessor/uninstall"      |
     | ReadSensorValue      | SensorReadReq | SensorReadResult  | "sensor/read"                |
+    | MeasureTempRh        | TempRhReq     | TempRhResult      | "sensor/temp-rh"             |
     | StartCollecting      | ()            | NetworkResult     | "reports/collect/start"      |
     | StopCollecting       | ()            | NetworkResult     | "reports/collect/stop"       |
     | GetFirmwareStatus    | ()            | FirmwareStatus    | "firmware/status"            |
@@ -669,6 +670,62 @@ pub enum SensorReadError {
 
 pub type SensorReadResult = Result<SensorValue, SensorReadError>;
 
+/// How the temperature & humidity sensor is to measure.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Schema)]
+#[cfg_attr(feature = "defmt", derive(defmt::Format))]
+pub enum TempRhReq {
+    Plain(Precision),
+    /// Heat the sensor, then measure at high precision. The heater drives
+    /// off condensation; what is measured is the heated sensor, not the air.
+    Heated {
+        power: HeaterPower,
+        duration: HeaterDuration,
+    },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Schema)]
+#[cfg_attr(feature = "defmt", derive(defmt::Format))]
+#[cfg_attr(feature = "clap", derive(clap::ValueEnum))]
+pub enum Precision {
+    High,
+    Medium,
+    Low,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Schema)]
+#[cfg_attr(feature = "defmt", derive(defmt::Format))]
+#[cfg_attr(feature = "clap", derive(clap::ValueEnum))]
+pub enum HeaterPower {
+    #[cfg_attr(feature = "clap", value(name = "200mW"))]
+    Power200mW,
+    #[cfg_attr(feature = "clap", value(name = "110mW"))]
+    Power110mW,
+    #[cfg_attr(feature = "clap", value(name = "20mW"))]
+    Power20mW,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Schema)]
+#[cfg_attr(feature = "defmt", derive(defmt::Format))]
+#[cfg_attr(feature = "clap", derive(clap::ValueEnum))]
+pub enum HeaterDuration {
+    #[cfg_attr(feature = "clap", value(name = "1s"))]
+    Time1s,
+    #[cfg_attr(feature = "clap", value(name = "100ms"))]
+    Time100ms,
+}
+
+/// A measurement of the temperature & humidity sensor.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize, Schema)]
+#[cfg_attr(feature = "defmt", derive(defmt::Format))]
+pub struct TempRh {
+    /// In °C.
+    pub temperature: f32,
+    /// Relative humidity, in percent. It can fall a little outside 0 to 100.
+    pub humidity: f32,
+}
+
+pub type TempRhResult = Result<TempRh, SensorReadError>;
+
 /// A board's identity: its chip's unique ID, which is also its USB serial
 /// number. Written the way that serial is, as upper-case hex.
 #[derive(
@@ -713,7 +770,7 @@ impl FromStr for BoardId {
 /// its network at intervals. A board that has been told to collect
 /// ([`StartCollecting`]) forwards the reports it receives, including its
 /// own, to the host ([`ReportReceived`]).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Schema)]
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize, Schema)]
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]
 pub struct Report {
     pub board: BoardId,
@@ -727,13 +784,15 @@ pub struct Report {
 }
 
 /// The readings in a [`Report`]: one for every sensor that has a driver.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Schema)]
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize, Schema)]
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]
 pub struct Readings {
     /// The four channels of the capacitance sensor.
     pub capacitance: [SensorReadResult; 4],
     /// The color sensor's channels: red, green, blue, white, infrared.
     pub color: [SensorReadResult; 5],
+    /// The temperature & humidity sensor, at high precision, unheated.
+    pub temp_rh: TempRhResult,
 }
 
 impl Report {
@@ -1264,6 +1323,10 @@ mod tests {
                     Err(SensorReadError::OutOfRange),
                     Err(SensorReadError::Nack),
                 ],
+                temp_rh: Ok(TempRh {
+                    temperature: -45.0,
+                    humidity: 119.0,
+                }),
             },
         }
     }

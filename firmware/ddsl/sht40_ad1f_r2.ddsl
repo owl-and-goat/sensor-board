@@ -1,0 +1,79 @@
+// -*- mode: Rust; eval: (apheleia-mode -1) -*-
+
+device Sht40Ad1F {
+    command-address-type: u8,
+    default-access: RO,
+
+    fieldset TempRhData {
+        size-bytes: 4,
+        byte-order: BE,
+
+        field temp 31:16,
+        field rh 15:0,
+    },
+
+    command MeasureHighPrecision {
+        address: 0xFD,
+        fields-out: TempRhData,
+    },
+
+    command MeasureMediumPrecision {
+        address: 0xF6,
+        fields-out: TempRhData,
+    },
+
+    command MeasureLowPrecision {
+        address: 0xE0,
+        fields-out: TempRhData,
+    },
+
+    command ReadSerialNumber {
+        address: 0x89,
+        fields-out: fieldset _ {
+            size-bytes: 4,
+            byte-order: BE,
+            field serial 31:0,
+        },
+    },
+
+    command SoftReset {
+        address: 0x94,
+        fields-out: TempRhData,
+    },
+
+    /// (measurement is high-precision)
+    command HeatAndMeasure_200mW_1s {
+        address: 0x39,
+        fields-out: TempRhData,
+    },
+
+    /// (measurement is high-precision)
+    command HeatAndMeasure_200mW_100ms {
+        address: 0x32,
+        fields-out: TempRhData,
+    },
+
+    /// (measurement is high-precision)
+    command HeatAndMeasure_110mW_1s {
+        address: 0x2F,
+        fields-out: TempRhData,
+    },
+
+    /// (measurement is high-precision)
+    command HeatAndMeasure_110mW_100ms {
+        address: 0x24,
+        fields-out: TempRhData,
+    },
+
+    /// (measurement is high-precision)
+    command HeatAndMeasure_20mW_1s {
+        address: 0x1E,
+        fields-out: TempRhData,
+    },
+
+    /// (measurement is high-precision)
+    command HeatAndMeasure_20mW_100ms {
+        address: 0x15,
+        fields-out: TempRhData,
+    },
+}
