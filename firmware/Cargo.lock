@@ -1716,6 +1716,7 @@ dependencies = [
  "embassy-sync",
  "embassy-time",
  "embassy-usb",
+ "embedded-hal 1.0.0",
  "embedded-storage",
  "embedded-storage-async",
  "heapless 0.9.3",

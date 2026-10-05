@@ -15,10 +15,11 @@ use protocol::{
     FinishInstall, FinishUpdate, FirmwareStatus, GetBoardConfig, GetBoardInfo,
     GetCoprocessorStatus, GetFirmwareStatus, GetMetrics, GetNetworkAddresses, GetNetworkDataset,
     GetNetworkNeighbors, GetNetworkRouters, GetNetworkStatus, GetOfferProgress, ImageChunk,
-    ImageSize, JoinNetwork, LeaveNetwork, NeighborTable, NetworkError, NetworkStatus,
-    OfferProgress, ReadSensorValue, Report, ReportReceived, RouterTable, Sensor, SensorReadReq,
-    SensorReadResult, SetBoardConfig, StartCollecting, StartOffering, StopCollecting, StopOffering,
-    USB_PID, USB_VID, UninstallStack, UpdateImage, UpdateResult, WriteInstall, WriteUpdate,
+    ImageSize, JoinNetwork, LeaveNetwork, MeasureTempRh, NeighborTable, NetworkError,
+    NetworkStatus, OfferProgress, ReadSensorValue, Report, ReportReceived, RouterTable, Sensor,
+    SensorReadReq, SensorReadResult, SetBoardConfig, StartCollecting, StartOffering,
+    StopCollecting, StopOffering, TempRhReq, TempRhResult, USB_PID, USB_VID, UninstallStack,
+    UpdateImage, UpdateResult, WriteInstall, WriteUpdate,
 };
 
 /// Timeout for a call to a board. The slowest call is a join or leave that
@@ -222,6 +223,10 @@ impl Board {
     pub async fn read_sensor(&self, sensor: Sensor) -> Result<SensorReadResult> {
         self.call::<ReadSensorValue>(&SensorReadReq { sensor })
             .await
+    }
+
+    pub async fn measure_temp_rh(&self, req: TempRhReq) -> Result<TempRhResult> {
+        self.call::<MeasureTempRh>(&req).await
     }
 
     pub async fn firmware_status(&self) -> Result<FirmwareStatus> {

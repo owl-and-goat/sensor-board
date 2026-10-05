@@ -5,7 +5,7 @@ use std::time::Duration;
 
 use anyhow::{Result, bail};
 use postcard_rpc::host_client::MultiSubRxError;
-use protocol::{Report, SensorReadResult};
+use protocol::{Report, SensorReadResult, TempRh};
 
 use crate::board::Board;
 
@@ -84,8 +84,15 @@ pub fn describe(report: &Report) -> String {
         .zip(&readings.color)
         .map(|(channel, reading)| format!("{channel} {}", describe_reading(reading)))
         .collect();
+    let temp_rh = match &readings.temp_rh {
+        Ok(TempRh {
+            temperature,
+            humidity,
+        }) => format!("{temperature:.2} °C {humidity:.2} %RH"),
+        Err(e) => format!("failed ({e})"),
+    };
     format!(
-        "{board}  build {firmware}  #{sequence}  capacitance {}  color {}",
+        "{board}  build {firmware}  #{sequence}  capacitance {}  color {}  temp-rh {temp_rh}",
         capacitance.join(", "),
         color.join(", ")
     )
@@ -124,13 +131,18 @@ mod tests {
                     Err(SensorReadError::OutOfRange),
                     Ok(SensorValue { value: 0 }),
                 ],
+                temp_rh: Ok(TempRh {
+                    temperature: 21.5,
+                    humidity: 45.25,
+                }),
             },
         };
         assert_eq!(
             describe(&report),
             "4B0041000350475532303120  build 1791145757  #7  capacitance 1234567, 0, \
-             failed (I2C ACK Not Received), 42  color red 512, green 256, blue 128, white failed \
-             (Color Sensor Channel Out of Range), infrared 0"
+             failed (I2C ACK Not Received), 42  color red 512, green 256, blue 128, \
+             white failed (Color Sensor Channel Out of Range), infrared 0  \
+             temp-rh 21.50 °C 45.25 %RH"
         );
     }
 }

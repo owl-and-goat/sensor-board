@@ -14,7 +14,10 @@ use clap::{Args, Parser, Subcommand};
 
 use board::Board;
 use network::SavedDataset;
-use protocol::{BoardId, Link, NetworkStatus, Role, RouterId, Sensor, SensorValue};
+use protocol::{
+    BoardId, HeaterDuration, HeaterPower, Link, NetworkStatus, Precision, Role, RouterId, Sensor,
+    SensorValue, TempRh, TempRhReq,
+};
 
 #[derive(Parser)]
 #[command(version, about = "Talk to sensor boards attached over USB")]
@@ -165,6 +168,29 @@ enum SensorCommand {
         /// Which sensor to read
         #[arg(long)]
         sensor: Sensor,
+
+        #[command(flatten)]
+        target: Target,
+    },
+    /// Measure temperature and relative humidity
+    TempRh {
+        /// How precisely to measure
+        #[arg(long, default_value = "high", conflicts_with = "heat")]
+        precision: Precision,
+
+        /// Heat the sensor first, at this power, to drive off condensation. What is then measured,
+        /// at high precision, is the heated sensor rather than the air
+        #[arg(long, value_name = "POWER")]
+        heat: Option<HeaterPower>,
+
+        /// How long to heat the sensor for
+        #[arg(
+            long,
+            value_name = "DURATION",
+            default_value = "100ms",
+            requires = "heat"
+        )]
+        heat_for: HeaterDuration,
 
         #[command(flatten)]
         target: Target,
@@ -349,6 +375,28 @@ async fn main() -> Result<()> {
         Command::Config(ConfigCommand::Set { changes, target }) => {
             let board = target.attached.board().await?;
             config::set(&board, target.remote, &changes).await
+        }
+        Command::Sensor(SensorCommand::TempRh {
+            precision,
+            heat,
+            heat_for,
+            target,
+        }) => {
+            let req = match heat {
+                None => TempRhReq::Plain(precision),
+                Some(power) => TempRhReq::Heated {
+                    power,
+                    duration: heat_for,
+                },
+            };
+            let board = target.board().await?;
+            let TempRh {
+                temperature,
+                humidity,
+            } = board.measure_temp_rh(req).await??;
+            println!("Temperature: {temperature:.2} °C");
+            println!("Humidity: {humidity:.2} %RH");
+            Ok(())
         }
     }
 }

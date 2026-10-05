@@ -42,6 +42,7 @@ sha2 = { version = "0.10", default-features = false }
 
 bitvec = { version = "1.1", default-features = false }
 device-driver = { version = "2.1.1", features = ["defmt", "macros"] }
+embedded-hal = "1.0.0"
 
 # Prometheus metrics in the text format. Not released on crates.io. The
 # default features add timestamps, which need a clock the board does not have.

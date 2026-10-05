@@ -22,16 +22,16 @@ use protocol::{
     EnterBootloader, FinishInstall, FinishUpdate, FirmwareStatus, GetBoardConfig, GetBoardInfo,
     GetCoprocessorStatus, GetFirmwareStatus, GetMetrics, GetNetworkAddresses, GetNetworkDataset,
     GetNetworkNeighbors, GetNetworkRouters, GetNetworkStatus, GetOfferProgress, ImageChunk,
-    ImageSize, JoinNetwork, LeaveNetwork, MetricsChunk, NeighborsResult, NetworkResult,
-    NetworkStatus, OfferProgress, ReadSensorValue, Report, ReportReceived, RoutersResult,
-    SensorReadReq, SensorReadResult, SetBoardConfig, StartCollecting, StartOffering,
-    StopCollecting, StopOffering, TOPICS_IN_LIST, TOPICS_OUT_LIST, UninstallStack, UpdateImage,
-    UpdateResult, WriteInstall, WriteUpdate,
+    ImageSize, JoinNetwork, LeaveNetwork, MeasureTempRh, MetricsChunk, NeighborsResult,
+    NetworkResult, NetworkStatus, OfferProgress, ReadSensorValue, Report, ReportReceived,
+    RoutersResult, SensorReadError, SensorReadReq, SensorReadResult, SetBoardConfig,
+    StartCollecting, StartOffering, StopCollecting, StopOffering, TOPICS_IN_LIST, TOPICS_OUT_LIST,
+    TempRhReq, TempRhResult, UninstallStack, UpdateImage, UpdateResult, WriteInstall, WriteUpdate,
 };
 
 use crate::{
     board_config, coprocessor, dfu, metrics, report,
-    sensor::{self, capacitance},
+    sensor::{self, capacitance, temp_rh},
     thread, update, usb,
 };
 
@@ -46,6 +46,7 @@ pub struct Context {
     pub metrics: metrics::Handle,
     // TODO(aspen): Make nicer
     pub capacitance: &'static sensor::Shared<capacitance::CapacitanceSensor<'static>>,
+    pub temp_rh: Option<&'static sensor::Shared<temp_rh::TempRhSensor<'static>>>,
 }
 
 define_dispatch! {
@@ -74,6 +75,7 @@ define_dispatch! {
         | FinishInstall        | async    | finish_install     |
         | UninstallStack       | async    | uninstall_stack    |
         | ReadSensorValue      | async    | read_sensor        |
+        | MeasureTempRh        | async    | measure_temp_rh    |
         | StartCollecting      | async    | start_collecting   |
         | StopCollecting       | async    | stop_collecting    |
         | GetFirmwareStatus    | blocking | firmware_status    |
@@ -303,4 +305,18 @@ async fn read_sensor(
         protocol::Sensor::Humidity => todo!(),
         protocol::Sensor::Acceleration => todo!(),
     }
+}
+
+async fn measure_temp_rh(
+    context: &mut Context,
+    _header: VarHeader,
+    req: TempRhReq,
+) -> TempRhResult {
+    context
+        .temp_rh
+        .ok_or(SensorReadError::NotInitialized)?
+        .lock()
+        .await
+        .read(req)
+        .await
 }
