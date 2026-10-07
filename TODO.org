@@ -180,3 +180,6 @@ With five boards, every board is a router, so leaves cannot be identified by
 role. The order has to come from the gateway's router table (=network
 routers=): update the board with the highest path cost first, and never
 update a board that is the next hop to a board that is still waiting.
+* Rev. 2
+** TODO fix the pin numbering for the color sensor footprint
+half of them are the wrong way gdi
