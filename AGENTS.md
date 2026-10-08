@@ -307,8 +307,8 @@ Prometheus. The power mode in the configuration selects how:
 
 The metric types come from tinymetrics. `firmware/src/http.rs` implements
 the HTTP: one request and one response per connection. To add a sensor, add
-its metrics to `Metrics` and poll it in `metrics.rs`, alongside the
-capacitance channels.
+it to `SENSORS` and to the `match` in `Exporter::read`, and its metrics to
+`Metrics`, all in `metrics.rs`.
 
 TCP is OpenThread's own implementation, running on CPU2 (`otTcp*`, wrapped
 in `thread/ot.rs`). The Thread service has one TCP endpoint, so the firmware

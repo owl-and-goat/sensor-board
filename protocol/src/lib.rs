@@ -610,9 +610,26 @@ pub struct SensorValue {
     pub value: u32,
 }
 
+impl From<u32> for SensorValue {
+    fn from(value: u32) -> Self {
+        Self { value }
+    }
+}
+
+impl From<u16> for SensorValue {
+    fn from(value: u16) -> Self {
+        Self {
+            value: value.into(),
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Schema, Error)]
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]
 pub enum SensorReadError {
+    /// The sensor did not initialize.
+    #[error("Sensor Didn't Initialize at Board Start")]
+    NotInitialized,
     /// I2C Bus error
     #[error("I2C Bus Error")]
     Bus,
@@ -638,6 +655,16 @@ pub enum SensorReadError {
     WatchdogTimeoutError,
     #[error("Capacitance Sensor Amplitude Warning")]
     AmplitudeWarning,
+    /// The device at the sensor's address is not that sensor.
+    #[error("Wrong Product ID")]
+    WrongProductId,
+    /// No conversion has finished since the sensor was enabled, or the last
+    /// one produced invalid data.
+    #[error("Color Sensor Data Invalid")]
+    DataInvalid,
+    /// The light on the channel is outside of the range it can measure.
+    #[error("Color Sensor Channel Out of Range")]
+    OutOfRange,
 }
 
 pub type SensorReadResult = Result<SensorValue, SensorReadError>;
@@ -705,6 +732,8 @@ pub struct Report {
 pub struct Readings {
     /// The four channels of the capacitance sensor.
     pub capacitance: [SensorReadResult; 4],
+    /// The color sensor's channels: red, green, blue, white, infrared.
+    pub color: [SensorReadResult; 5],
 }
 
 impl Report {
@@ -1225,6 +1254,15 @@ mod tests {
                     Ok(SensorValue { value: 0 }),
                     Err(SensorReadError::Nack),
                     Err(SensorReadError::WatchdogTimeoutError),
+                ],
+                color: [
+                    Ok(SensorValue {
+                        value: u32::from(u16::MAX),
+                    }),
+                    Ok(SensorValue { value: 0 }),
+                    Err(SensorReadError::DataInvalid),
+                    Err(SensorReadError::OutOfRange),
+                    Err(SensorReadError::Nack),
                 ],
             },
         }

@@ -12,6 +12,9 @@ use crate::board::Board;
 /// Delay before looking again for a board that has disconnected.
 const RETRY: Duration = Duration::from_secs(2);
 
+/// The color sensor's channels, in the order of `Readings::color`.
+const COLOR_CHANNELS: [&str; 5] = ["red", "green", "blue", "white", "infrared"];
+
 /// Print the reports as they arrive, until interrupted.
 pub async fn watch(serial: Option<&str>) -> Result<()> {
     collect(serial, |report| println!("{}", describe(&report))).await
@@ -76,9 +79,15 @@ pub fn describe(report: &Report) -> String {
         readings,
     } = report;
     let capacitance: Vec<String> = readings.capacitance.iter().map(describe_reading).collect();
+    let color: Vec<String> = COLOR_CHANNELS
+        .iter()
+        .zip(&readings.color)
+        .map(|(channel, reading)| format!("{channel} {}", describe_reading(reading)))
+        .collect();
     format!(
-        "{board}  build {firmware}  #{sequence}  capacitance {}",
-        capacitance.join(", ")
+        "{board}  build {firmware}  #{sequence}  capacitance {}  color {}",
+        capacitance.join(", "),
+        color.join(", ")
     )
 }
 
@@ -108,12 +117,20 @@ mod tests {
                     Err(SensorReadError::Nack),
                     Ok(SensorValue { value: 42 }),
                 ],
+                color: [
+                    Ok(SensorValue { value: 512 }),
+                    Ok(SensorValue { value: 256 }),
+                    Ok(SensorValue { value: 128 }),
+                    Err(SensorReadError::OutOfRange),
+                    Ok(SensorValue { value: 0 }),
+                ],
             },
         };
         assert_eq!(
             describe(&report),
             "4B0041000350475532303120  build 1791145757  #7  capacitance 1234567, 0, \
-             failed (I2C ACK Not Received), 42"
+             failed (I2C ACK Not Received), 42  color red 512, green 256, blue 128, white failed \
+             (Color Sensor Channel Out of Range), infrared 0"
         );
     }
 }

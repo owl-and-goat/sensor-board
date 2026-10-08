@@ -24,7 +24,7 @@ use protocol::{
     GetNetworkNeighbors, GetNetworkRouters, GetNetworkStatus, GetOfferProgress, ImageChunk,
     ImageSize, JoinNetwork, LeaveNetwork, MetricsChunk, NeighborsResult, NetworkResult,
     NetworkStatus, OfferProgress, ReadSensorValue, Report, ReportReceived, RoutersResult,
-    SensorReadError, SensorReadReq, SensorReadResult, SetBoardConfig, StartCollecting, StartOffering,
+    SensorReadReq, SensorReadResult, SetBoardConfig, StartCollecting, StartOffering,
     StopCollecting, StopOffering, TOPICS_IN_LIST, TOPICS_OUT_LIST, UninstallStack, UpdateImage,
     UpdateResult, WriteInstall, WriteUpdate,
 };
@@ -290,7 +290,6 @@ async fn read_sensor(
             .read_channel_capacitance(chan)
             .await?
             .into())
-    };
     };
 
     match req.sensor {

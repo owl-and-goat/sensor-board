@@ -1,7 +1,6 @@
 pub mod addr {
     #[expect(dead_code)]
     pub const DISTANCE: u8 = 0x52;
-    #[expect(dead_code)]
     pub const COLOR: u8 = 0x38;
     #[expect(dead_code)]
     pub const TEMP_HUMIDITY: u8 = 0x44;

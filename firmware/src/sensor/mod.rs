@@ -11,6 +11,7 @@ use embassy_sync::{blocking_mutex::raw::ThreadModeRawMutex, mutex::Mutex};
 use protocol::SensorReadError;
 
 pub mod capacitance;
+pub mod color;
 
 /// A sensor that several tasks read: the RPC handlers, the reports and the
 /// metrics.
