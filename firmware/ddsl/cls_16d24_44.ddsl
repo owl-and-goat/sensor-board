@@ -1,0 +1,226 @@
+// -*- mode: Rust; eval: (apheleia-mode -1) -*-
+// kind of a hack; i'll probably fix this later
+
+// annoyingly this crate requires pascal-case-y names
+device Cls16D2444 {
+    register-address-type: u8,
+    register-address-mode: mapped,
+    // Also the default for fields, which have no setters when it is RO.
+    default-access: RW,
+
+    fieldset Byte {
+        size-bytes: 1,
+        field value 7:0,
+    },
+
+    /// Two consecutive registers, LSB first.
+    fieldset Word {
+        size-bytes: 2,
+        byte-order: LE,
+        field value 15:0,
+    },
+
+
+    /// System control register
+    register SYSM_CTRL {
+        address: 0x00,
+        access: RW,
+        reset: 0x00,
+        fields: fieldset _ {
+            size-bytes: 1,
+
+            /// Software reset. Set to 1 to trigger.
+            field SWRST 7,
+
+            /// Whether to wait between subsequent measurements.
+            field EN_WAIT 6,
+
+            /// "Enables IR function"
+            field EN_IR 1,
+
+            /// "Enables CLS function"
+            field EN_CLS 0,
+        },
+    },
+
+    /// Interrupt pin control register
+    register INT_CTRL {
+        address: 0x01,
+        access: RW,
+        reset: 0x01,
+        fields: fieldset _ {
+            size-bytes: 1,
+
+            /// "Measurement is pended when CLS interrupt is triggered. Until
+            /// clear the interrupt then start the next measurement."
+            field CLS_SYNC 4,
+
+            /// Whether the INT pin goes low on a CLS interrupt?
+            field EN_CINT 0,
+        },
+    },
+
+    /// Interrupt configuration register, I think?
+    register INT_FLAG {
+        address: 0x02,
+        access: RW,
+        reset: 0x00,
+        fields: fieldset _ {
+            size-bytes: 1,
+
+            /// Not really sure what this does. I think it's set on power-on and
+            /// you have to clear it to enable conversions.
+            field INT_POR 7,
+
+            /// After a conversion cycle completes, indicates whether the data is valid.
+            field DATA_FLAG RO 6 -> _ as enum _ {
+                Valid: 0b0,
+                Invalid: 0b1,
+            },
+
+            /// Set when an interrupt has occurred. See page 10 of the datasheet for details.
+            field INT_CLS 0,
+        },
+    },
+
+    /// Wait time between measurements in tens of ms (0 being 10 ms, 255 being
+    /// 2.56 s).
+    register WAIT_TIME {
+        address: 0x03,
+        access: RW,
+        reset: 0x00,
+        fields: Byte,
+    },
+
+    /// Sensor analog gain and surface area selection.
+    register CLS_GAIN {
+        address: 0x04,
+        access: RW,
+        reset: 0x81,
+        fields: fieldset _ {
+            size-bytes: 1,
+
+            /// Sensor area selection
+            field DIOD_SELT 7 -> _ as enum _ {
+                X1: 0b0,
+                X2: 0b1,
+            },
+
+            /// Analog sense gain
+            field PGA_CLS 4:0 -> _ as try enum _ {
+                X1: 0x01,
+                X4: 0x02,
+                X8: 0x04,
+                X32: 0x8,
+                X96: 0x10,
+            },
+        },
+    },
+
+    /// Conversion time and integration time control. See page 12 of the
+    /// datasheet for more information if you really want to modify this.
+    register CLS_TIME {
+        address: 0x05,
+        access: RW,
+        reset: 0x03,
+        fields: fieldset _ {
+            size-bytes: 1,
+
+            field CLSCONV 7:4,
+            field INT_TIME 1:0,
+        }
+    },
+
+    /// Sets how many consecutive "CLS interrupt events" have to occur before
+    /// the interrupt pin drops.
+    register PERSISTENCE {
+        address: 0x0B,
+        access: RW,
+        reset: 0x00,
+        fields: fieldset _ {
+            size-bytes: 1,
+
+            /// 0 means "interrupt independent of CLS values," nonzero sets # of
+            /// events needed for an interrupt
+            field PRS_CLS 3:0,
+        }
+    },
+
+    /// Lower interrupt threshold. INT_CLS counts an event when the channel
+    /// selected by INT_SOURCE is below it.
+    register CLS_THRES_L {
+        address: 0x0C,
+        access: RW,
+        reset: 0x0000,
+        fields: Word,
+    },
+
+    /// Upper interrupt threshold. INT_CLS counts an event when the channel
+    /// selected by INT_SOURCE is above it.
+    register CLS_THRES_H {
+        address: 0x0E,
+        access: RW,
+        reset: 0xFFFF,
+        fields: Word,
+    },
+
+    /// Which channel the interrupt thresholds are compared against.
+    register INT_SOURCE {
+        address: 0x16,
+        access: RW,
+        reset: 0x08,
+        fields: fieldset _ {
+            size-bytes: 1,
+
+            field INT_SRC 4:0 -> _ as try enum _ {
+                Red: 0x01,
+                Green: 0x02,
+                Blue: 0x04,
+                White: 0x08,
+                Infrared: 0x10,
+            },
+        },
+    },
+
+    /// Set for each channel whose data is outside of the measurable range,
+    /// which makes that data invalid.
+    register ERROR_FLAG {
+        address: 0x17,
+        access: RW,
+        reset: 0x00,
+        fields: fieldset _ {
+            size-bytes: 1,
+
+            field ERR[ColorChannel stride 1] 0,
+        },
+    },
+
+    /// Color channels
+    enum ColorChannel {
+        Red: _,
+        Green: _,
+        Blue: _,
+        White: _,
+        Infrared: _, // cool!
+    },
+
+    register Color[ColorChannel stride 2] {
+        address: 0x1C,
+        access: RO,
+        fields: Word,
+    },
+
+    register PROD_ID_L {
+        access: RO,
+        address: 0xBC,
+        reset: 0x12,
+        fields: Byte,
+    },
+
+    register PROD_ID_H {
+        access: RO,
+        address: 0xBD,
+        reset: 0x07,
+        fields: Byte,
+    }
+}

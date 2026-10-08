@@ -23,7 +23,8 @@ use crate::{
     board_config, http,
     sensor::{
         self,
-        capacitance::{CapacitanceSensor, Channel},
+        capacitance::{self, CapacitanceSensor},
+        color::{self, ColorSensor},
     },
     thread, update,
 };
@@ -44,12 +45,30 @@ const RETRY: Duration = Duration::from_secs(5);
 /// The shortest poll interval. A shorter configured interval is raised to it.
 const MIN_INTERVAL: Duration = Duration::from_millis(100);
 
-/// The sensors that have a driver: the four capacitance channels.
-const CAPACITANCE: [(Sensor, Channel); 4] = [
-    (Sensor::Capacitance0, Channel::Ch0),
-    (Sensor::Capacitance1, Channel::Ch1),
-    (Sensor::Capacitance2, Channel::Ch2),
-    (Sensor::Capacitance3, Channel::Ch3),
+/// The sensors that have a driver.
+const SENSORS: [Sensor; 5] = [
+    Sensor::Capacitance0,
+    Sensor::Capacitance1,
+    Sensor::Capacitance2,
+    Sensor::Capacitance3,
+    Sensor::Color,
+];
+
+/// The capacitance channels, indexed by the channel number in their metrics.
+const CAPACITANCE: [capacitance::Channel; 4] = [
+    capacitance::Channel::Ch0,
+    capacitance::Channel::Ch1,
+    capacitance::Channel::Ch2,
+    capacitance::Channel::Ch3,
+];
+
+/// The color channels, and the channel names in their metrics.
+const COLOR: [(color::Channel, &str); 5] = [
+    (color::Channel::Red, "red"),
+    (color::Channel::Green, "green"),
+    (color::Channel::Blue, "blue"),
+    (color::Channel::White, "white"),
+    (color::Channel::Infrared, "infrared"),
 ];
 
 /// Labels of a per-board metric.
@@ -62,14 +81,14 @@ impl FmtLabels for BoardLabels {
     }
 }
 
-/// Labels of a per-channel capacitance metric.
+/// Labels of a per-channel sensor metric.
 #[derive(PartialEq)]
-struct ChannelLabels {
+struct ChannelLabels<C> {
     board: BoardId,
-    channel: usize,
+    channel: C,
 }
 
-impl FmtLabels for ChannelLabels {
+impl<C: fmt::Display> FmtLabels for ChannelLabels<C> {
     fn fmt_labels(&self, writer: &mut impl fmt::Write) -> fmt::Result {
         let ChannelLabels { board, channel } = self;
         write!(writer, "board=\"{board}\",channel=\"{channel}\"")
@@ -80,12 +99,15 @@ impl FmtLabels for ChannelLabels {
 type Text = heapless::String<4096>;
 
 type BoardFamily<M> = MetricFamily<'static, M, 1, BoardLabels>;
-type ChannelFamily<M> = MetricFamily<'static, M, { CAPACITANCE.len() }, ChannelLabels>;
+type CapacitanceFamily<M> = MetricFamily<'static, M, { CAPACITANCE.len() }, ChannelLabels<usize>>;
+type ColorFamily<M> = MetricFamily<'static, M, { COLOR.len() }, ChannelLabels<&'static str>>;
 
 struct Metrics {
     firmware_build: BoardFamily<IntGauge>,
-    capacitance: ChannelFamily<IntGauge>,
-    capacitance_errors: ChannelFamily<Counter>,
+    capacitance: CapacitanceFamily<IntGauge>,
+    capacitance_errors: CapacitanceFamily<Counter>,
+    color: ColorFamily<IntGauge>,
+    color_errors: ColorFamily<Counter>,
     scrapes: BoardFamily<Counter>,
     pushes: BoardFamily<Counter>,
     push_failures: BoardFamily<Counter>,
@@ -103,6 +125,12 @@ impl Metrics {
                 .build_labeled(),
             capacitance_errors: MetricBuilder::new("sensor_board_capacitance_errors_total")
                 .with_help("Failed readings of a capacitance channel.")
+                .build_labeled(),
+            color: MetricBuilder::new("sensor_board_color")
+                .with_help("Raw reading of a color channel.")
+                .build_labeled(),
+            color_errors: MetricBuilder::new("sensor_board_color_errors_total")
+                .with_help("Failed readings of a color channel.")
                 .build_labeled(),
             scrapes: MetricBuilder::new("sensor_board_scrapes_total")
                 .with_help("Scrapes of the board's metrics endpoint.")
@@ -126,6 +154,8 @@ impl Metrics {
         self.firmware_build.fmt_metric(text)?;
         self.capacitance.fmt_metric(text)?;
         self.capacitance_errors.fmt_metric(text)?;
+        self.color.fmt_metric(text)?;
+        self.color_errors.fmt_metric(text)?;
         self.scrapes.fmt_metric(text)?;
         self.pushes.fmt_metric(text)?;
         self.push_failures.fmt_metric(text)?;
@@ -155,6 +185,7 @@ pub struct Builder {
     pub tcp: thread::Tcp,
     pub config: board_config::Monitor,
     pub capacitance: &'static sensor::Shared<CapacitanceSensor<'static>>,
+    pub color: Option<&'static sensor::Shared<ColorSensor<'static>>>,
 }
 
 impl Builder {
@@ -170,10 +201,11 @@ impl Builder {
             exporter: Exporter {
                 tcp: self.tcp,
                 capacitance: self.capacitance,
+                color: self.color,
                 board: BoardId(embassy_stm32::uid::uid()),
                 metrics: shared,
                 text: TEXT.init(Text::new()),
-                polls: [None; CAPACITANCE.len()],
+                polls: [None; SENSORS.len()],
             },
         };
         (task, Handle { metrics: shared })
@@ -253,14 +285,15 @@ struct Poll {
 struct Exporter {
     tcp: thread::Tcp,
     capacitance: &'static sensor::Shared<CapacitanceSensor<'static>>,
+    color: Option<&'static sensor::Shared<ColorSensor<'static>>>,
     /// This board's ID.
     board: BoardId,
     metrics: &'static SharedMetrics,
     /// The rendered metrics text, for the response or push being sent.
     text: &'static mut Text,
-    /// The schedule of each sensor in [`CAPACITANCE`], by index. `None` if
-    /// the sensor is disabled.
-    polls: [Option<Poll>; CAPACITANCE.len()],
+    /// The schedule of each sensor in [`SENSORS`], by index. `None` if the
+    /// sensor is disabled.
+    polls: [Option<Poll>; SENSORS.len()],
 }
 
 impl Exporter {
@@ -275,7 +308,7 @@ impl Exporter {
         });
 
         let now = Instant::now();
-        for (poll, (sensor, _)) in self.polls.iter_mut().zip(CAPACITANCE) {
+        for (poll, sensor) in self.polls.iter_mut().zip(SENSORS) {
             let sensor = config.and_then(|config| config.sensor_config.0[sensor]);
             *poll = sensor.map(|sensor| {
                 let micros = sensor.poll_interval.as_micros().try_into();
@@ -416,7 +449,7 @@ impl Exporter {
         accepted
     }
 
-    /// Wait until a sensor is due. Returns its index in [`CAPACITANCE`].
+    /// Wait until a sensor is due. Returns its index in [`SENSORS`].
     async fn wait_until_due(polls: &[Option<Poll>]) -> usize {
         let dues = polls.iter().enumerate();
         let next = dues.filter_map(|(sensor, poll)| Some(((*poll)?.due, sensor)));
@@ -429,21 +462,36 @@ impl Exporter {
         }
     }
 
-    /// Read the sensor at index `sensor` in [`CAPACITANCE`], and record the
+    /// Read the sensor at index `sensor` in [`SENSORS`], and record the
     /// result.
     async fn read(&mut self, sensor: usize) {
         if let Some(poll) = &mut self.polls[sensor] {
             poll.due = Instant::now() + poll.interval;
         }
-        let (_, channel) = CAPACITANCE[sensor];
+        match SENSORS[sensor] {
+            Sensor::Capacitance0 => self.read_capacitance(0).await,
+            Sensor::Capacitance1 => self.read_capacitance(1).await,
+            Sensor::Capacitance2 => self.read_capacitance(2).await,
+            Sensor::Capacitance3 => self.read_capacitance(3).await,
+            Sensor::Color => self.read_color().await,
+            // Not in `SENSORS`: these have no driver.
+            Sensor::Distance | Sensor::Temperature | Sensor::Humidity | Sensor::Acceleration => {}
+        }
+    }
+
+    /// Read the channel at index `channel` in [`CAPACITANCE`], and record the
+    /// result.
+    async fn read_capacitance(&mut self, channel: usize) {
         let labels = || ChannelLabels {
             board: self.board,
-            channel: sensor,
+            channel,
         };
 
         let reading = {
             let mut capacitance = self.capacitance.lock().await;
-            capacitance.read_channel_capacitance(channel).await
+            capacitance
+                .read_channel_capacitance(CAPACITANCE[channel])
+                .await
         };
         self.metrics.with(|metrics| {
             if let Some(errors) = metrics.capacitance_errors.register(labels()) {
@@ -453,6 +501,33 @@ impl Exporter {
                 gauge.set_value(value as usize);
             }
         });
+    }
+
+    /// Read every channel of the color sensor, and record the results. On a
+    /// board without one, every reading fails.
+    async fn read_color(&mut self) {
+        let mut sensor = match self.color {
+            Some(color) => Some(color.lock().await),
+            None => None,
+        };
+        for (channel, name) in COLOR {
+            let reading = match &mut sensor {
+                Some(sensor) => sensor.read_channel(channel).await.ok(),
+                None => None,
+            };
+            let labels = || ChannelLabels {
+                board: self.board,
+                channel: name,
+            };
+            self.metrics.with(|metrics| {
+                if let Some(errors) = metrics.color_errors.register(labels()) {
+                    errors.fetch_add(usize::from(reading.is_none()));
+                }
+                if let (Some(value), Some(gauge)) = (reading, metrics.color.register(labels())) {
+                    gauge.set_value(value.into());
+                }
+            });
+        }
     }
 
     /// Add `n` to a per-board counter.

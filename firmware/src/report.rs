@@ -5,7 +5,9 @@
 use defmt::debug;
 use embassy_futures::select::{Either3, select3};
 use embassy_time::{Duration, Ticker};
-use protocol::{BoardId, NetworkError, NetworkResult, Readings, Report, SensorValue};
+use protocol::{
+    BoardId, NetworkError, NetworkResult, Readings, Report, SensorReadError, SensorValue,
+};
 use static_cell::StaticCell;
 
 use crate::{
@@ -13,6 +15,7 @@ use crate::{
     sensor::{
         self,
         capacitance::{CapacitanceSensor, Channel},
+        color::{self, ColorSensor},
     },
     thread, update,
 };
@@ -34,6 +37,7 @@ pub struct Builder {
     /// The UDP socket for reports.
     pub socket: thread::Socket,
     pub capacitance: &'static sensor::Shared<CapacitanceSensor<'static>>,
+    pub color: Option<&'static sensor::Shared<ColorSensor<'static>>>,
 }
 
 impl Builder {
@@ -45,6 +49,7 @@ impl Builder {
         let task = Task {
             socket: self.socket,
             capacitance: self.capacitance,
+            color: self.color,
             requests: server,
             board: BoardId(embassy_stm32::uid::uid()),
             sequence: 0,
@@ -71,6 +76,7 @@ impl Handle {
 pub struct Task {
     socket: thread::Socket,
     capacitance: &'static sensor::Shared<CapacitanceSensor<'static>>,
+    color: Option<&'static sensor::Shared<ColorSensor<'static>>>,
     requests: request::Server<Collect, NetworkResult>,
     board: BoardId,
     sequence: u32,
@@ -135,6 +141,42 @@ impl Task {
                 Err(e) => Err(e.into()),
             };
         }
-        Readings { capacitance }
+        drop(sensor);
+
+        let color = match self.color {
+            None => [Err(SensorReadError::NotInitialized); 5],
+            Some(color) => {
+                let mut sensor = color.lock().await;
+                [
+                    sensor
+                        .read_channel(color::Channel::Red)
+                        .await
+                        .map(From::from)
+                        .map_err(From::from),
+                    sensor
+                        .read_channel(color::Channel::Green)
+                        .await
+                        .map(From::from)
+                        .map_err(From::from),
+                    sensor
+                        .read_channel(color::Channel::Blue)
+                        .await
+                        .map(From::from)
+                        .map_err(From::from),
+                    sensor
+                        .read_channel(color::Channel::White)
+                        .await
+                        .map(From::from)
+                        .map_err(From::from),
+                    sensor
+                        .read_channel(color::Channel::Infrared)
+                        .await
+                        .map(From::from)
+                        .map_err(From::from),
+                ]
+            }
+        };
+
+        Readings { capacitance, color }
     }
 }

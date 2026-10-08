@@ -35,7 +35,7 @@ use embassy_sync::{blocking_mutex::raw::ThreadModeRawMutex, mutex::Mutex};
 use embassy_time::{Duration, Timer};
 use static_cell::StaticCell;
 
-use crate::sensor::capacitance::CapacitanceSensor;
+use crate::sensor::{capacitance::CapacitanceSensor, color::ColorSensor};
 
 bind_interrupts!(struct Irqs {
     I2C1_EV => i2c::EventInterruptHandler<I2C1>;
@@ -182,10 +182,18 @@ async fn main(spawner: Spawner) {
     )));
     static CAPACITANCE: StaticCell<sensor::Shared<CapacitanceSensor<'static>>> = StaticCell::new();
     let capacitance = &*CAPACITANCE.init(Mutex::new(CapacitanceSensor::new(p.PB4, i2c)));
+    // TODO: boards without a color sensor panic here.
+    static COLOR: StaticCell<sensor::Shared<ColorSensor<'static>>> = StaticCell::new();
+
+    let color = ColorSensor::init(i2c)
+        .await
+        .ok()
+        .map(|sensor| &*COLOR.init(Mutex::new(sensor)));
 
     let (report_task, report_handle) = report::Builder {
         socket: report_socket,
         capacitance,
+        color,
     }
     .init();
 
@@ -193,6 +201,7 @@ async fn main(spawner: Spawner) {
         tcp,
         config: config_monitor,
         capacitance,
+        color,
     }
     .init();
     spawner.spawn(metrics(metrics_task).unwrap());
