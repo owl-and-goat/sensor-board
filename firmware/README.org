@@ -139,8 +139,9 @@ does not is not heard.
 
 =reports export= serves the latest readings at
 =http://127.0.0.1:9469/metrics= (=--listen= names another address), with how
-many reports came from each board and how many were lost on the way. for
-prometheus:
+many reports came from each board and how many were lost on the way. a board
+that has not been heard from for a minute keeps those counts, and what its
+last report said is no longer served. for prometheus:
 
 #+begin_src yaml
   scrape_configs:

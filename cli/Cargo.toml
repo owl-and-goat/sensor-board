@@ -8,13 +8,18 @@ publish = false
 anyhow = "1.0"
 clap = { version = "4.6", features = ["derive"] }
 indicatif = "0.18"
+metrics = "0.24"
+# Only the server that Prometheus scrapes: the default features add the means
+# to push to a gateway, and a TLS stack with it.
+metrics-exporter-prometheus = { version = "0.18", default-features = false, features = ["http-listener"] }
+metrics-util = { version = "0.20", default-features = false }
 nusb = "0.2.7"
 postcard-schema = "0.2.5"
 protocol = { path = "../protocol", features = ["clap"] }
 rand = "0.10"
 sha2 = "0.10"
 serde = "1.0"
-tokio = { version = "1.53", features = ["io-util", "macros", "net", "rt", "rt-multi-thread", "signal", "time"] }
+tokio = { version = "1.53", features = ["macros", "rt", "rt-multi-thread", "signal", "time"] }
 
 # Same revision as the protocol crate, which says why it is not a release.
 [dependencies.postcard-rpc]
