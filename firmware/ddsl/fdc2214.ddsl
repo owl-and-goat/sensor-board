@@ -1,0 +1,254 @@
+// -*- mode: Rust; eval: (apheleia-mode -1) -*-
+
+// FDC2214 capacitance-to-digital converter. Every register is 16 bits, MSB
+// first.
+device Fdc2214 {
+    register-address-type: u8,
+    // An address is a whole 16-bit register.
+    register-address-mode: indexed,
+    default-byte-order: BE,
+    // Also the default for fields, which have no setters when it is RO.
+    default-access: RW,
+
+    fieldset Word {
+        size-bytes: 2,
+        field value 15:0,
+    },
+
+    /// Sensor channels
+    enum Channel {
+        Ch0: _,
+        Ch1: _,
+        Ch2: _,
+        Ch3: _,
+    },
+
+    /// Conversion status and the top of the 28-bit result. Reading it latches
+    /// DATA_LSB.
+    register DATA[Channel stride 2] {
+        address: 0x00,
+        access: RO,
+        reset: 0x0000,
+        fields: fieldset _ {
+            size-bytes: 2,
+
+            /// Conversion watchdog timeout. Cleared by reading it. Only
+            /// reported with ERROR_CONFIG.WD_ERR2OUT set.
+            field ERR_WD 13,
+
+            /// Amplitude warning. Cleared by reading it. Only reported with
+            /// ERROR_CONFIG.AH_WARN2OUT or AL_WARN2OUT set.
+            field ERR_AW 12,
+
+            /// Bits 27:16 of the result.
+            field DATA_MSB 11:0,
+        },
+    },
+
+    /// Bits 15:0 of the conversion result. Must be read after DATA.
+    register DATA_LSB[Channel stride 2] {
+        address: 0x01,
+        access: RO,
+        reset: 0x0000,
+        fields: Word,
+    },
+
+    /// Reference count: the conversion time is RCOUNT * 16 / f_REF. 0x0000 to
+    /// 0x00FF are reserved.
+    register RCOUNT[Channel stride 1] {
+        address: 0x08,
+        reset: 0x0080,
+        fields: Word,
+    },
+
+    /// How long the LC sensor gets to settle before a conversion:
+    /// SETTLECOUNT * 16 / f_REF, at least 32 / f_REF.
+    register SETTLECOUNT[Channel stride 1] {
+        address: 0x10,
+        reset: 0x0000,
+        fields: Word,
+    },
+
+    register CLOCK_DIVIDERS[Channel stride 1] {
+        address: 0x14,
+        reset: 0x0000,
+        fields: fieldset _ {
+            size-bytes: 2,
+
+            /// Sensor frequency select. Differential sensors: divide by 1
+            /// for 0.01 to 8.75 MHz, by 2 for 5 to 10 MHz. Single-ended
+            /// sensors: divide by 2.
+            field FIN_SEL 13:12 -> _ as try enum _ {
+                Div1: 0b01,
+                Div2: 0b10,
+            },
+
+            /// f_REF = f_CLK / FREF_DIVIDER. 0 is reserved.
+            field FREF_DIVIDER 9:0,
+        },
+    },
+
+    /// Device status. Errors are latched until STATUS, or the DATA register of
+    /// ERR_CHAN, is read.
+    register STATUS {
+        address: 0x18,
+        access: RO,
+        reset: 0x0000,
+        fields: fieldset _ {
+            size-bytes: 2,
+
+            /// Which channel the flag or error is from.
+            field ERR_CHAN 15:14 -> _ as Channel,
+
+            /// Watchdog timeout
+            field ERR_WD 11,
+
+            /// Amplitude high warning
+            field ERR_AHW 10,
+
+            /// Amplitude low warning
+            field ERR_ALW 9,
+
+            /// A new conversion result is ready: for all active channels, in
+            /// auto-scan mode.
+            field DRDY 6,
+
+            /// Whether each channel has an unread conversion. Bit 3 is
+            /// channel 0, bit 0 channel 3.
+            field UNREADCONV[4 stride 1] 0,
+        },
+    },
+
+    /// Which errors are reported, and where. Called STATUS_CONFIG in the
+    /// register list.
+    register ERROR_CONFIG {
+        address: 0x19,
+        reset: 0x0000,
+        fields: fieldset _ {
+            size-bytes: 2,
+
+            /// Report watchdog timeouts in DATA.ERR_WD.
+            field WD_ERR2OUT 13,
+
+            /// Report amplitude high warnings in DATA.ERR_AW.
+            field AH_WARN2OUT 12,
+
+            /// Report amplitude low warnings in DATA.ERR_AW.
+            field AL_WARN2OUT 11,
+
+            /// Report watchdog timeouts on INTB and in STATUS.ERR_WD.
+            field WD_ERR2INT 5,
+
+            /// Report data ready on INTB and in STATUS.DRDY.
+            field DRDY_2INT 0,
+        },
+    },
+
+    /// Conversion configuration. Reserved bits 12 and 10 reset to 0 but must
+    /// be written as 1.
+    register CONFIG {
+        address: 0x1A,
+        reset: 0x2801,
+        fields: fieldset _ {
+            size-bytes: 2,
+
+            /// The channel converted continuously when MUX_CONFIG.AUTOSCAN_EN
+            /// is clear.
+            field ACTIVE_CHAN 15:14 -> _ as Channel,
+
+            field SLEEP_MODE_EN 13,
+
+            /// "Reserved. Set to b1."
+            field RESERVED_12 12,
+
+            field SENSOR_ACTIVATE_SEL 11 -> _ as enum _ {
+                /// Maximum sensor current, for a shorter activation time.
+                FullCurrent: 0,
+                /// The current in DRIVE_CURRENT, to save power.
+                LowPower: 1,
+            },
+
+            /// "Reserved. Set to b1."
+            field RESERVED_10 10,
+
+            field REF_CLK_SRC 9 -> _ as enum _ {
+                InternalOscillator: 0,
+                Clkin: 1,
+            },
+
+            /// Do not assert INTB when STATUS updates.
+            field INTB_DIS 7,
+
+            /// Drive channel 0 with more than 1.5 mA. Not with auto-scan.
+            field HIGH_CURRENT_DRV 6,
+
+            /// "Reserved. Set to b00'0001."
+            field RESERVED_5_0 5:0,
+        },
+    },
+
+    register MUX_CONFIG {
+        address: 0x1B,
+        reset: 0x020F,
+        fields: fieldset _ {
+            size-bytes: 2,
+
+            /// Convert the channels of RR_SEQUENCE in turn, rather than
+            /// CONFIG.ACTIVE_CHAN only.
+            field AUTOSCAN_EN 15,
+
+            field RR_SEQUENCE 14:13 -> _ as enum _ {
+                Ch0Ch1: 0b00,
+                Ch0ToCh2: 0b01,
+                Ch0ToCh3: 0b10,
+                AlsoCh0Ch1: 0b11,
+            },
+
+            /// Input deglitch filter bandwidth: the lowest above the sensor's
+            /// oscillation frequency.
+            field DEGLITCH 2:0 -> _ as try enum _ {
+                Mhz1: 0b001,
+                Mhz3p3: 0b100,
+                Mhz10: 0b101,
+                Mhz33: 0b111,
+            },
+        },
+    },
+
+    register RESET_DEV {
+        address: 0x1C,
+        reset: 0x0000,
+        fields: fieldset _ {
+            size-bytes: 2,
+
+            /// Write 1 to reset the device. Always reads back 0.
+            field RESET_DEV 15,
+        },
+    },
+
+    register DRIVE_CURRENT[Channel stride 1] {
+        address: 0x1E,
+        reset: 0x0000,
+        fields: fieldset _ {
+            size-bytes: 2,
+
+            /// Sensor drive current, from 0.016 mA (0) to 1.571 mA (31). Set
+            /// for a sensor oscillation amplitude of 1.2 to 1.8 V peak.
+            field IDRIVE 15:11,
+        },
+    },
+
+    register MANUFACTURER_ID {
+        address: 0x7E,
+        access: RO,
+        reset: 0x5449,
+        fields: Word,
+    },
+
+    register DEVICE_ID {
+        address: 0x7F,
+        access: RO,
+        reset: 0x3055,
+        fields: Word,
+    }
+}
