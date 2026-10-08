@@ -20,7 +20,9 @@ use defmt_rtt as _;
 use embassy_executor::Spawner;
 
 use embassy_stm32::{
-    Config, Peri, bind_interrupts, dma, i2c,
+    Config, Peri, bind_interrupts, dma,
+    gpio::{self, Output},
+    i2c,
     mode::Async,
     peripherals::{self, DMA1_CH1, DMA2_CH1, I2C1},
     rcc,
@@ -28,7 +30,7 @@ use embassy_stm32::{
     wdg::IndependentWatchdog,
 };
 use embassy_sync::{blocking_mutex::raw::ThreadModeRawMutex, mutex::Mutex};
-use embassy_time::Timer;
+use embassy_time::{Duration, Timer};
 use static_cell::StaticCell;
 
 use crate::sensor::capacitance::CapacitanceSensor;
@@ -101,6 +103,16 @@ async fn watchdog(iwdg: Peri<'static, peripherals::IWDG>) -> ! {
     }
 }
 
+#[embassy_executor::task]
+async fn blink(mut led: Output<'static>) {
+    for _ in 0..=2 {
+        led.set_low();
+        Timer::after(Duration::from_millis(200)).await;
+        led.set_high();
+        Timer::after(Duration::from_millis(200)).await;
+    }
+}
+
 #[embassy_executor::main]
 async fn main(spawner: Spawner) {
     // Must run before any clock or peripheral setup.
@@ -120,8 +132,8 @@ async fn main(spawner: Spawner) {
 
     let (_rtc, _rtc_time) = Rtc::new(p.RTC, RtcConfig::default());
 
-    // let mut led = Output::new(p.PA6, Level::High, Speed::Low); // D1, active low
     // let button = Input::new(p.PA7, Pull::Up); // SW1 to GND
+    //
 
     spawner.spawn(watchdog(p.IWDG).unwrap());
 
@@ -182,4 +194,7 @@ async fn main(spawner: Spawner) {
     let (server, publisher) = rpc::server(spawner, link, context);
     spawner.spawn(rpc(server).unwrap());
     spawner.spawn(reports(report_task, publisher).unwrap());
+
+    let led = Output::new(p.PA6, gpio::Level::High, gpio::Speed::Low); // D1, active low
+    spawner.spawn(blink(led).unwrap());
 }
