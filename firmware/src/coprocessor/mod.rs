@@ -11,7 +11,7 @@ use core::cell::Cell;
 
 use defmt::debug;
 use embassy_futures::{
-    join::{join, join3},
+    join::{join, join4},
     select::{Either, select},
 };
 use embassy_stm32::{
@@ -34,6 +34,7 @@ use protocol::{
 use static_cell::StaticCell;
 
 use crate::{
+    board_config,
     radio_flash::{self, RadioFlash},
     request, thread, update,
 };
@@ -80,12 +81,16 @@ pub struct Builder<'d> {
     /// The firmware-update service, which this task runs: it writes flash in
     /// step with CPU2.
     pub update: update::Service,
+    /// The service for the board's configuration, which this task runs for
+    /// the same reason.
+    pub board_config: board_config::Service,
 }
 
 impl<'d> Builder<'d> {
     /// Panics if called a second time: there is one coprocessor.
-    /// The socket for reports goes to whoever sends them. The one for firmware
-    /// updates stays with the task, which runs the update service.
+    /// The socket for reports goes to whoever sends them. Those for firmware
+    /// updates and for configurations stay with the task, which runs their
+    /// services.
     pub fn init(self) -> (Task<'d>, Handle, thread::Handle, thread::Socket) {
         static SHARED: StaticCell<Shared> = StaticCell::new();
         let shared: &'static Shared = SHARED.init(Shared {
@@ -103,6 +108,8 @@ impl<'d> Builder<'d> {
             thread,
             update: self.update,
             update_socket: sockets.updates,
+            board_config: self.board_config,
+            config_socket: sockets.configs,
         };
         let handle = Handle {
             requests: client,
@@ -162,6 +169,8 @@ pub struct Task<'d> {
     thread: thread::Service,
     update: update::Service,
     update_socket: thread::Socket,
+    board_config: board_config::Service,
+    config_socket: thread::Socket,
 }
 
 impl<'d> Task<'d> {
@@ -188,10 +197,12 @@ impl<'d> Task<'d> {
 
                     let installer = fus::serve_beside_stack(self.requests, self.status);
                     // From here on flash is only written in step with the
-                    // stack, by Thread for its dataset and by the updates.
+                    // stack: by Thread for its dataset, by the updates, and
+                    // for the board's configuration.
                     let flash = radio_flash::Shared::new(RadioFlash::new(flash, sys));
                     let network = self.thread.monitor();
                     let update = self.update.run(&flash, network, self.update_socket);
+                    let configs = self.board_config.run(&flash, self.config_socket);
                     if firmware.stack.map(|s| s.kind) == Some(StackKind::ThreadFtd) {
                         let thread = thread::Thread {
                             ot,
@@ -199,10 +210,12 @@ impl<'d> Task<'d> {
                             notif_rx,
                             flash: &flash,
                         };
-                        join3(self.thread.run(thread), installer, update).await.0
+                        join4(self.thread.run(thread), installer, update, configs)
+                            .await
+                            .0
                     } else {
                         let thread = self.thread.unavailable(NetworkError::NoThreadStack);
-                        join3(thread, installer, update).await.0
+                        join4(thread, installer, update, configs).await.0
                     }
                 }
                 Running::Fus(firmware) => {
@@ -213,10 +226,11 @@ impl<'d> Task<'d> {
                         requests: self.requests,
                         status: self.status,
                     };
-                    join3(
+                    join4(
                         self.thread.unavailable(NetworkError::NoThreadStack),
                         installer.run(),
                         self.update.unavailable(),
+                        self.board_config.unavailable(),
                     )
                     .await
                     .0

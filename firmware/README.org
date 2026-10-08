@@ -110,6 +110,8 @@ unique id, and =--board= takes any unambiguous start of it.
   cargo run -- firmware push <image> --board 4d    # to every board on the network
   cargo run -- reports watch               # print the boards' sensor reports as they arrive
   cargo run -- reports export              # serve them to prometheus
+  cargo run -- config show --board 4d      # what the board is configured to do
+  cargo run -- config set --board 4d --sensor temperature=30s  # see "board configuration" below
 #+end_src
 
 =network init= puts every attached board on one network, each joining in
@@ -146,6 +148,34 @@ prometheus:
       static_configs:
         - targets: ["127.0.0.1:9469"]
 #+end_src
+
+** board configuration
+
+a board keeps a configuration in flash, next to its network's dataset: its
+number, how it is powered, and for each sensor how often it is read, or that
+it is not read at all. =config show= prints it. =config set= changes what it
+is told to and leaves the rest:
+
+#+begin_src sh
+  cargo run -- config set --id 3 --power-mode aux    # a board's first configuration needs these two
+  cargo run -- config set --sensor temperature=30s --sensor color=off
+  cargo run -- config show
+#+end_src
+
+with =--remote <serial>= both are about a board that is not attached: the
+attached board asks it over their network, and gives up after six seconds.
+that takes the board's whole serial number, as =reports watch= prints it.
+
+#+begin_src sh
+  cargo run -- config set --remote 4D0021000350475532303120 --sensor temperature=30s
+#+end_src
+
+a firmware that changes what a configuration is made of (a new sensor, say)
+does not read what the one before it kept: the board has no configuration
+until it is given one again. two boards whose firmwares differ in that do
+not answer each other either.
+
+nothing in the firmware acts on the configuration yet.
 
 * getting into the bootloader
 

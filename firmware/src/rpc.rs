@@ -17,18 +17,19 @@ use postcard_rpc::{
 #[allow(unused_imports)]
 use postcard_rpc::server::impls::embassy_usb_v0_6::dispatch_impl::spawn_fn;
 use protocol::{
-    ApplyUpdate, BeginInstall, BeginUpdate, BoardInfo, CoprocessorResult, CoprocessorStatus,
-    Dataset, ENDPOINT_LIST, EnterBootloader, FinishInstall, FinishUpdate, FirmwareStatus,
-    GetBoardInfo, GetCoprocessorStatus, GetFirmwareStatus, GetNetworkDataset, GetNetworkNeighbors,
+    ApplyUpdate, BeginInstall, BeginUpdate, BoardConfigResult, BoardId, BoardInfo, ConfigFor,
+    ConfigResult, CoprocessorResult, CoprocessorStatus, Dataset, ENDPOINT_LIST, EnterBootloader,
+    FinishInstall, FinishUpdate, FirmwareStatus, GetBoardConfig, GetBoardInfo,
+    GetCoprocessorStatus, GetFirmwareStatus, GetNetworkDataset, GetNetworkNeighbors,
     GetNetworkRouters, GetNetworkStatus, GetOfferProgress, ImageChunk, ImageSize, JoinNetwork,
     LeaveNetwork, NeighborsResult, NetworkResult, NetworkStatus, OfferProgress, ReadSensorValue,
     Report, ReportReceived, RoutersResult, SensorReadReq, SensorReadResult, SensorValue,
-    StartCollecting, StartOffering, StopCollecting, StopOffering, TOPICS_IN_LIST, TOPICS_OUT_LIST,
-    UninstallStack, UpdateImage, UpdateResult, WriteInstall, WriteUpdate,
+    SetBoardConfig, StartCollecting, StartOffering, StopCollecting, StopOffering, TOPICS_IN_LIST,
+    TOPICS_OUT_LIST, UninstallStack, UpdateImage, UpdateResult, WriteInstall, WriteUpdate,
 };
 
 use crate::{
-    coprocessor, dfu, report,
+    board_config, coprocessor, dfu, report,
     sensor::{self, capacitance},
     thread, update, usb,
 };
@@ -40,6 +41,7 @@ pub struct Context {
     pub bootloader: dfu::Handle,
     pub update: update::Handle,
     pub reports: report::Handle,
+    pub config: board_config::Handle,
     // TODO(aspen): Make nicer
     pub capacitance: &'static sensor::Shared<capacitance::CapacitanceSensor<'static>>,
 }
@@ -80,6 +82,8 @@ define_dispatch! {
         | StartOffering        | async    | start_offering     |
         | StopOffering         | async    | stop_offering      |
         | GetOfferProgress     | blocking | offer_progress     |
+        | GetBoardConfig       | async    | board_config       |
+        | SetBoardConfig       | async    | set_board_config   |
     };
     topics_in: {
         list: TOPICS_IN_LIST;
@@ -237,6 +241,22 @@ fn offer_progress(context: &mut Context, _header: VarHeader, (): ()) -> OfferPro
     context.update.offer_progress()
 }
 
+async fn board_config(
+    context: &mut Context,
+    _header: VarHeader,
+    board: BoardId,
+) -> BoardConfigResult {
+    context.config.get(board).await
+}
+
+async fn set_board_config(
+    context: &mut Context,
+    _header: VarHeader,
+    config: ConfigFor,
+) -> ConfigResult {
+    context.config.set(config).await
+}
+
 async fn start_collecting(context: &mut Context, _header: VarHeader, (): ()) -> NetworkResult {
     context.reports.collect(true).await
 }
@@ -261,5 +281,10 @@ async fn read_sensor(
         protocol::Sensor::Capacitance1 => read_cap(capacitance::Channel::Ch1).await,
         protocol::Sensor::Capacitance2 => read_cap(capacitance::Channel::Ch2).await,
         protocol::Sensor::Capacitance3 => read_cap(capacitance::Channel::Ch3).await,
+        protocol::Sensor::Distance => todo!(),
+        protocol::Sensor::Color => todo!(),
+        protocol::Sensor::Temperature => todo!(),
+        protocol::Sensor::Humidity => todo!(),
+        protocol::Sensor::Acceleration => todo!(),
     }
 }

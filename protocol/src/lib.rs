@@ -2,12 +2,16 @@
 
 #![cfg_attr(not(feature = "std"), no_std)]
 
+mod board_config;
+
 use core::{fmt, str::FromStr};
 
-use postcard_rpc::{Topic, TopicDirection, endpoints, topics};
+use postcard_rpc::{Key, Topic, TopicDirection, endpoints, topics};
 use postcard_schema::Schema;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
+
+pub use board_config::{BoardConfig, PowerMode, Sensor, SensorConfig, SensorsConfig};
 
 /// USB IDs of a board running the firmware. This is the pid.codes test PID, which is for private
 /// testing only: by its terms it must not be on a board that is redistributed, sold or
@@ -43,6 +47,8 @@ endpoints! {
     | StartOffering        | ()            | UpdateResult      | "firmware/offer/start"       |
     | StopOffering         | ()            | UpdateResult      | "firmware/offer/stop"        |
     | GetOfferProgress     | ()            | OfferProgress     | "firmware/offer/progress"    |
+    | GetBoardConfig       | BoardId       | BoardConfigResult | "config/get"                 |
+    | SetBoardConfig       | ConfigFor     | ConfigResult      | "config/set"                 |
 }
 
 topics! {
@@ -590,16 +596,6 @@ impl fmt::Display for FusError {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Schema)]
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]
-#[cfg_attr(feature = "clap", derive(clap::ValueEnum))]
-pub enum Sensor {
-    Capacitance0,
-    Capacitance1,
-    Capacitance2,
-    Capacitance3,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Schema)]
-#[cfg_attr(feature = "defmt", derive(defmt::Format))]
 pub struct SensorReadReq {
     pub sensor: Sensor,
 }
@@ -656,6 +652,32 @@ impl fmt::Display for BoardId {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ParseBoardIdError;
+
+impl fmt::Display for ParseBoardIdError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str("a board's serial number is 24 hex digits")
+    }
+}
+
+impl core::error::Error for ParseBoardIdError {}
+
+impl FromStr for BoardId {
+    type Err = ParseBoardIdError;
+
+    fn from_str(s: &str) -> Result<BoardId, ParseBoardIdError> {
+        let mut id = [0; 12];
+        if s.len() != 2 * id.len() || !s.bytes().all(|b| b.is_ascii_hexdigit()) {
+            return Err(ParseBoardIdError);
+        }
+        for (i, byte) in id.iter_mut().enumerate() {
+            *byte = u8::from_str_radix(&s[2 * i..2 * i + 2], 16).map_err(|_| ParseBoardIdError)?;
+        }
+        Ok(BoardId(id))
+    }
+}
+
 /// What a board says about itself. Every board sends one to all the others on
 /// its network at intervals. A board that has been told to collect
 /// ([`StartCollecting`]) passes those that reach it, its own among them, on to
@@ -690,23 +712,33 @@ impl Report {
     /// [`ReportReceived`], which stands for the layout of this type, and then
     /// the report in postcard's encoding. `None` if `buf` is too short.
     pub fn encode<'a>(&self, buf: &'a mut [u8]) -> Option<&'a [u8]> {
-        let key = Self::key();
-        let (head, body) = buf.split_at_mut_checked(key.len())?;
-        head.copy_from_slice(&key);
-        let body = postcard_rpc::postcard::to_slice(self, body).ok()?.len();
-        Some(&buf[..key.len() + body])
+        encode_behind(&Self::key(), self, buf)
     }
 
     /// `None` for anything but a report of this very layout. A board whose
     /// firmware has another one is not understood, rather than misread.
     pub fn decode(bytes: &[u8]) -> Option<Report> {
-        let body = bytes.strip_prefix(&Self::key())?;
-        postcard_rpc::postcard::from_bytes(body).ok()
+        decode_behind(&Self::key(), bytes)
     }
 
     fn key() -> [u8; 8] {
         <ReportReceived as Topic>::TOPIC_KEY.to_bytes()
     }
+}
+
+/// `value` in postcard's encoding, behind `prefix`, which tells what it is
+/// from anything else. `None` if `buf` is too short.
+fn encode_behind<'a>(prefix: &[u8], value: &impl Serialize, buf: &'a mut [u8]) -> Option<&'a [u8]> {
+    let (head, body) = buf.split_at_mut_checked(prefix.len())?;
+    head.copy_from_slice(prefix);
+    let body = postcard_rpc::postcard::to_slice(value, body).ok()?.len();
+    Some(&buf[..prefix.len() + body])
+}
+
+/// `None` for anything but what [`encode_behind`] makes with `prefix`.
+fn decode_behind<T: serde::de::DeserializeOwned>(prefix: &[u8], bytes: &[u8]) -> Option<T> {
+    let body = bytes.strip_prefix(prefix)?;
+    postcard_rpc::postcard::from_bytes(body).ok()
 }
 
 /// How a request went. `Ok` from [`FinishInstall`] or [`UninstallStack`]
@@ -914,15 +946,11 @@ impl UpdateMessage {
 
     /// `None` if `buf` is too short.
     pub fn encode<'a>(&self, buf: &'a mut [u8]) -> Option<&'a [u8]> {
-        let (magic, body) = buf.split_at_mut_checked(Self::MAGIC.len())?;
-        magic.copy_from_slice(&Self::MAGIC);
-        let body = postcard_rpc::postcard::to_slice(self, body).ok()?.len();
-        Some(&buf[..Self::MAGIC.len() + body])
+        encode_behind(&Self::MAGIC, self, buf)
     }
 
     pub fn decode(bytes: &[u8]) -> Option<UpdateMessage> {
-        let body = bytes.strip_prefix(&Self::MAGIC)?;
-        postcard_rpc::postcard::from_bytes(body).ok()
+        decode_behind(&Self::MAGIC, bytes)
     }
 }
 
@@ -948,6 +976,107 @@ impl ImageChunk {
     pub fn new(offset: u32, data: &[u8]) -> Option<ImageChunk> {
         let data = heapless::Vec::from_slice(data).ok()?;
         Some(ImageChunk { offset, data })
+    }
+}
+
+/// What a board has for a configuration: `None` if it has been given none,
+/// or keeps one in a layout that its firmware does not know.
+pub type BoardConfigResult = Result<Option<BoardConfig>, ConfigError>;
+
+/// How giving a board a configuration went.
+pub type ConfigResult = Result<(), ConfigError>;
+
+/// A configuration, and the board it is for: the one that is asked, or one
+/// on its network, which it passes the configuration on to.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Schema)]
+pub struct ConfigFor {
+    pub board: BoardId,
+    pub config: BoardConfig,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Schema)]
+#[cfg_attr(feature = "defmt", derive(defmt::Format))]
+pub enum ConfigError {
+    /// The board's radio coprocessor runs no wireless stack, and a board
+    /// only writes its flash in step with one. Or the board is still
+    /// starting.
+    Unavailable,
+    /// The configuration could not be written to the flash of the board it
+    /// is for.
+    Storage,
+    /// The board that was asked could not put the question to its network.
+    Network(NetworkError),
+    /// The board in question is not the one that was asked, and did not
+    /// answer when that one asked it over the network.
+    NoAnswer,
+    /// The board did not get the request done in time.
+    Unresponsive,
+}
+
+impl fmt::Display for ConfigError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            ConfigError::Unavailable => {
+                f.write_str("the board keeps no configuration without a wireless stack")
+            }
+            ConfigError::Storage => f.write_str("the configuration could not be written to flash"),
+            ConfigError::Network(e) => write!(f, "could not ask over the network: {e}"),
+            ConfigError::NoAnswer => f.write_str("no answer over the network"),
+            ConfigError::Unresponsive => {
+                f.write_str("the board did not get to the configuration in time")
+            }
+        }
+    }
+}
+
+/// What boards say to each other about their configurations, over their
+/// network. It is how the host gets at the configuration of a board it is
+/// not attached to, through one that it is ([`GetBoardConfig`],
+/// [`SetBoardConfig`]).
+///
+/// A message starts with a key that stands for the layout of this type, and
+/// so for that of [`BoardConfig`]: boards whose firmwares differ in it do
+/// not understand each other, rather than misread.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Schema)]
+pub enum ConfigMessage {
+    /// Asks `board` what configuration it has. Said to all the boards:
+    /// nothing tells the one that asks where on the network `board` is. It
+    /// numbers its questions, and `question` comes back with the answer.
+    Get { board: BoardId, question: u32 },
+    /// Asks `board` to keep `config`, the same way.
+    Set {
+        board: BoardId,
+        question: u32,
+        config: BoardConfig,
+    },
+    /// The answer of `board` to either, to the board that asked: what it has
+    /// now. After a `Set` that it could not carry out, that is something
+    /// other than what it was given.
+    Has {
+        board: BoardId,
+        question: u32,
+        config: Option<BoardConfig>,
+    },
+}
+
+impl ConfigMessage {
+    /// The most bytes a message takes up: the key, which message it is, the
+    /// board, the number of the question, and a configuration that there may
+    /// be none of.
+    pub const MAX_LEN: usize = 8 + 1 + 12 + 5 + 1 + (BoardConfig::MAX_LEN - 8);
+
+    /// `None` if `buf` is too short.
+    pub fn encode<'a>(&self, buf: &'a mut [u8]) -> Option<&'a [u8]> {
+        encode_behind(&Self::key(), self, buf)
+    }
+
+    /// `None` for anything but a message of this very layout.
+    pub fn decode(bytes: &[u8]) -> Option<ConfigMessage> {
+        decode_behind(&Self::key(), bytes)
+    }
+
+    fn key() -> [u8; 8] {
+        Key::for_path::<ConfigMessage>("config/message").to_bytes()
     }
 }
 
@@ -1144,6 +1273,91 @@ mod tests {
     #[test]
     fn board_id_is_written_like_the_usb_serial() {
         assert_eq!(report().board.to_string(), "4B0041000350475532303120");
+    }
+
+    #[test]
+    fn board_id_is_read_the_way_it_is_written() {
+        let board = report().board;
+        assert_eq!("4B0041000350475532303120".parse(), Ok(board));
+        assert_eq!("4b0041000350475532303120".parse(), Ok(board));
+        assert_eq!("4B00".parse::<BoardId>(), Err(ParseBoardIdError));
+        assert_eq!(
+            "4B004100035047553230312G".parse::<BoardId>(),
+            Err(ParseBoardIdError)
+        );
+        assert_eq!(
+            "+B0041000350475532303120".parse::<BoardId>(),
+            Err(ParseBoardIdError)
+        );
+    }
+
+    /// A configuration whose every field takes as many bytes as it can.
+    fn longest_config() -> BoardConfig {
+        let mut sensors = SensorsConfig::default();
+        for (_, sensor) in &mut sensors.0 {
+            *sensor = Some(SensorConfig {
+                poll_interval: core::time::Duration::MAX,
+            });
+        }
+        BoardConfig {
+            board_id: u8::MAX,
+            sensor_config: sensors,
+            power_mode: PowerMode::Battery,
+        }
+    }
+
+    #[test]
+    fn config_messages_survive_the_trip_between_boards() {
+        let board = report().board;
+        let messages = [
+            ConfigMessage::Get { board, question: 0 },
+            ConfigMessage::Set {
+                board,
+                question: 1,
+                config: longest_config(),
+            },
+            ConfigMessage::Has {
+                board,
+                question: u32::MAX,
+                config: Some(longest_config()),
+            },
+            ConfigMessage::Has {
+                board,
+                question: 0,
+                config: None,
+            },
+        ];
+        for message in messages {
+            let mut buf = [0; ConfigMessage::MAX_LEN];
+            let encoded = message.encode(&mut buf).unwrap();
+            assert_eq!(ConfigMessage::decode(encoded), Some(message));
+        }
+    }
+
+    #[test]
+    fn longest_config_message_is_as_long_as_one_may_be() {
+        let longest = ConfigMessage::Has {
+            board: report().board,
+            question: u32::MAX,
+            config: Some(longest_config()),
+        };
+        let mut buf = [0; 2 * ConfigMessage::MAX_LEN];
+        let encoded = longest.encode(&mut buf).unwrap();
+        assert_eq!(encoded.len(), ConfigMessage::MAX_LEN);
+    }
+
+    #[test]
+    fn config_message_of_another_layout_is_not_understood() {
+        let message = ConfigMessage::Get {
+            board: report().board,
+            question: 0,
+        };
+        let mut buf = [0; ConfigMessage::MAX_LEN];
+        let encoded = message.encode(&mut buf).unwrap();
+        let mut other = encoded.to_vec();
+        other[0] ^= 1;
+        assert_eq!(ConfigMessage::decode(&other), None);
+        assert_eq!(ConfigMessage::decode(&[]), None);
     }
 
     #[test]

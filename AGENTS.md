@@ -214,9 +214,9 @@ secure flash area. That is also where ST's release notes put each image
 then installs it, resetting the chip a few times, and starts an installed
 stack without being asked. FUS only installs while it is the one running.
 
-A join stores the dataset in a 4 KB page of its own, between the firmware and
-the staging area (`firmware/src/persistent_config.rs`, 0x0803F000), because CPU2 forgets its
-own settings when it restarts. At power-up a board with a stored dataset hands
+A join stores the dataset in the stored-configuration page, between the
+firmware and the staging area (`firmware/src/persistent_config.rs`,
+0x0803F000), because CPU2 forgets its own settings when it restarts. At power-up a board with a stored dataset hands
 it back to the stack and rejoins by itself.
 
 Things learned the hard way:
@@ -268,3 +268,37 @@ topic. A new sensor goes into `protocol::Readings`, `Task::readings` in
 `report.rs`, and `describe` and `Metrics` in `cli/src/reports.rs`. Changing
 `Report` changes the key its datagrams start with, so boards with the old
 layout and boards with the new one do not hear each other.
+
+## Board configuration
+
+`protocol::BoardConfig` is kept in the stored-configuration page, behind the
+dataset (`firmware/src/persistent_config.rs`). The dataset's record is at
+the start of the page, as the firmwares from before 2026-10-07 wrote it and
+still read it. The configuration is 0x200 into the page, in postcard's
+encoding behind a key that stands for the layout of `BoardConfig`.
+
+`firmware/src/board_config.rs` serves it, inside the coprocessor task
+because it writes flash. For a board that is not attached, the attached
+board asks all the boards (`ConfigMessage`, UDP port 61622, which every
+board listens on). The board that is named answers with what it has then,
+which after a `Set` tells whether it kept what it was given. The attached
+board asks again every two seconds, and gives up after six.
+
+- Changing `BoardConfig` (a new sensor, a new field) changes both keys, the
+  one in flash and the one `ConfigMessage` starts with. A board then has no
+  configuration until it is given one again, and boards on either side of
+  the change do not answer each other, rather than misread.
+- Whichever of the two records is written, the page is erased and both are
+  written again, with nothing else on CPU1 running in between
+  (`RadioFlash::rewrite_page`): the Thread service reads the dataset from
+  flash to tell whether the board has a network. A reset in the middle
+  loses both.
+- The record of a configuration that the firmware does not understand is
+  carried over as it is when the dataset is written.
+- Nothing reads the configuration yet: not the reports, not Thread for the
+  power mode.
+- A question goes to `ff03::1`, which does not reach a sleepy end device.
+
+Seen on boards on 2026-10-07: a configuration set over USB, and on another
+board through the attached one; both kept through a firmware update, and
+the attached board's through leaving its network and joining it again.

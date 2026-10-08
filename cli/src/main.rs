@@ -1,6 +1,7 @@
 //! Command-line client for sensor boards attached over USB.
 
 mod board;
+mod config;
 mod coprocessor;
 mod firmware;
 mod network;
@@ -13,7 +14,7 @@ use clap::{Args, Parser, Subcommand};
 
 use board::Board;
 use network::SavedDataset;
-use protocol::{Link, NetworkStatus, Role, RouterId, Sensor, SensorValue};
+use protocol::{BoardId, Link, NetworkStatus, Role, RouterId, Sensor, SensorValue};
 
 #[derive(Parser)]
 #[command(version, about = "Talk to sensor boards attached over USB")]
@@ -43,6 +44,24 @@ enum Command {
     /// Update a board's firmware without its ROM bootloader
     #[command(subcommand)]
     Firmware(FirmwareCommand),
+    /// Show or change a board's configuration: which sensors it reads and how often, and how it is
+    /// powered
+    #[command(subcommand)]
+    Config(ConfigCommand),
+}
+
+#[derive(Subcommand)]
+enum ConfigCommand {
+    /// Print a board's configuration
+    Show(ConfigTarget),
+    /// Change a board's configuration. What is not named stays as it is
+    Set {
+        #[command(flatten)]
+        changes: config::Changes,
+
+        #[command(flatten)]
+        target: ConfigTarget,
+    },
 }
 
 #[derive(Subcommand)]
@@ -161,6 +180,19 @@ impl Target {
     async fn board(&self) -> Result<Board> {
         Board::select(self.board.as_deref()).await
     }
+}
+
+/// The board whose configuration a command is about: an attached one, or one that an attached one
+/// reaches over its network.
+#[derive(Args)]
+struct ConfigTarget {
+    /// A board on the attached board's network, by its whole serial number. It is reached over that
+    /// network, through the attached board
+    #[arg(long, value_name = "SERIAL")]
+    remote: Option<BoardId>,
+
+    #[command(flatten)]
+    attached: Target,
 }
 
 async fn list() -> Result<()> {
@@ -295,6 +327,14 @@ async fn main() -> Result<()> {
             let SensorValue { value } = board.read_sensor(sensor).await??;
             println!("Sensor value: {value}");
             Ok(())
+        }
+        Command::Config(ConfigCommand::Show(target)) => {
+            let board = target.attached.board().await?;
+            config::show(&board, target.remote).await
+        }
+        Command::Config(ConfigCommand::Set { changes, target }) => {
+            let board = target.attached.board().await?;
+            config::set(&board, target.remote, &changes).await
         }
     }
 }

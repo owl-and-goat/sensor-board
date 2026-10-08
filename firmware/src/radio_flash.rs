@@ -34,6 +34,24 @@ impl<'d> RadioFlash<'d> {
         &mut self.sys
     }
 
+    /// Erase the page that starts at `page`, and write each of `records` at
+    /// its offset into flash. Nothing else on CPU1 runs in between, so
+    /// nothing reads the page with only some of that done.
+    pub async fn rewrite_page<'a>(
+        &mut self,
+        page: u32,
+        records: impl IntoIterator<Item = (u32, &'a [u8])>,
+    ) -> Result<(), Error> {
+        self.coordinated(|flash| {
+            guarded(|| flash.blocking_erase(page, page + PAGE))?;
+            for (offset, bytes) in records {
+                guarded(|| flash.blocking_write(offset, bytes))?;
+            }
+            Ok(())
+        })
+        .await
+    }
+
     /// Run `steps`, each of which is to be [`guarded`], with CPU2 told that
     /// flash is being written.
     async fn coordinated<T>(

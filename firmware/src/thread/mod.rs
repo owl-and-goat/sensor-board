@@ -26,7 +26,7 @@ use core::net::Ipv6Addr;
 use defmt::info;
 use embassy_futures::{
     join::join,
-    select::{Either, Either4, select, select4},
+    select::{Either, Either4, select, select_array, select4},
 };
 use embassy_stm32_wpan::{
     shci::SchiCommandStatus,
@@ -43,10 +43,7 @@ use protocol::{
 };
 use static_cell::StaticCell;
 
-use crate::{
-    persistent_config::{self, Config},
-    radio_flash, request,
-};
+use crate::{persistent_config, radio_flash, request};
 
 mod ffi;
 mod ot;
@@ -64,15 +61,17 @@ const ALL_BOARDS: Ipv6Addr = Ipv6Addr::new(0xff03, 0, 0, 0, 0, 0, 0, 1);
 enum Port {
     Reports,
     Updates,
+    Configs,
 }
 
 impl Port {
-    const ALL: [Port; 2] = [Port::Reports, Port::Updates];
+    const ALL: [Port; 3] = [Port::Reports, Port::Updates, Port::Configs];
 
     const fn number(self) -> u16 {
         match self {
             Port::Reports => 61620,
             Port::Updates => 61621,
+            Port::Configs => 61622,
         }
     }
 
@@ -179,13 +178,13 @@ pub fn init() -> (Handle, Sockets, Service) {
         requests: request::Channel::new(),
         neighbor_requests: request::Channel::new(),
         router_requests: request::Channel::new(),
-        sockets: [SocketShared::new(), SocketShared::new()],
+        sockets: [const { SocketShared::new() }; Port::ALL.len()],
         status: Status(Mutex::new(Cell::new(NetworkStatus::Starting))),
         buffers: Buffers {
             active_dataset: ot::DatasetBuffer::new(),
             next_neighbor: ot::NeighborBuffer::new(),
             next_hop: ot::NextHopBuffer::new(),
-            udp: [ot::UdpBuffer::new(), ot::UdpBuffer::new()],
+            udp: [const { ot::UdpBuffer::new() }; Port::ALL.len()],
         },
     });
 
@@ -210,19 +209,25 @@ pub fn init() -> (Handle, Sockets, Service) {
     };
     let (reports, report_server, report_sender) = ends(Port::Reports);
     let (updates, update_server, update_sender) = ends(Port::Updates);
+    let (configs, config_server, config_sender) = ends(Port::Configs);
 
     let service = Service {
         requests: Requests {
             changes: server,
             neighbors: neighbor_server,
             routers: router_server,
-            sockets: [report_server, update_server],
+            sockets: [report_server, update_server, config_server],
         },
-        received: [report_sender, update_sender],
+        received: [report_sender, update_sender, config_sender],
         status: &shared.status,
         buffers: &shared.buffers,
     };
-    (handle, Sockets { reports, updates }, service)
+    let sockets = Sockets {
+        reports,
+        updates,
+        configs,
+    };
+    (handle, sockets, service)
 }
 
 /// What boards say to each other over Thread, a socket for each thing they
@@ -232,6 +237,8 @@ pub struct Sockets {
     pub reports: Socket,
     /// Firmware updates.
     pub updates: Socket,
+    /// The boards' configurations.
+    pub configs: Socket,
 }
 
 /// Datagrams to the boards on the network, and from them.
@@ -303,7 +310,7 @@ impl Handle {
     /// The dataset of the network the board is configured for, which it
     /// rejoins at every power-up.
     pub fn dataset(&self) -> Option<Dataset> {
-        stored_dataset()
+        persistent_config::dataset()
     }
 
     /// Start joining the network `dataset` describes, and keep rejoining it
@@ -344,11 +351,6 @@ impl Handle {
     }
 }
 
-fn stored_dataset() -> Option<Dataset> {
-    let config = persistent_config::load()?;
-    Dataset::from_tlvs(config.tlvs())
-}
-
 /// What it takes to run Thread: the stack's ends of the CPU2 mailbox, and the
 /// means to keep a dataset in flash next to a running radio stack.
 pub struct Thread<'a, 'd> {
@@ -378,22 +380,19 @@ enum Asked {
 
 impl Requests {
     async fn receive(&self) -> Asked {
-        let [reports, updates] = &self.sockets;
+        let sockets = self.sockets.each_ref().map(|socket| socket.receive());
         let next = select4(
             self.changes.receive(),
             self.neighbors.receive(),
             self.routers.receive(),
-            select(reports.receive(), updates.receive()),
+            select_array(sockets),
         );
         match next.await {
             Either4::First((pending, request)) => Asked::Change(pending, request),
             Either4::Second((pending, NeighborsRequest)) => Asked::Neighbors(pending),
             Either4::Third((pending, RoutersRequest)) => Asked::Routers(pending),
-            Either4::Fourth(Either::First((pending, request))) => {
-                Asked::Socket(pending, Port::Reports, request)
-            }
-            Either4::Fourth(Either::Second((pending, request))) => {
-                Asked::Socket(pending, Port::Updates, request)
+            Either4::Fourth(((pending, request), socket)) => {
+                Asked::Socket(pending, Port::ALL[socket], request)
             }
         }
     }
@@ -500,7 +499,7 @@ impl Network<'_, '_> {
             unavailable(self.requests, self.status, e).await
         }
 
-        if let Some(dataset) = stored_dataset()
+        if let Some(dataset) = persistent_config::dataset()
             && let Err(e) = self.rejoin(&dataset).await
         {
             defmt::warn!("thread: could not rejoin the stored network: {}", e);
@@ -625,22 +624,21 @@ impl Network<'_, '_> {
         if let Err(e) = set.await {
             // The stack has turned the dataset down and kept the one it had.
             // Go back to that network, which is also the one in flash.
-            if stored_dataset().is_some() {
+            if persistent_config::dataset().is_some() {
                 self.up().await?;
             }
             return Err(e.into());
         }
         self.up().await?;
 
-        let config = Config::new(dataset.as_tlvs());
-        persistent_config::save(&mut *self.flash.lock().await, &config)
+        persistent_config::set_dataset(&mut *self.flash.lock().await, Some(dataset))
             .await
             .map_err(|_| NetworkError::Storage)
     }
 
     async fn leave(&mut self) -> NetworkResult {
         self.down().await?;
-        persistent_config::erase(&mut *self.flash.lock().await)
+        persistent_config::set_dataset(&mut *self.flash.lock().await, None)
             .await
             .map_err(|_| NetworkError::Storage)
     }
@@ -700,7 +698,7 @@ impl Network<'_, '_> {
     }
 
     async fn status(&mut self) -> NetworkStatus {
-        if stored_dataset().is_none() {
+        if persistent_config::dataset().is_none() {
             return NetworkStatus::Unconfigured;
         }
         NetworkStatus::Configured(Link {

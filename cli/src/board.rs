@@ -10,12 +10,13 @@ use postcard_rpc::{
     standard_icd::{ERROR_PATH, WireError},
 };
 use protocol::{
-    ApplyUpdate, BeginInstall, BeginUpdate, BoardInfo, CoprocessorResult, CoprocessorStatus,
-    Dataset, EnterBootloader, FinishInstall, FinishUpdate, FirmwareStatus, GetBoardInfo,
-    GetCoprocessorStatus, GetFirmwareStatus, GetNetworkDataset, GetNetworkNeighbors,
-    GetNetworkRouters, GetNetworkStatus, GetOfferProgress, ImageChunk, ImageSize, JoinNetwork,
-    LeaveNetwork, NeighborTable, NetworkError, NetworkStatus, OfferProgress, ReadSensorValue,
-    Report, ReportReceived, RouterTable, Sensor, SensorReadReq, SensorReadResult, StartCollecting,
+    ApplyUpdate, BeginInstall, BeginUpdate, BoardConfig, BoardId, BoardInfo, ConfigError,
+    ConfigFor, CoprocessorResult, CoprocessorStatus, Dataset, EnterBootloader, FinishInstall,
+    FinishUpdate, FirmwareStatus, GetBoardConfig, GetBoardInfo, GetCoprocessorStatus,
+    GetFirmwareStatus, GetNetworkDataset, GetNetworkNeighbors, GetNetworkRouters, GetNetworkStatus,
+    GetOfferProgress, ImageChunk, ImageSize, JoinNetwork, LeaveNetwork, NeighborTable,
+    NetworkError, NetworkStatus, OfferProgress, ReadSensorValue, Report, ReportReceived,
+    RouterTable, Sensor, SensorReadReq, SensorReadResult, SetBoardConfig, StartCollecting,
     StartOffering, StopCollecting, StopOffering, USB_PID, USB_VID, UninstallStack, UpdateImage,
     UpdateResult, WriteInstall, WriteUpdate,
 };
@@ -96,6 +97,12 @@ impl Board {
 
     pub fn serial(&self) -> &str {
         &self.serial
+    }
+
+    /// Which board this is, which its serial number says.
+    pub fn id(&self) -> Result<BoardId> {
+        let id = self.serial.parse();
+        id.map_err(|_| anyhow!("board {}: its serial number is no board's", self.serial))
     }
 
     pub async fn info(&self) -> Result<BoardInfo> {
@@ -252,6 +259,32 @@ impl Board {
 
     fn update_result(&self, result: UpdateResult) -> Result<()> {
         result.map_err(|e| anyhow!("board {}: {e}", self.serial))
+    }
+
+    /// The configuration of `board`: this board, or one on its network,
+    /// which it asks.
+    pub async fn board_config(&self, board: BoardId) -> Result<Option<BoardConfig>> {
+        let result = self.call::<GetBoardConfig>(&board).await?;
+        result.map_err(|e| self.config_error(board, e))
+    }
+
+    /// Have `board` keep `config`: this board, or one on its network, which
+    /// it passes the configuration on to.
+    pub async fn set_board_config(&self, board: BoardId, config: &BoardConfig) -> Result<()> {
+        let config = ConfigFor {
+            board,
+            config: config.clone(),
+        };
+        let result = self.call::<SetBoardConfig>(&config).await?;
+        result.map_err(|e| self.config_error(board, e))
+    }
+
+    fn config_error(&self, board: BoardId, e: ConfigError) -> anyhow::Error {
+        if self.id().is_ok_and(|this| this == board) {
+            anyhow!("board {board}: {e}")
+        } else {
+            anyhow!("board {board}, through board {}: {e}", self.serial)
+        }
     }
 
     fn coprocessor_result(&self, result: CoprocessorResult) -> Result<()> {

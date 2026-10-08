@@ -1,6 +1,7 @@
 #![no_std]
 #![no_main]
 
+mod board_config;
 mod coprocessor;
 mod dfu;
 mod fault;
@@ -128,11 +129,13 @@ async fn main(spawner: Spawner) {
     spawner.spawn(bootloader(bootloader_task).unwrap());
 
     let (update_handle, update_service) = update::init();
+    let (config_handle, config_service) = board_config::init();
     let (coprocessor_task, coprocessor_handle, thread_handle, report_socket) =
         coprocessor::Builder {
             ipcc: p.IPCC,
             flash: p.FLASH,
             update: update_service,
+            board_config: config_service,
         }
         .init();
     spawner.spawn(coprocessor(coprocessor_task).unwrap());
@@ -173,6 +176,7 @@ async fn main(spawner: Spawner) {
         bootloader: bootloader_handle,
         reports: report_handle,
         update: update_handle,
+        config: config_handle,
         capacitance,
     };
     let (server, publisher) = rpc::server(spawner, link, context);
