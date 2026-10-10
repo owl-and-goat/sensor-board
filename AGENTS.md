@@ -203,6 +203,9 @@ from embassy's `WPAN_DEFAULT`:
 - The system clock is the 32 MHz crystal (HSE), used directly.
 - The PLL runs only to give USB its 48 MHz. USB cannot use HSI48, because
   CPU2 can switch that off.
+- PLLSAI1 gives the microphone's SAI 8.192 MHz. Both PLLs divide the crystal
+  by 5 first (the divider is shared), the only way to reach an audio rate
+  from 32 MHz.
 - HSI16 stays on although CPU1 does not use it, because the RF core is
   clocked from it.
 - The 32.768 kHz crystal (LSE) drives the RTC and the RF wakeup clock.

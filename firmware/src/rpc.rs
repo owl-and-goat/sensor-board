@@ -304,6 +304,7 @@ async fn read_sensor(
         protocol::Sensor::Temperature => todo!(),
         protocol::Sensor::Humidity => todo!(),
         protocol::Sensor::Acceleration => todo!(),
+        protocol::Sensor::Sound => todo!(),
     }
 }
 
