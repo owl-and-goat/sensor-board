@@ -180,9 +180,9 @@ be able to route from the board to that address:
 #+end_src
 
 tested on a board on 2026-10-10: metrics over usb, switching between the two
-modes when the configuration changes, and pushes to addresses where nothing
-answers. not tested yet, because there was no border router or second board
-to test with: a scrape, and a push that succeeds.
+modes when the configuration changes, pushes to addresses where nothing
+answers, and a scrape with =curl= from a machine on the lan, through a
+border router. not tested yet: a push that succeeds.
 
 ** board configuration
 

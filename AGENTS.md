@@ -346,9 +346,11 @@ Things learned about the TCP API:
 Tested on a board on 2026-10-10: initializing the endpoint and the listener,
 listening, connections that are refused or never answered, aborting a
 connection that is being opened, and switching between serving and pushing
-when the configuration changes. Not tested yet, because there was no border
-router: an incoming connection, and any data sent or received over a
-connection.
+when the configuration changes. Also tested that day, with the board on a
+border router's network: a scrape with `curl` from a machine on the LAN,
+answered in full (1528 bytes), on a board that had served a scrape before.
+Not tested yet: an outgoing connection that is accepted, so no push has
+reached a Pushgateway.
 
 ## Board configuration
 
