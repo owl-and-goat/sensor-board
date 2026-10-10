@@ -2,23 +2,22 @@
 
 * build and flash
 
-two images go on a board: the bootloader in =../bootloader=, at the start of
-flash, and this firmware behind it. the bootloader only swaps a firmware
-update in (see below) and starts the firmware. from the top of the
-repository:
+a board needs two images: the bootloader from =../bootloader=, at the start
+of flash, and this firmware after it. the bootloader only swaps in a firmware
+update (see below) and starts the firmware. from the top of the repository:
 
 #+begin_src sh
   just flash                  # both, through the st-link on the jtag port
-  just update                 # the firmware, over usb, through the firmware that runs
+  just update                 # the firmware, over usb, through the running firmware
   just update-all             # the same for every attached board, one after the other
   just push                   # the firmware, to every board on the network, through the attached one
   just dfu-flash              # both, over usb, through the rom bootloader
   just dfu-flash-all          # the same for every attached board, one after the other
 #+end_src
 
-=just update=, =just push= and =just dfu-flash= take =--board <serial>= with several boards
-attached. to watch the log of a board on the probe, flashing only the
-firmware (the bootloader has to be there already):
+with several boards attached, =just update=, =just push= and =just dfu-flash=
+take =--board <serial>=. to flash only the firmware through the probe and
+watch the board's log (the bootloader has to be on the board already):
 
 #+begin_src sh
   cargo run --release         # flash, reset, stay attached (ctrl-c to leave)
@@ -26,27 +25,29 @@ firmware (the bootloader has to be there already):
 
 ** firmware updates
 
-=just update= is =sensor-board-cli firmware update <image>=, with the image
-that =just firmware-image= makes. the board takes the image into the half of
-flash it keeps for that, checks it, and restarts; its bootloader swaps the
-two firmwares, which takes about ten seconds. the new one then runs on
-trial. once the board is back on its network (or has none to join) the
-update is kept. if the board restarts first, or is not back within five
-minutes, the bootloader puts the old firmware back. =firmware status= says
-which build runs and where that stands.
+=just update= runs =sensor-board-cli firmware update <image>= with the image
+that =just firmware-image= builds. the board writes the image to its staging
+area in flash, verifies it, and restarts. its bootloader then swaps the two
+firmwares, which takes about ten seconds. the new firmware first runs on
+trial. once the board is back on its network (or has no network to join),
+the update is confirmed. if the board restarts before that, or is not back
+within five minutes, the bootloader restores the old firmware. =firmware
+status= shows which build is running and the state of the update.
 
-=just push= is =firmware push <image>=, and updates every board on the
-network without plugging any of them in. the attached board takes the image
-over usb and offers it to the others every ten seconds; a board that runs
-another build fetches it from that board in small pieces, checks it, and
-restarts into it the same way, trial included. the command follows the
-boards' reports, which say what build each runs, and updates the attached
-board last, once every board it has heard from runs the image. a board whose
-trial of a build failed does not fetch that build again.
+=just push= runs =firmware push <image>=, which updates every board on the
+network without plugging any of them in. the attached board receives the
+image over usb and offers it to the others every ten seconds. a board that
+runs another build fetches the image from the attached board in small
+chunks, verifies it, and restarts into it in the same way, including the
+trial. the command follows the boards' reports, which show the build each
+board runs. it updates the attached board last, once every board it has
+heard from runs the image. a board whose trial of a build failed does not
+fetch that build again.
 
-while that goes on, the command shows a line that says how many of the boards
-run the image, and under it a bar for each board that is fetching, going by
-what they ask the attached board for:
+during a push, the command shows a summary line with the number of boards
+that run the image, and below it a progress bar for each board that is
+fetching. the bars are based on the chunks that the boards request from the
+attached board:
 
 #+begin_example
   ⠙ 1 of 3 other boards run build 1791154812 (2m)
@@ -55,59 +56,60 @@ what they ask the attached board for:
   4D0021000350475532303120 ████████████████████████████ 100%  restarting
 #+end_example
 
-a bar bears the board's serial number once the board has said which it is,
-which a firmware from before 2026-10-04 does not: it is "a board". a board
-that has the whole image keeps its bar for half a minute while it checks the
-image, restarts and swaps, and shows up as =updated= when it next reports.
-the bars are only drawn on a terminal (and not if =TERM= is =dumb=), and only
-if the attached board runs a firmware that can tell (=just update= first if
-it does not).
+a bar shows the board's serial number once the board has sent its id.
+firmware from before 2026-10-04 does not send it, so such a board is shown
+as "a board". a board that has the whole image keeps its bar for half a
+minute while it verifies the image, restarts and swaps, and is listed as
+=updated= at its next report. the bars are only drawn on a terminal (and not
+if =TERM= is =dumb=), and only if the attached board's firmware can report
+progress (run =just update= first if it cannot).
 
-all the boards fetch at the same time, whatever they relay for each other
-(see =TODO.org=). a board has to run a firmware that can do this before it
-can be updated this way: the first time, it gets it over usb.
+all boards fetch at the same time, even when they relay for each other (see
+=TODO.org=). a board can only be updated this way once it runs a firmware
+that supports it, so its first such firmware has to come over usb.
 
-a board keeps its network through all of this: its stored configuration is
-in a page of its own that neither firmware slot covers.
+a board stays on its network through all of this: its stored configuration
+is in a separate page that neither firmware slot covers.
 
 ** without the firmware: usb dfu
 
-=just dfu-flash= asks the running firmware for the rom bootloader and then
-does this, which also works on a board that got there another way (see
-"getting into the bootloader"). with several boards in the rom bootloader
-pick one with =dfu-util -p <usb path>= (=lsusb -t=).
+=just dfu-flash= asks the running firmware to enter the rom bootloader and
+then runs the command below. the command also works on a board that entered
+the rom bootloader another way (see "getting into the bootloader"). with
+several boards in the rom bootloader, select one with =dfu-util -p <usb
+path>= (=lsusb -t= shows the paths).
 
 #+begin_src sh
   dfu-util -d 0483:df11 -a 0 -s 0x08000000:leave -D target/sensor-board-flash.bin
 #+end_src
 
-the image is the bootloader, filled up to 0x08007000 with blank flash, and
-the firmware after it (=just firmware-image=, then the bootloader's part of
-=_flash-image= in the =Justfile=).
+the image is the bootloader, padded with blank flash up to 0x08007000,
+followed by the firmware (=just firmware-image=, then the bootloader's part
+of =_flash-image= in the =Justfile=).
 
 * talking to a board: sensor-board-cli
 
 the firmware is a usb device with one vendor interface, which carries
-[[https://github.com/jamesmunns/postcard-rpc][postcard-rpc]] messages. the endpoints and every type in them are defined in
-=../protocol=; the firmware serves them (=src/rpc.rs=) and
-=../cli= calls them. a board's usb serial number is its chip's
-unique id, and =--board= takes any unambiguous start of it.
+[[https://github.com/jamesmunns/postcard-rpc][postcard-rpc]] messages. =../protocol= defines the endpoints and all their
+types. the firmware serves them (=src/rpc.rs=) and =../cli= calls them. a
+board's usb serial number is its chip's unique id, and =--board= takes any
+unambiguous prefix of it.
 
 #+begin_src sh
   cd ../cli
   cargo run -- list                        # every board: firmware build, network status
-  cargo run -- network init                # all attached boards onto one thread network
+  cargo run -- network init                # put all attached boards on one thread network
   cargo run -- network dataset --board 4b  # that network's dataset, hex (holds the network key)
-  cargo run -- network neighbors --board 4b  # who that board hears directly, and how well
-  cargo run -- network routers --board 4b  # every router, reached directly or through which other
+  cargo run -- network neighbors --board 4b  # that board's direct neighbors and their link quality
+  cargo run -- network routers --board 4b  # every router, and the board's route to it
   cargo run -- network leave --board 4d
-  cargo run -- coprocessor status --board 4d           # what cpu2 has installed and runs
+  cargo run -- coprocessor status --board 4d           # what cpu2 has installed and is running
   cargo run -- coprocessor install <image> --board 4d  # see "a new board" below
   cargo run -- coprocessor uninstall --board 4d        # remove the wireless stack
   cargo run -- bootloader --board 4d       # reboot into the rom bootloader
-  cargo run -- firmware status --board 4d  # which build runs, and where an update stands
+  cargo run -- firmware status --board 4d  # the running build, and the state of an update
   cargo run -- firmware update <image> --board 4d  # see "firmware updates" above
-  cargo run -- firmware push <image> --board 4d    # to every board on the network
+  cargo run -- firmware push <image> --board 4d    # update every board on the network
   cargo run -- network addresses --board 4b  # that board's ipv6 addresses
   cargo run -- reports watch               # print the boards' sensor reports as they arrive
   cargo run -- metrics show --board 4d     # the board's current prometheus metrics
@@ -115,18 +117,19 @@ unique id, and =--board= takes any unambiguous start of it.
   cargo run -- config set --board 4d --sensor temperature=30s  # see "board configuration" below
 #+end_src
 
-=network init= puts every attached board on one network, each joining in
-turn and waited for until it has attached. which network: the one saved by
-an earlier run, in =~/.local/state/sensor-board/dataset= (=--dataset-path=
-names another file); with nothing saved, the one of the first board that has
-one; failing that a new one (random key, pan id and channel). whichever it
-is, it is saved, so a board plugged in on its own later joins the same
-network. =--force-reinit= makes a new network regardless and moves the
-attached boards to it. the saved file holds the network key.
+=network init= puts every attached board on one network. the boards join one
+at a time, and the command waits for each to attach. it chooses the network
+in this order: the one saved by an earlier run, in
+=~/.local/state/sensor-board/dataset= (=--dataset-path= selects another
+file); if nothing is saved, the network of the first board that has one;
+otherwise a new network (random key, pan id and channel). the chosen network
+is saved, so that a board plugged in on its own later joins the same one.
+=--force-reinit= always creates a new network and moves the attached boards
+to it. the saved file contains the network key.
 
-the host makes the dataset; a board is only ever told to join one. a board
-keeps its dataset in flash and rejoins at every power-up, until =network
-leave=.
+the host creates the dataset, and a board is only ever told to join one. a
+board keeps its dataset in flash and rejoins at every power-up, until
+=network leave=.
 
 ** sensor reports
 
@@ -216,15 +219,15 @@ regardless, and a board on battery is still a full router.
 
 * getting into the bootloader
 
-only needed for dfu; probe-rs does not care. any of these puts the chip in
+only needed for dfu; probe-rs does not need it. any of these puts the chip in
 usb dfu mode (=lsusb= shows =0483:df11=):
 
-- short the two pads of jp1 (boot0) while plugging in usb. hardware only;
-  works no matter what is in flash. take the coin cell out first: vbus and the
-  cell share a net.
-- =sensor-board-cli bootloader=, while the app runs.
+- short the two pads of jp1 (boot0) while plugging in usb. this is hardware
+  only, so it works whatever is in flash. take the coin cell out first: vbus
+  and the cell share a net.
+- =sensor-board-cli bootloader=, while the firmware is running.
 - three boots in a row that end in a panic, a hard fault or a watchdog reset.
-  one such failure is only a restart.
+  a single failure only restarts the firmware.
 
 * cpu2: fus, the thread stack, and openthread
 
@@ -233,16 +236,16 @@ firmware upgrade service) and, once installed, the thread ftd stack.
 
 ** a new board
 
-a chip comes blank, with an old fus and no wireless stack. from the top of
-the repository, with the board on usb and nothing else:
+a new chip is blank, with an old fus and no wireless stack. from the top of
+the repository, with only the new board on usb:
 
 #+begin_src sh
   just new-board          # bootloader and firmware over dfu, then fus and the thread stack; under a minute
-  just cli network init   # onto the network saved by an earlier run
+  just cli network init   # join the network saved by an earlier run
 #+end_src
 
-=just new-board= fetches st's two images, checks them against known hashes,
-and then does this:
+=just new-board= fetches st's two images, verifies them against known hashes,
+and then runs these commands:
 
 #+begin_src sh
   dfu-util -d 0483:df11 -a 0 -s 0x08000000:leave -D sensor-board-flash.bin
@@ -250,16 +253,16 @@ and then does this:
   sensor-board-cli coprocessor install stm32wb5x_Thread_FTD_fw.bin   # about half a minute
 #+end_src
 
-without =--board=, =coprocessor install= takes the only attached board whose
-coprocessor is running fus, which is the new one. it reads from the image
-what it is, and leaves alone a board that already has that version.
+without =--board=, =coprocessor install= selects the only attached board
+whose coprocessor is running fus, which is the new one. it reads the kind
+and version from the image, and skips a board that already has that version.
 
-fus only installs while it is the one running, so a board that has a stack
-takes =coprocessor uninstall= first.
+fus can only install while fus itself is running, so a board that has a
+stack needs =coprocessor uninstall= first.
 
-done this way on 2026-10-04 for the third and fourth boards. the first two
-got their stacks in september from the text console of the bring-up firmware
-(commit 9caa670).
+the third and fourth boards were set up this way on 2026-10-04. the first
+two got their stacks in september from the text console of the bring-up
+firmware (commit 9caa670).
 
 ** result (2026-09-16, two boards side by side on one hub)
 
