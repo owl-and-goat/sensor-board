@@ -4,9 +4,10 @@
 //! into the stack, and it runs inside the coprocessor task. The rest of the
 //! firmware uses the [`Handle`] to manage the network and a [`Socket`] to
 //! send and receive datagrams. Both send a request to the service and wait
-//! for the response with a timeout, and the status they read is the last one
-//! the service published. So if CPU2 stops responding, a caller gets a
-//! timeout instead of hanging, and no call into CPU2 is abandoned halfway.
+//! for the response with a timeout, and the status and addresses they read
+//! are the last ones the service published. So if CPU2 stops responding, a
+//! caller gets a timeout instead of hanging, and no call into CPU2 is
+//! abandoned halfway.
 //!
 //! The service does one thing at a time: it handles a request, or it handles
 //! a notification from the stack. It acknowledges a notification only after
@@ -22,7 +23,7 @@
 //! writes the entries of its neighbor and router tables there, one entry per
 //! call.
 
-use core::cell::Cell;
+use core::cell::RefCell;
 use core::net::{Ipv6Addr, SocketAddrV6};
 
 use defmt::info;
@@ -40,8 +41,9 @@ use embassy_sync::{
 };
 use embassy_time::Duration;
 use protocol::{
-    AddressesResult, Dataset, Link, NeighborTable, NeighborsResult, NetworkError, NetworkResult,
-    NetworkStatus, OtError, Router, RouterId, RouterTable, RoutersResult,
+    Addresses, AddressesResult, DISCOVERY_PORT, Dataset, Link, NeighborTable, NeighborsResult,
+    NetworkError, NetworkResult, NetworkStatus, OtError, Router, RouterId, RouterTable,
+    RoutersResult,
 };
 use static_cell::StaticCell;
 
@@ -64,16 +66,19 @@ enum Port {
     Reports,
     Updates,
     Configs,
+    Discovery,
 }
 
 impl Port {
-    const ALL: [Port; 3] = [Port::Reports, Port::Updates, Port::Configs];
+    const ALL: [Port; 4] = [Port::Reports, Port::Updates, Port::Configs, Port::Discovery];
 
     const fn number(self) -> u16 {
         match self {
             Port::Reports => 61620,
             Port::Updates => 61621,
             Port::Configs => 61622,
+            // The CLI also sends to this port, through a border router.
+            Port::Discovery => DISCOVERY_PORT,
         }
     }
 
@@ -176,17 +181,22 @@ impl SocketShared {
     }
 }
 
-/// The last published network status.
-struct Status(Mutex<ThreadModeRawMutex, Cell<NetworkStatus>>);
+/// The last published network status, and the board's addresses at that
+/// time.
+struct Status(Mutex<ThreadModeRawMutex, RefCell<(NetworkStatus, Addresses)>>);
 
 impl Status {
     fn get(&self) -> NetworkStatus {
-        self.0.lock(|s| s.get())
+        self.0.lock(|s| s.borrow().0)
     }
 
-    fn publish(&self, status: NetworkStatus) {
+    fn addresses(&self) -> Addresses {
+        self.0.lock(|s| s.borrow().1.clone())
+    }
+
+    fn publish(&self, status: NetworkStatus, addresses: Addresses) {
         info!("thread: {}", status);
-        self.0.lock(|s| s.set(status));
+        self.0.lock(|s| s.replace((status, addresses)));
     }
 }
 
@@ -232,7 +242,10 @@ pub fn init() -> (Handle, Sockets, Tcp, Service) {
         address_requests: request::Channel::new(),
         sockets: [const { SocketShared::new() }; Port::ALL.len()],
         tcp_requests: request::Channel::new(),
-        status: Status(Mutex::new(Cell::new(NetworkStatus::Starting))),
+        status: Status(Mutex::new(RefCell::new((
+            NetworkStatus::Starting,
+            Addresses::default(),
+        )))),
         buffers: Buffers {
             active_dataset: ot::DatasetBuffer::new(),
             next_neighbor: ot::NeighborBuffer::new(),
@@ -267,6 +280,7 @@ pub fn init() -> (Handle, Sockets, Tcp, Service) {
     let (reports, report_server, report_sender) = ends(Port::Reports);
     let (updates, update_server, update_sender) = ends(Port::Updates);
     let (configs, config_server, config_sender) = ends(Port::Configs);
+    let (discovery, discovery_server, discovery_sender) = ends(Port::Discovery);
 
     let service = Service {
         requests: Requests {
@@ -274,10 +288,20 @@ pub fn init() -> (Handle, Sockets, Tcp, Service) {
             neighbors: neighbor_server,
             routers: router_server,
             addresses: address_server,
-            sockets: [report_server, update_server, config_server],
+            sockets: [
+                report_server,
+                update_server,
+                config_server,
+                discovery_server,
+            ],
             tcp: tcp_server,
         },
-        received: [report_sender, update_sender, config_sender],
+        received: [
+            report_sender,
+            update_sender,
+            config_sender,
+            discovery_sender,
+        ],
         status: &shared.status,
         buffers: &shared.buffers,
     };
@@ -285,6 +309,7 @@ pub fn init() -> (Handle, Sockets, Tcp, Service) {
         reports,
         updates,
         configs,
+        discovery,
     };
     let tcp = Tcp {
         requests: tcp_client,
@@ -301,6 +326,8 @@ pub struct Sockets {
     pub updates: Socket,
     /// Board configurations.
     pub configs: Socket,
+    /// Board discovery.
+    pub discovery: Socket,
 }
 
 /// A UDP socket for datagrams to and from the boards on the network.
@@ -416,8 +443,8 @@ impl Tcp {
     }
 }
 
-/// Read-only access to the network status, for code that needs nothing
-/// else.
+/// Read-only access to the network status and the board's addresses, for
+/// code that needs nothing else.
 #[derive(Clone, Copy)]
 pub struct Monitor {
     status: &'static Status,
@@ -426,6 +453,12 @@ pub struct Monitor {
 impl Monitor {
     pub fn status(&self) -> NetworkStatus {
         self.status.get()
+    }
+
+    /// The board's IPv6 unicast addresses when the status was last
+    /// published. Empty unless the board is configured for a network.
+    pub fn addresses(&self) -> Addresses {
+        self.status.addresses()
     }
 }
 
@@ -441,6 +474,12 @@ pub struct Handle {
 impl Handle {
     pub fn status(&self) -> NetworkStatus {
         self.status.get()
+    }
+
+    pub fn monitor(&self) -> Monitor {
+        Monitor {
+            status: self.status,
+        }
     }
 
     /// The stored dataset: the network the board is configured for and
@@ -683,7 +722,7 @@ impl Service {
 }
 
 async fn unavailable(requests: Requests, status: &Status, error: NetworkError) -> ! {
-    status.publish(NetworkStatus::Unavailable(error));
+    status.publish(NetworkStatus::Unavailable(error), Addresses::default());
     loop {
         let incoming = requests.receive().await;
         requests.reject(incoming, error);
@@ -1021,7 +1060,11 @@ impl Network<'_, '_> {
 
     async fn publish_status(&mut self) {
         let status = self.status().await;
-        self.status.publish(status);
+        let addresses = match status {
+            NetworkStatus::Configured(_) => self.ot.ip6_unicast_addresses().await,
+            _ => Addresses::default(),
+        };
+        self.status.publish(status, addresses);
     }
 
     async fn join(&mut self, dataset: &Dataset) -> NetworkResult {

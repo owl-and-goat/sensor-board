@@ -4,6 +4,7 @@
 mod board_config;
 mod coprocessor;
 mod dfu;
+mod discovery;
 mod fault;
 mod http;
 mod i2c_device;
@@ -124,6 +125,11 @@ async fn reports(task: report::Task, publisher: rpc::Publisher) -> ! {
 }
 
 #[embassy_executor::task]
+async fn discovery(task: discovery::Task, publisher: rpc::Publisher) -> ! {
+    task.run(publisher).await
+}
+
+#[embassy_executor::task]
 async fn metrics(task: metrics::Task) -> ! {
     task.run().await
 }
@@ -181,7 +187,7 @@ async fn main(spawner: Spawner) {
 
     let (update_handle, update_service) = update::init();
     let (config_handle, config_service, config_monitor) = board_config::init();
-    let (coprocessor_task, coprocessor_handle, thread_handle, report_socket, tcp) =
+    let (coprocessor_task, coprocessor_handle, thread_handle, sockets, tcp) =
         coprocessor::Builder {
             ipcc: p.IPCC,
             flash: p.FLASH,
@@ -245,11 +251,17 @@ async fn main(spawner: Spawner) {
     let mic = &*MIC.init(Mutex::new(Mic::new(pdm)));
 
     let (report_task, report_handle) = report::Builder {
-        socket: report_socket,
+        socket: sockets.reports,
         capacitance,
         color,
         temp_rh,
         mic,
+    }
+    .init();
+
+    let (discovery_task, discovery_handle) = discovery::Builder {
+        socket: sockets.discovery,
+        network: thread_handle.monitor(),
     }
     .init();
 
@@ -272,12 +284,14 @@ async fn main(spawner: Spawner) {
         update: update_handle,
         config: config_handle,
         metrics: metrics_handle,
+        discovery: discovery_handle,
         capacitance,
         temp_rh,
     };
     let (server, publisher) = rpc::server(spawner, link, context);
     spawner.spawn(rpc(server).unwrap());
-    spawner.spawn(reports(report_task, publisher).unwrap());
+    spawner.spawn(reports(report_task, publisher.clone()).unwrap());
+    spawner.spawn(discovery(discovery_task, publisher).unwrap());
 
     let led = Output::new(p.PA6, gpio::Level::High, gpio::Speed::Low); // D1, active low
     spawner.spawn(blink(led).unwrap());

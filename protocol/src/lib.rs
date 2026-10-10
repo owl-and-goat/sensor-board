@@ -52,6 +52,7 @@ endpoints! {
     | SetBoardConfig       | ConfigFor     | ConfigResult      | "config/set"                 |
     | GetNetworkAddresses  | ()            | AddressesResult   | "network/addresses"          |
     | GetMetrics           | u32           | MetricsChunk      | "metrics/get"                |
+    | DiscoverBoards       | ()            | NetworkResult     | "network/discover"           |
 }
 
 topics! {
@@ -64,9 +65,10 @@ topics! {
 topics! {
     list = TOPICS_OUT_LIST;
     direction = TopicDirection::ToClient;
-    | TopicTy        | MessageTy | Path               | Cfg |
-    | -------        | --------- | ----               | --- |
-    | ReportReceived | Report    | "reports/received" |     |
+    | TopicTy         | MessageTy | Path                 | Cfg |
+    | -------         | --------- | ----                 | --- |
+    | ReportReceived  | Report    | "reports/received"   |     |
+    | BoardDiscovered | Member    | "network/discovered" |     |
 }
 
 /// The dataset a board has stored: the network it is configured for and
@@ -1242,6 +1244,56 @@ impl fmt::Display for AddressKind {
     }
 }
 
+/// The UDP port of [`DiscoveryMessage`]. A board replies to this port, so a
+/// host that sends a request has to send it from this port.
+pub const DISCOVERY_PORT: u16 = 61623;
+
+/// A board on a Thread network, as it describes itself in a
+/// [`DiscoveryMessage`].
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Schema)]
+pub struct Member {
+    pub board: BoardId,
+    pub rloc16: u16,
+    pub addresses: Addresses,
+}
+
+/// The messages that find the boards on a Thread network. An attached board
+/// multicasts a request for the host ([`DiscoverBoards`]) and forwards each
+/// reply ([`BoardDiscovered`]). A host can also send the request itself, to
+/// a board's routable address through a border router.
+///
+/// An encoded message starts with a key derived from the layout of this
+/// type. Boards whose firmwares disagree on the layout ignore each other's
+/// messages instead of misreading them.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Schema)]
+pub enum DiscoveryMessage {
+    /// Asks every board that receives it to reply.
+    Request,
+    /// A board's reply, sent to [`DISCOVERY_PORT`] at the address the
+    /// request came from.
+    Reply(Member),
+}
+
+impl DiscoveryMessage {
+    /// The longest encoded message: the key, the variant, the board, the
+    /// RLOC16, and a full address list with its length and its flag.
+    pub const MAX_LEN: usize = 8 + 1 + 12 + 3 + 1 + Addresses::MAX_LEN * (16 + 1) + 1;
+
+    /// `None` if `buf` is too short.
+    pub fn encode<'a>(&self, buf: &'a mut [u8]) -> Option<&'a [u8]> {
+        encode_with_prefix(&Self::key(), self, buf)
+    }
+
+    /// `None` if `bytes` is not a message encoded with this layout.
+    pub fn decode(bytes: &[u8]) -> Option<DiscoveryMessage> {
+        decode_with_prefix(&Self::key(), bytes)
+    }
+
+    fn key() -> [u8; 8] {
+        Key::for_path::<DiscoveryMessage>("network/discovery").to_bytes()
+    }
+}
+
 /// A chunk of a board's metrics in Prometheus's text format, starting at the
 /// byte offset given to [`GetMetrics`]. Each request renders the metrics
 /// again, so values can change between one chunk and the next.
@@ -1550,6 +1602,56 @@ mod tests {
         other[0] ^= 1;
         assert_eq!(ConfigMessage::decode(&other), None);
         assert_eq!(ConfigMessage::decode(&[]), None);
+    }
+
+    fn longest_member() -> Member {
+        let address = Address {
+            address: Ipv6Addr::new(0xfd61, 0x67e, 0xfbdc, 0xf78e, 0, 0xff, 0xfe00, 0xec00),
+            kind: AddressKind::Locator,
+        };
+        let mut addresses = Addresses {
+            truncated: true,
+            ..Addresses::default()
+        };
+        for _ in 0..Addresses::MAX_LEN {
+            addresses.addresses.push(address).unwrap();
+        }
+        Member {
+            board: report().board,
+            rloc16: u16::MAX,
+            addresses,
+        }
+    }
+
+    #[test]
+    fn discovery_messages_round_trip() {
+        let messages = [
+            DiscoveryMessage::Request,
+            DiscoveryMessage::Reply(longest_member()),
+        ];
+        for message in messages {
+            let mut buf = [0; DiscoveryMessage::MAX_LEN];
+            let encoded = message.encode(&mut buf).unwrap();
+            assert_eq!(DiscoveryMessage::decode(encoded), Some(message));
+        }
+    }
+
+    #[test]
+    fn longest_discovery_message_has_max_len() {
+        let longest = DiscoveryMessage::Reply(longest_member());
+        let mut buf = [0; 2 * DiscoveryMessage::MAX_LEN];
+        let encoded = longest.encode(&mut buf).unwrap();
+        assert_eq!(encoded.len(), DiscoveryMessage::MAX_LEN);
+    }
+
+    #[test]
+    fn discovery_message_with_other_layout_is_rejected() {
+        let mut buf = [0; DiscoveryMessage::MAX_LEN];
+        let encoded = DiscoveryMessage::Request.encode(&mut buf).unwrap();
+        let mut other = encoded.to_vec();
+        other[0] ^= 1;
+        assert_eq!(DiscoveryMessage::decode(&other), None);
+        assert_eq!(DiscoveryMessage::decode(&[]), None);
     }
 
     #[test]

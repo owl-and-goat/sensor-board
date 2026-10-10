@@ -86,20 +86,18 @@ pub struct Builder<'d> {
     pub board_config: board_config::Service,
 }
 
+/// The UDP sockets for tasks other than the coprocessor task.
+pub struct Sockets {
+    pub reports: thread::Socket,
+    pub discovery: thread::Socket,
+}
+
 impl<'d> Builder<'d> {
     /// Panics if called a second time: there is one coprocessor.
-    /// Returns the reports socket and the TCP connection for other tasks to
+    /// Returns the [`Sockets`] and the TCP connection for other tasks to
     /// use. The task keeps the sockets for firmware updates and board
     /// configuration, because it runs those services.
-    pub fn init(
-        self,
-    ) -> (
-        Task<'d>,
-        Handle,
-        thread::Handle,
-        thread::Socket,
-        thread::Tcp,
-    ) {
+    pub fn init(self) -> (Task<'d>, Handle, thread::Handle, Sockets, thread::Tcp) {
         static SHARED: StaticCell<Shared> = StaticCell::new();
         let shared: &'static Shared = SHARED.init(Shared {
             requests: request::Channel::new(),
@@ -123,7 +121,11 @@ impl<'d> Builder<'d> {
             requests: client,
             status: &shared.status,
         };
-        (task, handle, thread_handle, sockets.reports, tcp)
+        let sockets = Sockets {
+            reports: sockets.reports,
+            discovery: sockets.discovery,
+        };
+        (task, handle, thread_handle, sockets, tcp)
     }
 }
 

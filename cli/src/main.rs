@@ -1,8 +1,10 @@
 //! Command-line client for sensor boards attached over USB.
 
 mod board;
+mod border_router;
 mod config;
 mod coprocessor;
+mod discovery;
 mod firmware;
 mod network;
 mod reports;
@@ -138,6 +140,28 @@ enum NetworkCommand {
     Routers(Target),
     /// Print a board's IPv6 addresses. Prometheus needs a routable one to scrape the board
     Addresses(Target),
+    /// List the sensor boards on the network: serial number, RLOC16, IPv6 address and link
+    ///
+    /// Asks through an attached board if there is one, and otherwise through the border router.
+    /// Age, quality and RSSI describe the link between each board and the board or border
+    /// router that was asked. They show as `-` for a board it has no direct radio link with, and
+    /// a border router only reports the quality. A board whose firmware predates discovery is
+    /// not listed
+    Show {
+        /// Ask through the border router whose REST API is at this address, or at cerberus:8081
+        /// if no address is given
+        #[arg(
+            long,
+            value_name = "HOST:PORT",
+            num_args = 0..=1,
+            default_missing_value = discovery::DEFAULT_BORDER_ROUTER,
+            conflicts_with = "board"
+        )]
+        border_router: Option<String>,
+
+        #[command(flatten)]
+        target: Target,
+    },
 }
 
 #[derive(Subcommand)]
@@ -355,6 +379,10 @@ async fn main() -> Result<()> {
             }
             Ok(())
         }
+        Command::Network(NetworkCommand::Show {
+            border_router,
+            target,
+        }) => discovery::show(target.board.as_deref(), border_router.as_deref()).await,
         Command::Reports(ReportsCommand::Watch(target)) => {
             reports::watch(target.board.as_deref()).await
         }

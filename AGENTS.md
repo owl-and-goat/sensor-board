@@ -298,6 +298,45 @@ the host as the `ReportReceived` topic.
 - `firmware push` uses the reports to learn which build each board runs. It
   does not wait for a board whose reports it does not receive.
 
+## Board discovery
+
+`firmware/src/discovery.rs` replies to a `protocol::DiscoveryMessage::Request`
+(UDP port 61623, which every board listens on) with the board's serial
+number, RLOC16 and addresses. `network show` sends the request in one of two
+ways:
+
+- Through an attached board (`DiscoverBoards`). The board multicasts the
+  request and forwards each reply to the host as the `BoardDiscovered` topic.
+  It also receives its own request and replies to itself, which is how it
+  gets into the list.
+- Through a border router. The CLI reads the device list from the border
+  router's REST API (`/node` and `/diagnostics`, `cli/src/border_router.rs`)
+  and sends the request to each routable address itself.
+
+Details:
+
+- A board sends its reply to port 61623 at the address the request came
+  from, not to the request's source port. The CLI therefore binds port 61623.
+- The reply is built from the status and addresses that the Thread service
+  last published (`thread::Monitor`). The service publishes both on every
+  state-change notification.
+- The discovery task starts before the Thread stack does, so it retries
+  `listen` every two seconds until it succeeds.
+- The link columns of `network show` come from the attached board's neighbor
+  table, matched by RLOC16. Through a border router they come from the route
+  data in its own diagnostics entry, which has a link quality per router and
+  nothing else.
+- A message starts with a key derived from the layout of `DiscoveryMessage`,
+  which includes `Addresses`. Boards and CLIs on different sides of a layout
+  change ignore each other.
+
+Tested on a board on 2026-10-10: the board listing itself through USB, a
+reply to a request from the CLI through the border router, the RLOC16 in the
+reply changing when the board became a router, and the border router's link
+quality for it. Only that one board had the firmware. Not tested: a second
+board's reply forwarded by the attached board, and link columns from the
+attached board's neighbor table.
+
 ## Metrics
 
 `firmware/src/metrics.rs` polls the sensors that are enabled in the board's

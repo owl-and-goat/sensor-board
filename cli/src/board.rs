@@ -10,16 +10,16 @@ use postcard_rpc::{
     standard_icd::{ERROR_PATH, WireError},
 };
 use protocol::{
-    Addresses, ApplyUpdate, BeginInstall, BeginUpdate, BoardConfig, BoardId, BoardInfo,
-    ConfigError, ConfigFor, CoprocessorResult, CoprocessorStatus, Dataset, EnterBootloader,
-    FinishInstall, FinishUpdate, FirmwareStatus, GetBoardConfig, GetBoardInfo,
-    GetCoprocessorStatus, GetFirmwareStatus, GetMetrics, GetNetworkAddresses, GetNetworkDataset,
-    GetNetworkNeighbors, GetNetworkRouters, GetNetworkStatus, GetOfferProgress, ImageChunk,
-    ImageSize, JoinNetwork, LeaveNetwork, MeasureTempRh, NeighborTable, NetworkError,
-    NetworkStatus, OfferProgress, ReadSensorValue, Report, ReportReceived, RouterTable, Sensor,
-    SensorReadReq, SensorReadResult, SetBoardConfig, StartCollecting, StartOffering,
-    StopCollecting, StopOffering, TempRhReq, TempRhResult, USB_PID, USB_VID, UninstallStack,
-    UpdateImage, UpdateResult, WriteInstall, WriteUpdate,
+    Addresses, ApplyUpdate, BeginInstall, BeginUpdate, BoardConfig, BoardDiscovered, BoardId,
+    BoardInfo, ConfigError, ConfigFor, CoprocessorResult, CoprocessorStatus, Dataset,
+    DiscoverBoards, EnterBootloader, FinishInstall, FinishUpdate, FirmwareStatus, GetBoardConfig,
+    GetBoardInfo, GetCoprocessorStatus, GetFirmwareStatus, GetMetrics, GetNetworkAddresses,
+    GetNetworkDataset, GetNetworkNeighbors, GetNetworkRouters, GetNetworkStatus, GetOfferProgress,
+    ImageChunk, ImageSize, JoinNetwork, LeaveNetwork, MeasureTempRh, Member, NeighborTable,
+    NetworkError, NetworkStatus, OfferProgress, ReadSensorValue, Report, ReportReceived,
+    RouterTable, Sensor, SensorReadReq, SensorReadResult, SetBoardConfig, StartCollecting,
+    StartOffering, StopCollecting, StopOffering, TempRhReq, TempRhResult, USB_PID, USB_VID,
+    UninstallStack, UpdateImage, UpdateResult, WriteInstall, WriteUpdate,
 };
 
 /// Timeout for a call to a board. The slowest call is a join or leave that
@@ -171,6 +171,19 @@ impl Board {
     /// The board's IPv6 unicast addresses.
     pub async fn addresses(&self) -> Result<Addresses> {
         let result = self.call::<GetNetworkAddresses>(&()).await?;
+        self.network_result(result)
+    }
+
+    /// Subscribe to the discovery replies that the board forwards: the
+    /// replies to the requests that [`Board::discover`] sends.
+    pub async fn discovered(&self) -> Result<MultiSubscription<Member>> {
+        let subscription = self.client.subscribe_multi::<BoardDiscovered>(64).await;
+        subscription.map_err(|_| anyhow!("board {} is gone", self.serial))
+    }
+
+    /// Tell the board to multicast a discovery request to its network.
+    pub async fn discover(&self) -> Result<()> {
+        let result = self.call::<DiscoverBoards>(&()).await?;
         self.network_result(result)
     }
 

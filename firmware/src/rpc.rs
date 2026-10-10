@@ -17,20 +17,21 @@ use postcard_rpc::{
 #[allow(unused_imports)]
 use postcard_rpc::server::impls::embassy_usb_v0_6::dispatch_impl::spawn_fn;
 use protocol::{
-    AddressesResult, ApplyUpdate, BeginInstall, BeginUpdate, BoardConfigResult, BoardId, BoardInfo,
-    ConfigFor, ConfigResult, CoprocessorResult, CoprocessorStatus, Dataset, ENDPOINT_LIST,
-    EnterBootloader, FinishInstall, FinishUpdate, FirmwareStatus, GetBoardConfig, GetBoardInfo,
-    GetCoprocessorStatus, GetFirmwareStatus, GetMetrics, GetNetworkAddresses, GetNetworkDataset,
-    GetNetworkNeighbors, GetNetworkRouters, GetNetworkStatus, GetOfferProgress, ImageChunk,
-    ImageSize, JoinNetwork, LeaveNetwork, MeasureTempRh, MetricsChunk, NeighborsResult,
-    NetworkResult, NetworkStatus, OfferProgress, ReadSensorValue, Report, ReportReceived,
-    RoutersResult, SensorReadError, SensorReadReq, SensorReadResult, SetBoardConfig,
-    StartCollecting, StartOffering, StopCollecting, StopOffering, TOPICS_IN_LIST, TOPICS_OUT_LIST,
-    TempRhReq, TempRhResult, UninstallStack, UpdateImage, UpdateResult, WriteInstall, WriteUpdate,
+    AddressesResult, ApplyUpdate, BeginInstall, BeginUpdate, BoardConfigResult, BoardDiscovered,
+    BoardId, BoardInfo, ConfigFor, ConfigResult, CoprocessorResult, CoprocessorStatus, Dataset,
+    DiscoverBoards, ENDPOINT_LIST, EnterBootloader, FinishInstall, FinishUpdate, FirmwareStatus,
+    GetBoardConfig, GetBoardInfo, GetCoprocessorStatus, GetFirmwareStatus, GetMetrics,
+    GetNetworkAddresses, GetNetworkDataset, GetNetworkNeighbors, GetNetworkRouters,
+    GetNetworkStatus, GetOfferProgress, ImageChunk, ImageSize, JoinNetwork, LeaveNetwork,
+    MeasureTempRh, Member, MetricsChunk, NeighborsResult, NetworkResult, NetworkStatus,
+    OfferProgress, ReadSensorValue, Report, ReportReceived, RoutersResult, SensorReadError,
+    SensorReadReq, SensorReadResult, SetBoardConfig, StartCollecting, StartOffering,
+    StopCollecting, StopOffering, TOPICS_IN_LIST, TOPICS_OUT_LIST, TempRhReq, TempRhResult,
+    UninstallStack, UpdateImage, UpdateResult, WriteInstall, WriteUpdate,
 };
 
 use crate::{
-    board_config, coprocessor, dfu, metrics, report,
+    board_config, coprocessor, dfu, discovery, metrics, report,
     sensor::{self, capacitance, temp_rh},
     thread, update, usb,
 };
@@ -44,6 +45,7 @@ pub struct Context {
     pub reports: report::Handle,
     pub config: board_config::Handle,
     pub metrics: metrics::Handle,
+    pub discovery: discovery::Handle,
     // TODO(aspen): Make nicer
     pub capacitance: &'static sensor::Shared<capacitance::CapacitanceSensor<'static>>,
     pub temp_rh: Option<&'static sensor::Shared<temp_rh::TempRhSensor<'static>>>,
@@ -90,6 +92,7 @@ define_dispatch! {
         | SetBoardConfig       | async    | set_board_config   |
         | GetNetworkAddresses  | async    | network_addresses  |
         | GetMetrics           | blocking | metrics_text       |
+        | DiscoverBoards       | async    | discover_boards    |
     };
     topics_in: {
         list: TOPICS_IN_LIST;
@@ -117,7 +120,9 @@ pub fn server(spawner: Spawner, link: usb::Link, context: Context) -> (Server, P
     (server, publisher)
 }
 
-/// Publishes the topics of the `protocol` crate to the host.
+/// Publishes the topics of the `protocol` crate to the host. Each task that
+/// publishes has its own clone.
+#[derive(Clone)]
 pub struct Publisher {
     sender: server::Sender<usb::Tx>,
     sequence: u16,
@@ -127,12 +132,26 @@ impl Publisher {
     /// Forward a report to the host. Delivery is not confirmed: if no host
     /// is listening, the report is lost.
     pub async fn report_received(&mut self, report: &Report) {
-        self.sequence = self.sequence.wrapping_add(1);
-        let sequence = VarSeq::Seq2(self.sequence);
+        let sequence = self.next_sequence();
         let sent = self.sender.publish::<ReportReceived>(sequence, report);
         if sent.await.is_err() {
             defmt::debug!("rpc: no host took a report");
         }
+    }
+
+    /// Forward a board's discovery reply to the host. Delivery is not
+    /// confirmed either.
+    pub async fn board_discovered(&mut self, member: &Member) {
+        let sequence = self.next_sequence();
+        let sent = self.sender.publish::<BoardDiscovered>(sequence, member);
+        if sent.await.is_err() {
+            defmt::debug!("rpc: no host took a discovery reply");
+        }
+    }
+
+    fn next_sequence(&mut self) -> VarSeq {
+        self.sequence = self.sequence.wrapping_add(1);
+        VarSeq::Seq2(self.sequence)
     }
 }
 
@@ -182,6 +201,10 @@ async fn network_addresses(context: &mut Context, _header: VarHeader, (): ()) ->
 
 fn metrics_text(context: &mut Context, _header: VarHeader, offset: u32) -> MetricsChunk {
     context.metrics.text(offset)
+}
+
+async fn discover_boards(context: &mut Context, _header: VarHeader, (): ()) -> NetworkResult {
+    context.discovery.discover().await
 }
 
 fn coprocessor_status(context: &mut Context, _header: VarHeader, (): ()) -> CoprocessorStatus {

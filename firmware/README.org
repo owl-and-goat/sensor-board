@@ -111,6 +111,7 @@ unambiguous prefix of it.
   cargo run -- firmware update <image> --board 4d  # see "firmware updates" above
   cargo run -- firmware push <image> --board 4d    # update every board on the network
   cargo run -- network addresses --board 4b  # that board's ipv6 addresses
+  cargo run -- network show                # every sensor board on the network; see below
   cargo run -- reports watch               # print the boards' sensor reports as they arrive
   cargo run -- metrics show --board 4d     # the board's current prometheus metrics
   cargo run -- config show --board 4d      # the board's configuration
@@ -130,6 +131,43 @@ to it. the saved file contains the network key.
 the host creates the dataset, and a board is only ever told to join one. a
 board keeps its dataset in flash and rejoins at every power-up, until
 =network leave=.
+
+** the boards on a network
+
+=network show= lists the sensor boards on a thread network: serial number,
+rloc16, ipv6 address, and the link to each board.
+
+#+begin_src sh
+  cargo run -- network show                    # through an attached board, or else the border router
+  cargo run -- network show --board 4c         # through that attached board
+  cargo run -- network show --border-router    # through the border router at cerberus:8081
+  cargo run -- network show --border-router otbr.lan:8081
+#+end_src
+
+through an attached board, that board multicasts a discovery request, and
+every board that receives it replies with its serial number, rloc16 and
+addresses. through a border router, the cli reads the list of devices from
+the border router's rest api and sends the request to each device's routable
+address itself, from udp port 61623. this machine needs a route to the thread
+network for that.
+
+- a board is listed only if its firmware has discovery. boards on an older
+  firmware and other thread devices do not reply.
+- the address is the board's routable address if it has one, and its
+  mesh-local address otherwise.
+- age, quality and avg rssi describe the link between each board and the
+  device that was asked: the attached board, or the border router. they show
+  as =-= for a board that has no direct radio link with that device, and for
+  the attached board itself. the attached board's parent also shows =-=
+  while the attached board is a child, as in =network neighbors=.
+- the border router's api has no age or rssi, and it has the quality only for
+  boards that are routers.
+
+tested on 2026-10-10 with one board on a firmware that has discovery: through
+that board, which lists itself, and through the border router, with the
+quality once the board was a router. not tested: a second board's reply
+arriving through the attached board, and the link columns filled from the
+attached board's neighbor table.
 
 ** sensor reports
 
