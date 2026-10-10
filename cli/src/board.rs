@@ -10,15 +10,15 @@ use postcard_rpc::{
     standard_icd::{ERROR_PATH, WireError},
 };
 use protocol::{
-    ApplyUpdate, BeginInstall, BeginUpdate, BoardConfig, BoardId, BoardInfo, ConfigError,
-    ConfigFor, CoprocessorResult, CoprocessorStatus, Dataset, EnterBootloader, FinishInstall,
-    FinishUpdate, FirmwareStatus, GetBoardConfig, GetBoardInfo, GetCoprocessorStatus,
-    GetFirmwareStatus, GetNetworkDataset, GetNetworkNeighbors, GetNetworkRouters, GetNetworkStatus,
-    GetOfferProgress, ImageChunk, ImageSize, JoinNetwork, LeaveNetwork, NeighborTable,
-    NetworkError, NetworkStatus, OfferProgress, ReadSensorValue, Report, ReportReceived,
-    RouterTable, Sensor, SensorReadReq, SensorReadResult, SetBoardConfig, StartCollecting,
-    StartOffering, StopCollecting, StopOffering, USB_PID, USB_VID, UninstallStack, UpdateImage,
-    UpdateResult, WriteInstall, WriteUpdate,
+    Addresses, ApplyUpdate, BeginInstall, BeginUpdate, BoardConfig, BoardId, BoardInfo,
+    ConfigError, ConfigFor, CoprocessorResult, CoprocessorStatus, Dataset, EnterBootloader,
+    FinishInstall, FinishUpdate, FirmwareStatus, GetBoardConfig, GetBoardInfo,
+    GetCoprocessorStatus, GetFirmwareStatus, GetMetrics, GetNetworkAddresses, GetNetworkDataset,
+    GetNetworkNeighbors, GetNetworkRouters, GetNetworkStatus, GetOfferProgress, ImageChunk,
+    ImageSize, JoinNetwork, LeaveNetwork, NeighborTable, NetworkError, NetworkStatus,
+    OfferProgress, ReadSensorValue, Report, ReportReceived, RouterTable, Sensor, SensorReadReq,
+    SensorReadResult, SetBoardConfig, StartCollecting, StartOffering, StopCollecting, StopOffering,
+    USB_PID, USB_VID, UninstallStack, UpdateImage, UpdateResult, WriteInstall, WriteUpdate,
 };
 
 /// How long a board gets to answer. The slowest it can be is a join or leave
@@ -162,6 +162,25 @@ impl Board {
     pub async fn stop_collecting(&self) -> Result<()> {
         let result = self.call::<StopCollecting>(&()).await?;
         self.network_result(result)
+    }
+
+    /// The addresses the board has on its network.
+    pub async fn addresses(&self) -> Result<Addresses> {
+        let result = self.call::<GetNetworkAddresses>(&()).await?;
+        self.network_result(result)
+    }
+
+    /// The board's metrics as they are now, in Prometheus's text format.
+    pub async fn metrics(&self) -> Result<String> {
+        let mut text = String::new();
+        loop {
+            let offset = text.len() as u32;
+            let chunk = self.call::<GetMetrics>(&offset).await?;
+            text += &chunk.text;
+            if !chunk.more {
+                return Ok(text);
+            }
+        }
     }
 
     fn network_result<T>(&self, result: Result<T, NetworkError>) -> Result<T> {

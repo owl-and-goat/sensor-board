@@ -5,7 +5,9 @@ mod board_config;
 mod coprocessor;
 mod dfu;
 mod fault;
+mod http;
 mod i2c_device;
+mod metrics;
 mod persistent_config;
 mod radio_flash;
 mod report;
@@ -90,6 +92,11 @@ async fn reports(task: report::Task, publisher: rpc::Publisher) -> ! {
 }
 
 #[embassy_executor::task]
+async fn metrics(task: metrics::Task) -> ! {
+    task.run().await
+}
+
+#[embassy_executor::task]
 async fn watchdog(iwdg: Peri<'static, peripherals::IWDG>) -> ! {
     // 32 s because this chip pins the IWDG prescaler at /256 whatever is written, and that is the
     // period /256 expresses with the driver's reload maths (measurements in AGENTS.md).
@@ -141,8 +148,8 @@ async fn main(spawner: Spawner) {
     spawner.spawn(bootloader(bootloader_task).unwrap());
 
     let (update_handle, update_service) = update::init();
-    let (config_handle, config_service) = board_config::init();
-    let (coprocessor_task, coprocessor_handle, thread_handle, report_socket) =
+    let (config_handle, config_service, config_monitor) = board_config::init();
+    let (coprocessor_task, coprocessor_handle, thread_handle, report_socket, tcp) =
         coprocessor::Builder {
             ipcc: p.IPCC,
             flash: p.FLASH,
@@ -182,6 +189,14 @@ async fn main(spawner: Spawner) {
     }
     .init();
 
+    let (metrics_task, metrics_handle) = metrics::Builder {
+        tcp,
+        config: config_monitor,
+        capacitance,
+    }
+    .init();
+    spawner.spawn(metrics(metrics_task).unwrap());
+
     let context = rpc::Context {
         thread: thread_handle,
         coprocessor: coprocessor_handle,
@@ -189,6 +204,7 @@ async fn main(spawner: Spawner) {
         reports: report_handle,
         update: update_handle,
         config: config_handle,
+        metrics: metrics_handle,
         capacitance,
     };
     let (server, publisher) = rpc::server(spawner, link, context);

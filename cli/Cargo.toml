@@ -8,11 +8,6 @@ publish = false
 anyhow = "1.0"
 clap = { version = "4.6", features = ["derive"] }
 indicatif = "0.18"
-metrics = "0.24"
-# Only the server that Prometheus scrapes: the default features add the means
-# to push to a gateway, and a TLS stack with it.
-metrics-exporter-prometheus = { version = "0.18", default-features = false, features = ["http-listener"] }
-metrics-util = { version = "0.20", default-features = false }
 nusb = "0.2.7"
 postcard-schema = "0.2.5"
 protocol = { path = "../protocol", features = ["clap"] }

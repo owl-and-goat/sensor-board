@@ -11,7 +11,10 @@ use std::{
 };
 
 use anyhow::{Context, Result, bail};
-use protocol::{Dataset, Link, Neighbor, NeighborTable, NetworkStatus, Route, Router, RouterTable};
+use protocol::{
+    Address, Addresses, Dataset, Link, Neighbor, NeighborTable, NetworkStatus, Route, Router,
+    RouterTable,
+};
 use rand::RngExt;
 
 use crate::board::Board;
@@ -355,6 +358,19 @@ pub fn describe_routers(table: &RouterTable) -> String {
             Some(cost) => format!("{rloc16:#06x}  {reached:<10}  {cost:>9}\n"),
             None => format!("{rloc16:#06x}  {reached}\n"),
         };
+    }
+    text
+}
+
+/// The addresses as text: a line for each, with where it reaches the board
+/// from.
+pub fn describe_addresses(addresses: &Addresses) -> String {
+    let mut text = String::new();
+    for Address { address, kind } in &addresses.addresses {
+        text += &format!("{kind:<10}  {address}\n");
+    }
+    if addresses.truncated {
+        text += "The board has more addresses than these.\n";
     }
     text
 }

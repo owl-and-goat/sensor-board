@@ -17,19 +17,20 @@ use postcard_rpc::{
 #[allow(unused_imports)]
 use postcard_rpc::server::impls::embassy_usb_v0_6::dispatch_impl::spawn_fn;
 use protocol::{
-    ApplyUpdate, BeginInstall, BeginUpdate, BoardConfigResult, BoardId, BoardInfo, ConfigFor,
-    ConfigResult, CoprocessorResult, CoprocessorStatus, Dataset, ENDPOINT_LIST, EnterBootloader,
-    FinishInstall, FinishUpdate, FirmwareStatus, GetBoardConfig, GetBoardInfo,
-    GetCoprocessorStatus, GetFirmwareStatus, GetNetworkDataset, GetNetworkNeighbors,
-    GetNetworkRouters, GetNetworkStatus, GetOfferProgress, ImageChunk, ImageSize, JoinNetwork,
-    LeaveNetwork, NeighborsResult, NetworkResult, NetworkStatus, OfferProgress, ReadSensorValue,
-    Report, ReportReceived, RoutersResult, SensorReadReq, SensorReadResult, SensorValue,
-    SetBoardConfig, StartCollecting, StartOffering, StopCollecting, StopOffering, TOPICS_IN_LIST,
-    TOPICS_OUT_LIST, UninstallStack, UpdateImage, UpdateResult, WriteInstall, WriteUpdate,
+    AddressesResult, ApplyUpdate, BeginInstall, BeginUpdate, BoardConfigResult, BoardId, BoardInfo,
+    ConfigFor, ConfigResult, CoprocessorResult, CoprocessorStatus, Dataset, ENDPOINT_LIST,
+    EnterBootloader, FinishInstall, FinishUpdate, FirmwareStatus, GetBoardConfig, GetBoardInfo,
+    GetCoprocessorStatus, GetFirmwareStatus, GetMetrics, GetNetworkAddresses, GetNetworkDataset,
+    GetNetworkNeighbors, GetNetworkRouters, GetNetworkStatus, GetOfferProgress, ImageChunk,
+    ImageSize, JoinNetwork, LeaveNetwork, MetricsChunk, NeighborsResult, NetworkResult,
+    NetworkStatus, OfferProgress, ReadSensorValue, Report, ReportReceived, RoutersResult,
+    SensorReadReq, SensorReadResult, SensorValue, SetBoardConfig, StartCollecting, StartOffering,
+    StopCollecting, StopOffering, TOPICS_IN_LIST, TOPICS_OUT_LIST, UninstallStack, UpdateImage,
+    UpdateResult, WriteInstall, WriteUpdate,
 };
 
 use crate::{
-    board_config, coprocessor, dfu, report,
+    board_config, coprocessor, dfu, metrics, report,
     sensor::{self, capacitance},
     thread, update, usb,
 };
@@ -42,6 +43,7 @@ pub struct Context {
     pub update: update::Handle,
     pub reports: report::Handle,
     pub config: board_config::Handle,
+    pub metrics: metrics::Handle,
     // TODO(aspen): Make nicer
     pub capacitance: &'static sensor::Shared<capacitance::CapacitanceSensor<'static>>,
 }
@@ -84,6 +86,8 @@ define_dispatch! {
         | GetOfferProgress     | blocking | offer_progress     |
         | GetBoardConfig       | async    | board_config       |
         | SetBoardConfig       | async    | set_board_config   |
+        | GetNetworkAddresses  | async    | network_addresses  |
+        | GetMetrics           | blocking | metrics_text       |
     };
     topics_in: {
         list: TOPICS_IN_LIST;
@@ -168,6 +172,14 @@ async fn network_neighbors(context: &mut Context, _header: VarHeader, (): ()) ->
 
 async fn network_routers(context: &mut Context, _header: VarHeader, (): ()) -> RoutersResult {
     context.thread.routers().await
+}
+
+async fn network_addresses(context: &mut Context, _header: VarHeader, (): ()) -> AddressesResult {
+    context.thread.addresses().await
+}
+
+fn metrics_text(context: &mut Context, _header: VarHeader, offset: u32) -> MetricsChunk {
+    context.metrics.text(offset)
 }
 
 fn coprocessor_status(context: &mut Context, _header: VarHeader, (): ()) -> CoprocessorStatus {

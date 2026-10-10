@@ -265,9 +265,54 @@ Things learned the hard way:
 (`ff03::1`, UDP port 61620) every ten seconds. A board that the host has told
 to collect binds that port and passes on what arrives as the `ReportReceived`
 topic. A new sensor goes into `protocol::Readings`, `Task::readings` in
-`report.rs`, and `describe` and `Metrics` in `cli/src/reports.rs`. Changing
-`Report` changes the key its datagrams start with, so boards with the old
-layout and boards with the new one do not hear each other.
+`report.rs`, and `describe` in `cli/src/reports.rs`. Changing `Report`
+changes the key its datagrams start with, so boards with the old layout and
+boards with the new one do not hear each other. `firmware push` goes by the
+reports to tell what build a board runs: a board whose reports are not
+heard is not waited for.
+
+## Metrics
+
+`firmware/src/metrics.rs` reads the sensors that the board's configuration
+names, each at its interval, and gets the readings to Prometheus as the
+power mode in that configuration has it: a board on aux power serves them
+at `/metrics` on TCP port 9469, a board on battery pushes them to its
+Pushgateway each time it has read. The metrics are tinymetrics', and the
+HTTP is in `firmware/src/http.rs`: one request and its answer to a
+connection. A new sensor goes into `Metrics` and the polls in `metrics.rs`,
+next to the capacitance channels.
+
+TCP is the stack's own, on CPU2 (`otTcp*`, wrapped in `thread/ot.rs`), and
+the Thread service has one endpoint of it, so one connection at a time,
+which the rest of the firmware reaches as `thread::Tcp`. What CPU2 does with
+it, it tells in callbacks, which arrive as notifications.
+
+- CPU2 asks in a callback whether to take a connection that comes in, and
+  into which endpoint. The answer goes where ST's own handler puts it: the
+  return value in place of the notification's first argument, before the
+  acknowledgement (`answer_callback`), and the endpoint through the pointer
+  that came with it.
+- `otTcpAbort` calls back about the end of the connection from inside the
+  call, and waits for that to be acknowledged before it answers. So
+  notifications are taken while that call is out (`ot::tcp_abort`), which
+  is what `Ot_Cmd_TransferWithNotif` in ST's wrapper is for. No other call
+  is like that so far.
+- An endpoint that has closed its side first lingers (TIME-WAIT) and takes
+  no connection until it is aborted, which is why every exchange ends in
+  `Tcp::close`.
+- What is being sent is read by CPU2 where it is until the peer has
+  acknowledged it, so nothing else is sent until the callback for that.
+- The bindings are regenerated with `firmware/tools/gen-thread-bindings.sh`
+  when a type is missing from them, and formatted with the rest of the
+  crate.
+- `otIp6GetUnicastAddresses` answers with a pointer into CPU2's own memory,
+  which CPU1 can read. The list is followed only as far as it stays in RAM.
+
+Seen on a board on 2026-10-10: the calls that set up the endpoint and the
+listener and that listen, connections that are refused or never answered,
+aborting one that is being opened, and the change from serving to pushing
+and back as the configuration changes. Not seen, for want of a border
+router: a connection that comes in, and anything sent or received over one.
 
 ## Board configuration
 
@@ -295,8 +340,9 @@ board asks again every two seconds, and gives up after six.
   loses both.
 - The record of a configuration that the firmware does not understand is
   carried over as it is when the dataset is written.
-- Nothing reads the configuration yet: not the reports, not Thread for the
-  power mode.
+- What acts on the configuration is the metrics (`Monitor` in
+  `board_config.rs` tells them when it changes). The reports do not, and
+  neither does Thread: a board on battery is a router like any other.
 - A question goes to `ff03::1`, which does not reach a sleepy end device.
 
 Seen on boards on 2026-10-07: a configuration set over USB, and on another

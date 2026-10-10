@@ -4,7 +4,7 @@
 
 mod board_config;
 
-use core::{fmt, str::FromStr};
+use core::{fmt, net::Ipv6Addr, str::FromStr};
 
 use postcard_rpc::{Key, Topic, TopicDirection, endpoints, topics};
 use postcard_schema::Schema;
@@ -49,6 +49,8 @@ endpoints! {
     | GetOfferProgress     | ()            | OfferProgress     | "firmware/offer/progress"    |
     | GetBoardConfig       | BoardId       | BoardConfigResult | "config/get"                 |
     | SetBoardConfig       | ConfigFor     | ConfigResult      | "config/set"                 |
+    | GetNetworkAddresses  | ()            | AddressesResult   | "network/addresses"          |
+    | GetMetrics           | u32           | MetricsChunk      | "metrics/get"                |
 }
 
 topics! {
@@ -1080,9 +1082,72 @@ impl ConfigMessage {
     }
 }
 
+/// The result of [`GetNetworkAddresses`].
+pub type AddressesResult = Result<Addresses, NetworkError>;
+
+/// The IPv6 addresses a board has on its network.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, Schema)]
+pub struct Addresses {
+    pub addresses: heapless::Vec<Address, { Addresses::MAX_LEN }>,
+    /// Whether the board has more addresses than fit here.
+    pub truncated: bool,
+}
+
+impl Addresses {
+    pub const MAX_LEN: usize = 8;
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Schema)]
+pub struct Address {
+    pub address: Ipv6Addr,
+    pub kind: AddressKind,
+}
+
+/// Where an address of a board reaches it from.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Schema)]
+pub enum AddressKind {
+    /// From the devices in radio range of the board.
+    LinkLocal,
+    /// From anywhere on the board's Thread network, wherever in it the board
+    /// is.
+    MeshLocal,
+    /// From anywhere on the board's Thread network, by where in it the
+    /// board is: its routing locator, which changes when that does.
+    Locator,
+    /// From outside the board's Thread network: an address in a prefix that
+    /// a border router gives out.
+    Routable,
+}
+
+impl fmt::Display for AddressKind {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.pad(match self {
+            AddressKind::LinkLocal => "link-local",
+            AddressKind::MeshLocal => "mesh-local",
+            AddressKind::Locator => "locator",
+            AddressKind::Routable => "routable",
+        })
+    }
+}
+
+/// A piece of a board's metrics in Prometheus's text format: what is at the
+/// offset that [`GetMetrics`] names, in the text as it is when asked. Read a
+/// piece after the other, the metrics may have changed in between.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Schema)]
+pub struct MetricsChunk {
+    pub text: heapless::String<{ MetricsChunk::MAX_LEN }>,
+    /// Whether the text goes on after this piece.
+    pub more: bool,
+}
+
+impl MetricsChunk {
+    pub const MAX_LEN: usize = 512;
+}
+
 #[cfg(test)]
 mod tests {
     extern crate std;
+    use core::net::SocketAddrV6;
     use std::string::ToString;
 
     use super::*;
@@ -1303,6 +1368,7 @@ mod tests {
             board_id: u8::MAX,
             sensor_config: sensors,
             power_mode: PowerMode::Battery,
+            pushgateway: Some(SocketAddrV6::new([0xffff; 8].into(), u16::MAX, 0, 0)),
         }
     }
 

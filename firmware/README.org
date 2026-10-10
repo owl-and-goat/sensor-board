@@ -108,8 +108,9 @@ unique id, and =--board= takes any unambiguous start of it.
   cargo run -- firmware status --board 4d  # which build runs, and where an update stands
   cargo run -- firmware update <image> --board 4d  # see "firmware updates" above
   cargo run -- firmware push <image> --board 4d    # to every board on the network
+  cargo run -- network addresses --board 4b  # that board's ipv6 addresses
   cargo run -- reports watch               # print the boards' sensor reports as they arrive
-  cargo run -- reports export              # serve them to prometheus
+  cargo run -- metrics show --board 4d     # what the board has for prometheus, as it is now
   cargo run -- config show --board 4d      # what the board is configured to do
   cargo run -- config set --board 4d --sensor temperature=30s  # see "board configuration" below
 #+end_src
@@ -130,32 +131,62 @@ leave=.
 ** sensor reports
 
 every board sends its readings to all the boards on its network every ten
-seconds. =reports watch= and =reports export= take them in through one board,
-which has to stay attached: it passes on what reaches it, its own reports
-among them, for as long as the command runs. if that board goes away
-(unplugged, reflashed) the command waits for it. any board will do, and
-every board needs a firmware that sends reports in the same layout; one that
-does not is not heard.
+seconds. =reports watch= takes them in through one board, which has to stay
+attached: it passes on what reaches it, its own reports among them, for as
+long as the command runs. if that board goes away (unplugged, reflashed) the
+command waits for it. any board will do, and every board needs a firmware
+that sends reports in the same layout; one that does not is not heard.
+=firmware push= goes by these reports too: they say what build a board runs.
 
-=reports export= serves the latest readings at
-=http://127.0.0.1:9469/metrics= (=--listen= names another address), with how
-many reports came from each board and how many were lost on the way. a board
-that has not been heard from for a minute keeps those counts, and what its
-last report said is no longer served. for prometheus:
+** metrics
+
+a board gets its metrics to prometheus by itself, over its thread network
+and the border router between that and the rest. how depends on the power
+mode in its configuration (see below), and a board without a configuration
+does neither:
+
+- =aux=: the board serves them at =/metrics= on tcp port 9469, to one
+  scraper at a time.
+- =battery=: the board pushes them to the pushgateway in its configuration,
+  each time it has read a sensor, as job =sensor_board= with the board's
+  serial number for the instance. a gateway that does not take a push is
+  left alone for a minute.
+
+the metrics are the readings of the sensors that the configuration has the
+board read, each at its interval, and counts of the scrapes or pushes. every
+one bears the board's serial number as =board=. =metrics show= prints them
+over usb, as they are at that moment.
+
+to scrape a board, prometheus needs an address of it that can be reached
+from outside the thread network: the one =network addresses= calls
+=routable=, which the board has once a border router gives out a prefix.
 
 #+begin_src yaml
   scrape_configs:
     - job_name: sensor-board
       static_configs:
-        - targets: ["127.0.0.1:9469"]
+        - targets: ["[fd12:3456:789a:1:4c51:2d3d:c69c:4af6]:9469"]
 #+end_src
+
+a pushgateway is named by an ipv6 address and a port, which has to be one
+that the border router gets the board to:
+
+#+begin_src sh
+  cargo run -- config set --power-mode battery --pushgateway '[fd12:3456::1]:9091'
+#+end_src
+
+seen on a board on 2026-10-10: the metrics over usb, the change from one
+mode to the other as the configuration changes, and pushes to addresses
+where nothing answers. not seen, for want of a border router or a second
+board to try it with: a scrape, and a push that arrives.
 
 ** board configuration
 
 a board keeps a configuration in flash, next to its network's dataset: its
 number, how it is powered, and for each sensor how often it is read, or that
 it is not read at all. =config show= prints it. =config set= changes what it
-is told to and leaves the rest:
+is told to and leaves the rest. how the board is powered also says how
+its metrics get to prometheus (see "metrics" above):
 
 #+begin_src sh
   cargo run -- config set --id 3 --power-mode aux    # a board's first configuration needs these two
@@ -176,7 +207,11 @@ does not read what the one before it kept: the board has no configuration
 until it is given one again. two boards whose firmwares differ in that do
 not answer each other either.
 
-nothing in the firmware acts on the configuration yet.
+what acts on the configuration so far is the metrics: they take the power
+mode, the pushgateway, and the intervals of the sensors that the firmware
+has a driver for. the board's number is not used yet, the sensor reports are
+sent every ten seconds whatever it says, and a board on battery is as much a
+router as any other.
 
 * getting into the bootloader
 

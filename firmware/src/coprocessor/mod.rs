@@ -88,10 +88,18 @@ pub struct Builder<'d> {
 
 impl<'d> Builder<'d> {
     /// Panics if called a second time: there is one coprocessor.
-    /// The socket for reports goes to whoever sends them. Those for firmware
-    /// updates and for configurations stay with the task, which runs their
-    /// services.
-    pub fn init(self) -> (Task<'d>, Handle, thread::Handle, thread::Socket) {
+    /// The socket for reports goes to whoever sends them, and the TCP end to
+    /// whoever has a use for it. The sockets for firmware updates and for
+    /// configurations stay with the task, which runs their services.
+    pub fn init(
+        self,
+    ) -> (
+        Task<'d>,
+        Handle,
+        thread::Handle,
+        thread::Socket,
+        thread::Tcp,
+    ) {
         static SHARED: StaticCell<Shared> = StaticCell::new();
         let shared: &'static Shared = SHARED.init(Shared {
             requests: request::Channel::new(),
@@ -99,7 +107,7 @@ impl<'d> Builder<'d> {
         });
 
         let (client, server) = shared.requests.split();
-        let (thread_handle, sockets, thread) = thread::init();
+        let (thread_handle, sockets, tcp, thread) = thread::init();
         let task = Task {
             ipcc: self.ipcc,
             flash: self.flash,
@@ -115,7 +123,7 @@ impl<'d> Builder<'d> {
             requests: client,
             status: &shared.status,
         };
-        (task, handle, thread_handle, sockets.reports)
+        (task, handle, thread_handle, sockets.reports, tcp)
     }
 }
 

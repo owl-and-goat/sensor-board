@@ -146,6 +146,12 @@ where
         }
     }
 }
+pub const OT_TCP_ENDPOINT_TCB_SIZE_BASE: u32 = 392;
+pub const OT_TCP_ENDPOINT_TCB_NUM_PTR: u32 = 36;
+pub const OT_TCP_RECEIVE_BUFFER_SIZE_FEW_HOPS: u32 = 2598;
+pub const OT_TCP_RECEIVE_BUFFER_SIZE_MANY_HOPS: u32 = 4157;
+pub const OT_TCP_LISTENER_TCB_SIZE_BASE: u32 = 16;
+pub const OT_TCP_LISTENER_TCB_NUM_PTR: u32 = 3;
 impl otError {
     #[doc = " No error."]
     pub const OT_ERROR_NONE: otError = otError(0);
@@ -293,6 +299,295 @@ pub union otIp6Address__bindgen_ty_1 {
     pub m32: [u32; 4usize],
     #[doc = "< IPv6 address components"]
     pub mComponents: otIp6AddressComponents,
+}
+#[doc = " Represents an IPv6 network interface unicast address."]
+#[repr(C)]
+#[derive(Copy, Clone)]
+pub struct otNetifAddress {
+    #[doc = "< The IPv6 unicast address."]
+    pub mAddress: otIp6Address,
+    #[doc = "< The Prefix length (in bits)."]
+    pub mPrefixLength: u8,
+    #[doc = "< The IPv6 address origin."]
+    pub mAddressOrigin: u8,
+    pub _bitfield_align_1: [u8; 0],
+    pub _bitfield_1: __BindgenBitfieldUnit<[u8; 2usize]>,
+    #[doc = "< A pointer to the next network interface address."]
+    pub mNext: *const otNetifAddress,
+}
+impl otNetifAddress {
+    #[inline]
+    pub fn mPreferred(&self) -> bool {
+        unsafe { ::core::mem::transmute(self._bitfield_1.get(0usize, 1u8) as u8) }
+    }
+    #[inline]
+    pub fn set_mPreferred(&mut self, val: bool) {
+        unsafe {
+            let val: u8 = ::core::mem::transmute(val);
+            self._bitfield_1.set(0usize, 1u8, val as u64)
+        }
+    }
+    #[inline]
+    pub unsafe fn mPreferred_raw(this: *const Self) -> bool {
+        unsafe {
+            ::core::mem::transmute(<__BindgenBitfieldUnit<[u8; 2usize]>>::raw_get(
+                ::core::ptr::addr_of!((*this)._bitfield_1),
+                0usize,
+                1u8,
+            ) as u8)
+        }
+    }
+    #[inline]
+    pub unsafe fn set_mPreferred_raw(this: *mut Self, val: bool) {
+        unsafe {
+            let val: u8 = ::core::mem::transmute(val);
+            <__BindgenBitfieldUnit<[u8; 2usize]>>::raw_set(
+                ::core::ptr::addr_of_mut!((*this)._bitfield_1),
+                0usize,
+                1u8,
+                val as u64,
+            )
+        }
+    }
+    #[inline]
+    pub fn mValid(&self) -> bool {
+        unsafe { ::core::mem::transmute(self._bitfield_1.get(1usize, 1u8) as u8) }
+    }
+    #[inline]
+    pub fn set_mValid(&mut self, val: bool) {
+        unsafe {
+            let val: u8 = ::core::mem::transmute(val);
+            self._bitfield_1.set(1usize, 1u8, val as u64)
+        }
+    }
+    #[inline]
+    pub unsafe fn mValid_raw(this: *const Self) -> bool {
+        unsafe {
+            ::core::mem::transmute(<__BindgenBitfieldUnit<[u8; 2usize]>>::raw_get(
+                ::core::ptr::addr_of!((*this)._bitfield_1),
+                1usize,
+                1u8,
+            ) as u8)
+        }
+    }
+    #[inline]
+    pub unsafe fn set_mValid_raw(this: *mut Self, val: bool) {
+        unsafe {
+            let val: u8 = ::core::mem::transmute(val);
+            <__BindgenBitfieldUnit<[u8; 2usize]>>::raw_set(
+                ::core::ptr::addr_of_mut!((*this)._bitfield_1),
+                1usize,
+                1u8,
+                val as u64,
+            )
+        }
+    }
+    #[inline]
+    pub fn mScopeOverrideValid(&self) -> bool {
+        unsafe { ::core::mem::transmute(self._bitfield_1.get(2usize, 1u8) as u8) }
+    }
+    #[inline]
+    pub fn set_mScopeOverrideValid(&mut self, val: bool) {
+        unsafe {
+            let val: u8 = ::core::mem::transmute(val);
+            self._bitfield_1.set(2usize, 1u8, val as u64)
+        }
+    }
+    #[inline]
+    pub unsafe fn mScopeOverrideValid_raw(this: *const Self) -> bool {
+        unsafe {
+            ::core::mem::transmute(<__BindgenBitfieldUnit<[u8; 2usize]>>::raw_get(
+                ::core::ptr::addr_of!((*this)._bitfield_1),
+                2usize,
+                1u8,
+            ) as u8)
+        }
+    }
+    #[inline]
+    pub unsafe fn set_mScopeOverrideValid_raw(this: *mut Self, val: bool) {
+        unsafe {
+            let val: u8 = ::core::mem::transmute(val);
+            <__BindgenBitfieldUnit<[u8; 2usize]>>::raw_set(
+                ::core::ptr::addr_of_mut!((*this)._bitfield_1),
+                2usize,
+                1u8,
+                val as u64,
+            )
+        }
+    }
+    #[inline]
+    pub fn mScopeOverride(&self) -> core::ffi::c_uint {
+        unsafe { ::core::mem::transmute(self._bitfield_1.get(3usize, 4u8) as u32) }
+    }
+    #[inline]
+    pub fn set_mScopeOverride(&mut self, val: core::ffi::c_uint) {
+        unsafe {
+            let val: u32 = ::core::mem::transmute(val);
+            self._bitfield_1.set(3usize, 4u8, val as u64)
+        }
+    }
+    #[inline]
+    pub unsafe fn mScopeOverride_raw(this: *const Self) -> core::ffi::c_uint {
+        unsafe {
+            ::core::mem::transmute(<__BindgenBitfieldUnit<[u8; 2usize]>>::raw_get(
+                ::core::ptr::addr_of!((*this)._bitfield_1),
+                3usize,
+                4u8,
+            ) as u32)
+        }
+    }
+    #[inline]
+    pub unsafe fn set_mScopeOverride_raw(this: *mut Self, val: core::ffi::c_uint) {
+        unsafe {
+            let val: u32 = ::core::mem::transmute(val);
+            <__BindgenBitfieldUnit<[u8; 2usize]>>::raw_set(
+                ::core::ptr::addr_of_mut!((*this)._bitfield_1),
+                3usize,
+                4u8,
+                val as u64,
+            )
+        }
+    }
+    #[inline]
+    pub fn mRloc(&self) -> bool {
+        unsafe { ::core::mem::transmute(self._bitfield_1.get(7usize, 1u8) as u8) }
+    }
+    #[inline]
+    pub fn set_mRloc(&mut self, val: bool) {
+        unsafe {
+            let val: u8 = ::core::mem::transmute(val);
+            self._bitfield_1.set(7usize, 1u8, val as u64)
+        }
+    }
+    #[inline]
+    pub unsafe fn mRloc_raw(this: *const Self) -> bool {
+        unsafe {
+            ::core::mem::transmute(<__BindgenBitfieldUnit<[u8; 2usize]>>::raw_get(
+                ::core::ptr::addr_of!((*this)._bitfield_1),
+                7usize,
+                1u8,
+            ) as u8)
+        }
+    }
+    #[inline]
+    pub unsafe fn set_mRloc_raw(this: *mut Self, val: bool) {
+        unsafe {
+            let val: u8 = ::core::mem::transmute(val);
+            <__BindgenBitfieldUnit<[u8; 2usize]>>::raw_set(
+                ::core::ptr::addr_of_mut!((*this)._bitfield_1),
+                7usize,
+                1u8,
+                val as u64,
+            )
+        }
+    }
+    #[inline]
+    pub fn mMeshLocal(&self) -> bool {
+        unsafe { ::core::mem::transmute(self._bitfield_1.get(8usize, 1u8) as u8) }
+    }
+    #[inline]
+    pub fn set_mMeshLocal(&mut self, val: bool) {
+        unsafe {
+            let val: u8 = ::core::mem::transmute(val);
+            self._bitfield_1.set(8usize, 1u8, val as u64)
+        }
+    }
+    #[inline]
+    pub unsafe fn mMeshLocal_raw(this: *const Self) -> bool {
+        unsafe {
+            ::core::mem::transmute(<__BindgenBitfieldUnit<[u8; 2usize]>>::raw_get(
+                ::core::ptr::addr_of!((*this)._bitfield_1),
+                8usize,
+                1u8,
+            ) as u8)
+        }
+    }
+    #[inline]
+    pub unsafe fn set_mMeshLocal_raw(this: *mut Self, val: bool) {
+        unsafe {
+            let val: u8 = ::core::mem::transmute(val);
+            <__BindgenBitfieldUnit<[u8; 2usize]>>::raw_set(
+                ::core::ptr::addr_of_mut!((*this)._bitfield_1),
+                8usize,
+                1u8,
+                val as u64,
+            )
+        }
+    }
+    #[inline]
+    pub fn mSrpRegistered(&self) -> bool {
+        unsafe { ::core::mem::transmute(self._bitfield_1.get(9usize, 1u8) as u8) }
+    }
+    #[inline]
+    pub fn set_mSrpRegistered(&mut self, val: bool) {
+        unsafe {
+            let val: u8 = ::core::mem::transmute(val);
+            self._bitfield_1.set(9usize, 1u8, val as u64)
+        }
+    }
+    #[inline]
+    pub unsafe fn mSrpRegistered_raw(this: *const Self) -> bool {
+        unsafe {
+            ::core::mem::transmute(<__BindgenBitfieldUnit<[u8; 2usize]>>::raw_get(
+                ::core::ptr::addr_of!((*this)._bitfield_1),
+                9usize,
+                1u8,
+            ) as u8)
+        }
+    }
+    #[inline]
+    pub unsafe fn set_mSrpRegistered_raw(this: *mut Self, val: bool) {
+        unsafe {
+            let val: u8 = ::core::mem::transmute(val);
+            <__BindgenBitfieldUnit<[u8; 2usize]>>::raw_set(
+                ::core::ptr::addr_of_mut!((*this)._bitfield_1),
+                9usize,
+                1u8,
+                val as u64,
+            )
+        }
+    }
+    #[inline]
+    pub fn new_bitfield_1(
+        mPreferred: bool,
+        mValid: bool,
+        mScopeOverrideValid: bool,
+        mScopeOverride: core::ffi::c_uint,
+        mRloc: bool,
+        mMeshLocal: bool,
+        mSrpRegistered: bool,
+    ) -> __BindgenBitfieldUnit<[u8; 2usize]> {
+        let mut __bindgen_bitfield_unit: __BindgenBitfieldUnit<[u8; 2usize]> = Default::default();
+        __bindgen_bitfield_unit.set(0usize, 1u8, {
+            let mPreferred: u8 = unsafe { ::core::mem::transmute(mPreferred) };
+            mPreferred as u64
+        });
+        __bindgen_bitfield_unit.set(1usize, 1u8, {
+            let mValid: u8 = unsafe { ::core::mem::transmute(mValid) };
+            mValid as u64
+        });
+        __bindgen_bitfield_unit.set(2usize, 1u8, {
+            let mScopeOverrideValid: u8 = unsafe { ::core::mem::transmute(mScopeOverrideValid) };
+            mScopeOverrideValid as u64
+        });
+        __bindgen_bitfield_unit.set(3usize, 4u8, {
+            let mScopeOverride: u32 = unsafe { ::core::mem::transmute(mScopeOverride) };
+            mScopeOverride as u64
+        });
+        __bindgen_bitfield_unit.set(7usize, 1u8, {
+            let mRloc: u8 = unsafe { ::core::mem::transmute(mRloc) };
+            mRloc as u64
+        });
+        __bindgen_bitfield_unit.set(8usize, 1u8, {
+            let mMeshLocal: u8 = unsafe { ::core::mem::transmute(mMeshLocal) };
+            mMeshLocal as u64
+        });
+        __bindgen_bitfield_unit.set(9usize, 1u8, {
+            let mSrpRegistered: u8 = unsafe { ::core::mem::transmute(mSrpRegistered) };
+            mSrpRegistered as u64
+        });
+        __bindgen_bitfield_unit
+    }
 }
 #[doc = " Represents an IPv6 socket address."]
 #[repr(C)]
@@ -1434,6 +1729,179 @@ pub struct otUdpSocket {
     pub mNext: *mut otUdpSocket,
     #[doc = "< The network interface identifier."]
     pub mNetifId: otNetifIdentifier,
+}
+#[doc = " A linked buffer structure for use with TCP.\n\n A single otLinkedBuffer structure references an array of bytes in memory,\n via mData and mLength. The mNext field is used to form a chain of\n otLinkedBuffer structures."]
+#[repr(C)]
+#[derive(Debug, Copy, Clone)]
+pub struct otLinkedBuffer {
+    #[doc = "< Pointer to the next linked buffer in the chain, or NULL if it is the end."]
+    pub mNext: *mut otLinkedBuffer,
+    #[doc = "< Pointer to data referenced by this linked buffer."]
+    pub mData: *const u8,
+    #[doc = "< Length of this linked buffer (number of bytes)."]
+    pub mLength: usize,
+}
+#[doc = " This callback informs the application that the TCP 3-way handshake is\n complete and that the connection is now established.\n\n @param[in]  aEndpoint  The TCP endpoint whose connection is now established."]
+pub type otTcpEstablished =
+    ::core::option::Option<unsafe extern "C" fn(aEndpoint: *mut otTcpEndpoint)>;
+#[doc = " This callback informs the application that data in the provided\n @p aData have been acknowledged by the connection peer and that @p aData and\n the data it contains can be reclaimed by the application.\n\n The @p aData are guaranteed to be identical to those passed in to TCP via\n otTcpSendByReference(), including any extensions effected via\n otTcpSendByExtension().\n\n @param[in]  aEndpoint  The TCP endpoint for the connection.\n @param[in]  aData      A pointer to the otLinkedBuffer that can be reclaimed."]
+pub type otTcpSendDone = ::core::option::Option<
+    unsafe extern "C" fn(aEndpoint: *mut otTcpEndpoint, aData: *mut otLinkedBuffer),
+>;
+#[doc = " This callback informs the application if forward progress has been made in\n transferring data from the send buffer to the recipient. This callback is\n not necessary for correct TCP operation. Most applications can just rely on\n the otTcpSendDone() callback to reclaim linked buffers once the TCP stack is\n done using them. The purpose of this callback is to support advanced\n applications that benefit from finer-grained information about how the\n the connection is making forward progress in transferring data to the\n connection peer.\n\n This callback's operation is closely tied to TCP's send buffer. The send\n buffer can be understood as having two regions. First, there is the\n \"in-flight\" region at the head (front) of the send buffer. It corresponds\n to data which has been sent to the recipient, but is not yet acknowledged.\n Second, there is the \"backlog\" region, which consists of all data in the\n send buffer that is not in the \"in-flight\" region. The \"backlog\" region\n corresponds to data that is queued for sending, but has not yet been sent.\n\n The callback is invoked in response to two types of events. First, the\n \"in-flight\" region of the send buffer may shrink (e.g., when the recipient\n acknowledges data that we sent earlier). Second, the \"backlog\" region of the\n send buffer may shrink (e.g., new data was sent out). These two conditions\n often occur at the same time, in response to an ACK segment from the\n connection peer, which is why they are combined in a single callback.\n\n The TCP stack only uses the @p aInSendBuffer bytes at the tail of the send\n buffer; when @p aInSendBuffer decreases by an amount x, it means that x\n additional bytes that were formerly at the head of the send buffer are no\n longer part of the send buffer and can now be reclaimed (i.e., overwritten)\n by the application. Note that the otLinkedBuffer structure itself can only\n be reclaimed once all bytes that it references are no longer part of the\n send buffer.\n\n This callback subsumes otTcpSendDone(), in the following sense: applications\n can determine when linked buffers can be reclaimed by comparing\n @p aInSendBuffer with how many bytes are in each linked buffer. However, we\n expect otTcpSendDone(), which directly conveys which otLinkedBuffers can be\n reclaimed, to be much simpler to use. If both callbacks are registered and\n are triggered by the same event (e.g., the same ACK segment received), then\n the otTcpSendDone() callback will be triggered first, followed by this\n callback.\n\n Additionally, this callback provides @p aBacklog, which indicates how many\n bytes of data in the send buffer are not yet in flight. For applications\n that only want to add data to the send buffer when there is an assurance\n that it will be sent out soon, it may be desirable to only send out data\n when @p aBacklog is suitably small (0 or close to 0). For example, an\n application may use @p aBacklog so that it can react to queue buildup by\n dropping or aggregating data to avoid creating a backlog of data.\n\n After a call to otTcpSendByReference() or otTcpSendByExtension() with a\n positive number of bytes, the otTcpForwardProgress() callback is guaranteed\n to be called, to indicate when the bytes that were added to the send buffer\n are sent out. The call to otTcpForwardProgress() may be made immediately\n after the bytes are added to the send buffer (if some of those bytes are\n immediately sent out, reducing the backlog), or sometime in the future (once\n the connection sends out some or all of the data, reducing the backlog). By\n \"immediately,\" we mean that the callback is immediately scheduled for\n execution in a tasklet; to avoid reentrancy-related complexity, the\n otTcpForwardProgress() callback is never directly called from the\n otTcpSendByReference() or otTcpSendByExtension() functions.\n\n @param[in]  aEndpoint      The TCP endpoint for the connection.\n @param[in]  aInSendBuffer  The number of bytes in the send buffer (sum of \"in-flight\" and \"backlog\" regions).\n @param[in]  aBacklog       The number of bytes that are queued for sending but have not yet been sent (the \"backlog\"\n                            region)."]
+pub type otTcpForwardProgress = ::core::option::Option<
+    unsafe extern "C" fn(aEndpoint: *mut otTcpEndpoint, aInSendBuffer: usize, aBacklog: usize),
+>;
+#[doc = " This callback indicates the number of bytes available for consumption from\n the receive buffer.\n\n It is called whenever bytes are added to the receive buffer and when the\n end of stream is reached. If the end of the stream has been reached (i.e.,\n if no more data will become available to read because the connection peer\n has closed their end of the connection for writing), then @p aEndOfStream is\n true. Finally, @p aBytesRemaining indicates how much capacity is left in the\n receive buffer to hold additional data that arrives.\n\n @param[in]  aEndpoint        The TCP endpoint for the connection.\n @param[in]  aBytesAvailable  The number of bytes in the connection's receive buffer.\n @param[in]  aEndOfStream     Indicates if additional data, beyond what is already in the connection's receive buffer,\n                              can be received.\n @param[in]  aBytesRemaining  The number of additional bytes that can be received before the receive buffer becomes\n                              full."]
+pub type otTcpReceiveAvailable = ::core::option::Option<
+    unsafe extern "C" fn(
+        aEndpoint: *mut otTcpEndpoint,
+        aBytesAvailable: usize,
+        aEndOfStream: bool,
+        aBytesRemaining: usize,
+    ),
+>;
+impl otTcpDisconnectedReason {
+    pub const OT_TCP_DISCONNECTED_REASON_NORMAL: otTcpDisconnectedReason =
+        otTcpDisconnectedReason(0);
+    pub const OT_TCP_DISCONNECTED_REASON_REFUSED: otTcpDisconnectedReason =
+        otTcpDisconnectedReason(1);
+    pub const OT_TCP_DISCONNECTED_REASON_RESET: otTcpDisconnectedReason =
+        otTcpDisconnectedReason(2);
+    pub const OT_TCP_DISCONNECTED_REASON_TIME_WAIT: otTcpDisconnectedReason =
+        otTcpDisconnectedReason(3);
+    pub const OT_TCP_DISCONNECTED_REASON_TIMED_OUT: otTcpDisconnectedReason =
+        otTcpDisconnectedReason(4);
+}
+#[repr(transparent)]
+#[derive(Debug, Copy, Clone, Hash, PartialEq, Eq)]
+pub struct otTcpDisconnectedReason(pub core::ffi::c_uchar);
+#[doc = " This callback indicates that the connection was broken and should no longer\n be used, or that a connection has entered the TIME-WAIT state.\n\n It can occur if a connection establishment attempt (initiated by calling\n otTcpConnect()) fails, or any point thereafter (e.g., if the connection\n times out or an RST segment is received from the connection peer). Once this\n callback fires, all resources that the application provided for this\n connection (i.e., any `otLinkedBuffers` and memory they reference, but not\n the TCP endpoint itself or space for the receive buffers) can be reclaimed.\n In the case of a connection entering the TIME-WAIT state, this callback is\n called twice, once upon entry into the TIME-WAIT state (with\n OT_TCP_DISCONNECTED_REASON_TIME_WAIT, and again when the TIME-WAIT state\n expires (with OT_TCP_DISCONNECTED_REASON_NORMAL).\n\n @param[in]  aEndpoint  The TCP endpoint whose connection has been lost.\n @param[in]  aReason    The reason why the connection was lost."]
+pub type otTcpDisconnected = ::core::option::Option<
+    unsafe extern "C" fn(aEndpoint: *mut otTcpEndpoint, aReason: otTcpDisconnectedReason),
+>;
+#[doc = " Represents a TCP endpoint.\n\n A TCP endpoint acts an endpoint of TCP connection. It can be used to\n initiate TCP connections, and, once a TCP connection is established, send\n data to and receive data from the connection peer.\n\n The application should not inspect the fields of this structure directly; it\n should only interact with it via the TCP API functions whose signatures are\n provided in this file."]
+#[repr(C)]
+#[derive(Copy, Clone)]
+pub struct otTcpEndpoint {
+    pub mTcb: otTcpEndpoint__bindgen_ty_1,
+    #[doc = "< A pointer to the next TCP endpoint (internal use only)"]
+    pub mNext: *mut otTcpEndpoint,
+    #[doc = "< A pointer to application-specific context"]
+    pub mContext: *mut core::ffi::c_void,
+    #[doc = "< \"Established\" callback function"]
+    pub mEstablishedCallback: otTcpEstablished,
+    #[doc = "< \"Send done\" callback function"]
+    pub mSendDoneCallback: otTcpSendDone,
+    #[doc = "< \"Forward progress\" callback function"]
+    pub mForwardProgressCallback: otTcpForwardProgress,
+    #[doc = "< \"Receive available\" callback function"]
+    pub mReceiveAvailableCallback: otTcpReceiveAvailable,
+    #[doc = "< \"Disconnected\" callback function"]
+    pub mDisconnectedCallback: otTcpDisconnected,
+    pub mTimers: [u32; 4usize],
+    pub mReceiveLinks: [otLinkedBuffer; 2usize],
+    pub mSockAddr: otSockAddr,
+    pub mPendingCallbacks: u8,
+}
+#[repr(C)]
+#[derive(Copy, Clone)]
+pub union otTcpEndpoint__bindgen_ty_1 {
+    pub mSize: [u8; 536usize],
+    pub mAlign: u64,
+}
+#[doc = " Contains arguments to the otTcpEndpointInitialize() function."]
+#[repr(C)]
+#[derive(Debug, Copy, Clone)]
+pub struct otTcpEndpointInitializeArgs {
+    #[doc = "< Pointer to application-specific context"]
+    pub mContext: *mut core::ffi::c_void,
+    #[doc = "< \"Established\" callback function"]
+    pub mEstablishedCallback: otTcpEstablished,
+    #[doc = "< \"Send done\" callback function"]
+    pub mSendDoneCallback: otTcpSendDone,
+    #[doc = "< \"Forward progress\" callback function"]
+    pub mForwardProgressCallback: otTcpForwardProgress,
+    #[doc = "< \"Receive available\" callback function"]
+    pub mReceiveAvailableCallback: otTcpReceiveAvailable,
+    #[doc = "< \"Disconnected\" callback function"]
+    pub mDisconnectedCallback: otTcpDisconnected,
+    #[doc = "< Pointer to memory provided to the system for the TCP receive buffer"]
+    pub mReceiveBuffer: *mut core::ffi::c_void,
+    #[doc = "< Size of memory provided to the system for the TCP receive buffer"]
+    pub mReceiveBufferSize: usize,
+}
+pub const OT_TCP_CONNECT_NO_FAST_OPEN: _bindgen_ty_10 = _bindgen_ty_10(1);
+#[repr(transparent)]
+#[doc = " Defines flags passed to otTcpConnect()."]
+#[derive(Debug, Copy, Clone, Hash, PartialEq, Eq)]
+pub struct _bindgen_ty_10(pub core::ffi::c_uchar);
+pub const OT_TCP_SEND_MORE_TO_COME: _bindgen_ty_11 = _bindgen_ty_11(1);
+#[repr(transparent)]
+#[doc = " Defines flags passed to @p otTcpSendByReference."]
+#[derive(Debug, Copy, Clone, Hash, PartialEq, Eq)]
+pub struct _bindgen_ty_11(pub core::ffi::c_uchar);
+impl otTcpIncomingConnectionAction {
+    #[doc = "< Accept the incoming connection."]
+    pub const OT_TCP_INCOMING_CONNECTION_ACTION_ACCEPT: otTcpIncomingConnectionAction =
+        otTcpIncomingConnectionAction(0);
+    #[doc = "< Defer (silently ignore) the incoming connection."]
+    pub const OT_TCP_INCOMING_CONNECTION_ACTION_DEFER: otTcpIncomingConnectionAction =
+        otTcpIncomingConnectionAction(1);
+    #[doc = "< Refuse the incoming connection."]
+    pub const OT_TCP_INCOMING_CONNECTION_ACTION_REFUSE: otTcpIncomingConnectionAction =
+        otTcpIncomingConnectionAction(2);
+}
+#[repr(transparent)]
+#[doc = " Defines incoming connection actions.\n\n This is used in otTcpAcceptReady() callback."]
+#[derive(Debug, Copy, Clone, Hash, PartialEq, Eq)]
+pub struct otTcpIncomingConnectionAction(pub core::ffi::c_uchar);
+#[doc = " This callback indicates that an incoming connection that matches this TCP\n listener has arrived.\n\n The typical response is for the application to accept the incoming\n connection. It does so by populating @p aAcceptInto with a pointer to the\n otTcpEndpoint into which to accept the incoming connection. This\n otTcpEndpoint must already be initialized using otTcpEndpointInitialize().\n Then, the application returns OT_TCP_INCOMING_CONNECTION_ACTION_ACCEPT.\n\n Alternatively, the application can decline to accept the incoming\n connection. There are two ways for the application to do this. First, if the\n application returns OT_TCP_INCOMING_CONNECTION_ACTION_DEFER, then OpenThread\n silently ignores the connection establishment request; the connection peer\n will likely retransmit the request, at which point the callback will be\n called again. This is valuable if resources are not presently available to\n accept the connection, but they may be available when the connection peer\n retransmits its connection establishment attempt. Second, if the application\n returns OT_TCP_INCOMING_CONNECTION_ACTION_REFUSE, then OpenThread sends a\n \"connection refused\" message to the host that attempted to establish a\n connection. If the application declines the incoming connection, it is not\n required to populate @p aAcceptInto.\n\n @param[in]   aListener    The TCP listener that matches the incoming connection.\n @param[in]   aPeer        The host and port from which the incoming connection originates.\n @param[out]  aAcceptInto  The TCP endpoint into which to accept the incoming connection.\n\n @returns  Description of how to handle the incoming connection."]
+pub type otTcpAcceptReady = ::core::option::Option<
+    unsafe extern "C" fn(
+        aListener: *mut otTcpListener,
+        aPeer: *const otSockAddr,
+        aAcceptInto: *mut *mut otTcpEndpoint,
+    ) -> otTcpIncomingConnectionAction,
+>;
+#[doc = " This callback indicates that the TCP connection is now ready for two-way\n communication.\n\n In the case of TCP Fast Open, this may be before the TCP\n connection handshake has actually completed. The application is provided\n with the context pointers both for the TCP listener that accepted the\n connection and the TCP endpoint into which it was accepted. The provided\n context is the one associated with the TCP listener.\n\n @param[in]  aListener  The TCP listener that matches the incoming connection.\n @param[in]  aEndpoint  The TCP endpoint into which the incoming connection was accepted.\n @param[in]  aPeer      the host and port from which the incoming connection originated."]
+pub type otTcpAcceptDone = ::core::option::Option<
+    unsafe extern "C" fn(
+        aListener: *mut otTcpListener,
+        aEndpoint: *mut otTcpEndpoint,
+        aPeer: *const otSockAddr,
+    ),
+>;
+#[doc = " Represents a TCP listener.\n\n A TCP listener is used to listen for and accept incoming TCP connections.\n\n The application should not inspect the fields of this structure directly; it\n should only interact with it via the TCP API functions whose signatures are\n provided in this file."]
+#[repr(C)]
+#[derive(Copy, Clone)]
+pub struct otTcpListener {
+    pub mTcbListen: otTcpListener__bindgen_ty_1,
+    #[doc = "< A pointer to the next TCP listener (internal use only)"]
+    pub mNext: *mut otTcpListener,
+    #[doc = "< A pointer to application-specific context"]
+    pub mContext: *mut core::ffi::c_void,
+    #[doc = "< \"Accept ready\" callback function"]
+    pub mAcceptReadyCallback: otTcpAcceptReady,
+    #[doc = "< \"Accept done\" callback function"]
+    pub mAcceptDoneCallback: otTcpAcceptDone,
+}
+#[repr(C)]
+#[derive(Copy, Clone)]
+pub union otTcpListener__bindgen_ty_1 {
+    pub mSize: [u8; 28usize],
+    pub mAlign: *mut core::ffi::c_void,
+}
+#[doc = " Contains arguments to the otTcpListenerInitialize() function."]
+#[repr(C)]
+#[derive(Debug, Copy, Clone)]
+pub struct otTcpListenerInitializeArgs {
+    #[doc = "< Pointer to application-specific context"]
+    pub mContext: *mut core::ffi::c_void,
+    #[doc = "< \"Accept ready\" callback function"]
+    pub mAcceptReadyCallback: otTcpAcceptReady,
+    #[doc = "< \"Accept done\" callback function"]
+    pub mAcceptDoneCallback: otTcpAcceptDone,
 }
 pub mod MsgId_M4toM0_Enum_t {
     pub type Type = core::ffi::c_ushort;

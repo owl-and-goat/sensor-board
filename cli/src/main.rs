@@ -7,7 +7,7 @@ mod firmware;
 mod network;
 mod reports;
 
-use std::{net::SocketAddr, path::PathBuf};
+use std::path::PathBuf;
 
 use anyhow::{Context, Result, bail};
 use clap::{Args, Parser, Subcommand};
@@ -41,6 +41,9 @@ enum Command {
     /// attached
     #[command(subcommand)]
     Reports(ReportsCommand),
+    /// Look at the metrics a board has for Prometheus
+    #[command(subcommand)]
+    Metrics(MetricsCommand),
     /// Update a board's firmware without its ROM bootloader
     #[command(subcommand)]
     Firmware(FirmwareCommand),
@@ -92,15 +95,13 @@ enum FirmwareCommand {
 enum ReportsCommand {
     /// Print the reports as they arrive
     Watch(Target),
-    /// Serve the readings in the reports to Prometheus
-    Export {
-        /// The address to serve them at, under /metrics
-        #[arg(long, value_name = "ADDR", default_value = "127.0.0.1:9469")]
-        listen: SocketAddr,
+}
 
-        #[command(flatten)]
-        target: Target,
-    },
+#[derive(Subcommand)]
+enum MetricsCommand {
+    /// Print a board's metrics as they are now, the way it serves them to Prometheus or pushes
+    /// them to a Pushgateway
+    Show(Target),
 }
 
 #[derive(Subcommand)]
@@ -132,6 +133,9 @@ enum NetworkCommand {
     /// Print a board's router table: every router on its network, and whether the board reaches it
     /// directly or through another router
     Routers(Target),
+    /// Print the IPv6 addresses a board has on its network. A routable one is where Prometheus
+    /// scrapes the board
+    Addresses(Target),
 }
 
 #[derive(Subcommand)]
@@ -316,11 +320,22 @@ async fn main() -> Result<()> {
             let image = firmware::Image::read(&image)?;
             firmware::push(target.board().await?, &image).await
         }
+        Command::Network(NetworkCommand::Addresses(target)) => {
+            let board = target.board().await?;
+            let addresses = board.addresses().await?;
+            if addresses.addresses.is_empty() {
+                println!("Board {} has no addresses.", board.serial());
+            } else {
+                print!("{}", network::describe_addresses(&addresses));
+            }
+            Ok(())
+        }
         Command::Reports(ReportsCommand::Watch(target)) => {
             reports::watch(target.board.as_deref()).await
         }
-        Command::Reports(ReportsCommand::Export { listen, target }) => {
-            reports::export(target.board.as_deref(), listen).await
+        Command::Metrics(MetricsCommand::Show(target)) => {
+            print!("{}", target.board().await?.metrics().await?);
+            Ok(())
         }
         Command::Sensor(SensorCommand::Read { sensor, target }) => {
             let board = target.board().await?;

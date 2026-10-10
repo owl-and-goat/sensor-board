@@ -21,12 +21,12 @@
 //! entry at a time.
 
 use core::cell::Cell;
-use core::net::Ipv6Addr;
+use core::net::{Ipv6Addr, SocketAddrV6};
 
 use defmt::info;
 use embassy_futures::{
     join::join,
-    select::{Either, Either4, select, select_array, select4},
+    select::{Either, Either3, Either4, select, select_array, select3, select4},
 };
 use embassy_stm32_wpan::{
     shci::SchiCommandStatus,
@@ -38,8 +38,8 @@ use embassy_sync::{
 };
 use embassy_time::Duration;
 use protocol::{
-    Dataset, Link, NeighborTable, NeighborsResult, NetworkError, NetworkResult, NetworkStatus,
-    Router, RouterId, RouterTable, RoutersResult,
+    AddressesResult, Dataset, Link, NeighborTable, NeighborsResult, NetworkError, NetworkResult,
+    NetworkStatus, OtError, Router, RouterId, RouterTable, RoutersResult,
 };
 use static_cell::StaticCell;
 
@@ -49,7 +49,7 @@ mod ffi;
 mod ot;
 
 use ot::OpenThread as _;
-pub use ot::{Datagram, MAX_DATAGRAM_LEN};
+pub use ot::{Datagram, MAX_DATAGRAM_LEN, TCP_CHUNK_LEN, TcpChunk};
 
 /// Where a datagram to every board goes: all the devices of the network,
 /// whatever addresses they have and however many hops away they are.
@@ -101,10 +101,55 @@ enum Request {
     Leave,
 }
 
-/// The [`Handle`] asking for the neighbor table, and for the router table.
-/// Each has an answer of its own type, and so a channel of its own.
+/// The [`Handle`] asking for the neighbor table, for the router table, and
+/// for the board's addresses. Each has an answer of its own type, and so a
+/// channel of its own.
 struct NeighborsRequest;
 struct RoutersRequest;
+struct AddressesRequest;
+
+/// What a [`Tcp`] end can ask for. Each is answered when it is done or has
+/// failed, which for some takes the device at the other end.
+enum TcpRequest {
+    /// Take connections to this port, one at a time, or with `None` take
+    /// none.
+    Listen(Option<u16>),
+    /// Wait for a connection to have come in.
+    Accept,
+    /// Open a connection.
+    Connect(SocketAddrV6),
+    /// Send, and wait for the peer to have it.
+    Send(TcpChunk),
+    /// Wait for something to arrive. An empty chunk is the end of what the
+    /// peer sends.
+    Receive,
+    /// Tell the peer that nothing more is sent.
+    Finish,
+    /// Drop the connection, whatever state it is in.
+    Close,
+}
+
+/// What comes of a [`TcpRequest`]: what has arrived, for a `Receive`, and
+/// otherwise nothing.
+type TcpResult = Result<TcpChunk, TcpError>;
+
+#[derive(Clone, Copy, PartialEq, Eq, defmt::Format)]
+pub enum TcpError {
+    /// Thread is not up to it, or the stack refused.
+    Network(NetworkError),
+    /// Not as things stand: nothing is connected, or something already is.
+    OutOfSequence,
+    Refused,
+    Reset,
+    /// The peer did not answer in time, or the stack did not.
+    TimedOut,
+}
+
+impl From<OtError> for TcpError {
+    fn from(e: OtError) -> Self {
+        TcpError::Network(e.into())
+    }
+}
 
 /// What a [`Socket`] can ask for.
 enum SocketRequest {
@@ -153,8 +198,10 @@ struct Shared {
     requests: request::Channel<Request, NetworkResult>,
     neighbor_requests: request::Channel<NeighborsRequest, NeighborsResult>,
     router_requests: request::Channel<RoutersRequest, RoutersResult>,
+    address_requests: request::Channel<AddressesRequest, AddressesResult>,
     /// One for each [`Port`], at its index.
     sockets: [SocketShared; Port::ALL.len()],
+    tcp_requests: request::Channel<TcpRequest, TcpResult>,
     status: Status,
     buffers: Buffers,
 }
@@ -167,34 +214,41 @@ struct Buffers {
     next_hop: ot::NextHopBuffer,
     /// One for the socket of each [`Port`], at its index.
     udp: [ot::UdpBuffer; Port::ALL.len()],
+    tcp: ot::TcpBuffer,
 }
 
-/// Make the ends of Thread: the handle and the sockets for the rest of the
-/// firmware, and the service for the coprocessor task to run. Panics if
-/// called a second time: the firmware has one of each.
-pub fn init() -> (Handle, Sockets, Service) {
+/// Make the ends of Thread: the handle, the sockets and the TCP end for the
+/// rest of the firmware, and the service for the coprocessor task to run.
+/// Panics if called a second time: the firmware has one of each.
+pub fn init() -> (Handle, Sockets, Tcp, Service) {
     static SHARED: StaticCell<Shared> = StaticCell::new();
     let shared: &'static Shared = SHARED.init(Shared {
         requests: request::Channel::new(),
         neighbor_requests: request::Channel::new(),
         router_requests: request::Channel::new(),
+        address_requests: request::Channel::new(),
         sockets: [const { SocketShared::new() }; Port::ALL.len()],
+        tcp_requests: request::Channel::new(),
         status: Status(Mutex::new(Cell::new(NetworkStatus::Starting))),
         buffers: Buffers {
             active_dataset: ot::DatasetBuffer::new(),
             next_neighbor: ot::NeighborBuffer::new(),
             next_hop: ot::NextHopBuffer::new(),
             udp: [const { ot::UdpBuffer::new() }; Port::ALL.len()],
+            tcp: ot::TcpBuffer::new(),
         },
     });
 
     let (client, server) = shared.requests.split();
     let (neighbor_client, neighbor_server) = shared.neighbor_requests.split();
     let (router_client, router_server) = shared.router_requests.split();
+    let (address_client, address_server) = shared.address_requests.split();
+    let (tcp_client, tcp_server) = shared.tcp_requests.split();
     let handle = Handle {
         requests: client,
         neighbor_requests: neighbor_client,
         router_requests: router_client,
+        address_requests: address_client,
         status: &shared.status,
     };
 
@@ -216,7 +270,9 @@ pub fn init() -> (Handle, Sockets, Service) {
             changes: server,
             neighbors: neighbor_server,
             routers: router_server,
+            addresses: address_server,
             sockets: [report_server, update_server, config_server],
+            tcp: tcp_server,
         },
         received: [report_sender, update_sender, config_sender],
         status: &shared.status,
@@ -227,7 +283,10 @@ pub fn init() -> (Handle, Sockets, Service) {
         updates,
         configs,
     };
-    (handle, sockets, service)
+    let tcp = Tcp {
+        requests: tcp_client,
+    };
+    (handle, sockets, tcp, service)
 }
 
 /// What boards say to each other over Thread, a socket for each thing they
@@ -281,6 +340,80 @@ impl Socket {
     }
 }
 
+/// How long the device at the other end of a TCP connection gets: to answer
+/// when the connection is opened, to acknowledge what it is sent, and to
+/// send something when that is waited for.
+const TCP_TIMEOUT: Duration = Duration::from_secs(10);
+
+/// How long a wait for a connection to come in goes on before it is asked
+/// for again. However often that is, no connection is missed.
+const ACCEPT_INTERVAL: Duration = Duration::from_secs(60);
+
+/// A TCP connection to a device on the network, or beyond it through a
+/// border router. One at a time: opened from here, or taken as it comes in.
+pub struct Tcp {
+    requests: request::Client<TcpRequest, TcpResult>,
+}
+
+impl Tcp {
+    /// Take connections to `port`, one at a time, or with `None` take none.
+    pub async fn listen(&mut self, port: Option<u16>) -> Result<(), TcpError> {
+        self.request(TcpRequest::Listen(port), REQUEST_TIMEOUT)
+            .await
+    }
+
+    /// Wait for a connection to come in, however long that takes.
+    pub async fn accept(&mut self) -> Result<(), TcpError> {
+        loop {
+            let accepted = self.requests.ask(TcpRequest::Accept, ACCEPT_INTERVAL);
+            if let Some(outcome) = accepted.await {
+                return outcome.map(drop);
+            }
+        }
+    }
+
+    /// Open a connection to `peer`.
+    pub async fn connect(&mut self, peer: SocketAddrV6) -> Result<(), TcpError> {
+        self.request(TcpRequest::Connect(peer), TCP_TIMEOUT).await
+    }
+
+    /// Send `bytes`, and wait for the peer to have them.
+    pub async fn send(&mut self, bytes: &[u8]) -> Result<(), TcpError> {
+        for piece in bytes.chunks(TCP_CHUNK_LEN) {
+            // Cannot fail: a piece is no longer than a chunk.
+            let chunk = TcpChunk::from_slice(piece).unwrap_or_default();
+            self.request(TcpRequest::Send(chunk), TCP_TIMEOUT).await?;
+        }
+        Ok(())
+    }
+
+    /// Wait for something to arrive. An empty chunk is the end of what the
+    /// peer sends.
+    pub async fn receive(&mut self) -> Result<TcpChunk, TcpError> {
+        self.requests
+            .ask(TcpRequest::Receive, TCP_TIMEOUT)
+            .await
+            .unwrap_or(Err(TcpError::TimedOut))
+    }
+
+    /// Tell the peer that nothing more is sent.
+    pub async fn finish(&mut self) -> Result<(), TcpError> {
+        self.request(TcpRequest::Finish, REQUEST_TIMEOUT).await
+    }
+
+    /// Drop the connection, whatever state it is in.
+    pub async fn close(&mut self) {
+        if let Err(e) = self.request(TcpRequest::Close, REQUEST_TIMEOUT).await {
+            defmt::warn!("thread: a TCP connection could not be dropped: {}", e);
+        }
+    }
+
+    async fn request(&mut self, request: TcpRequest, timeout: Duration) -> Result<(), TcpError> {
+        let outcome = self.requests.ask(request, timeout).await;
+        outcome.unwrap_or(Err(TcpError::TimedOut)).map(drop)
+    }
+}
+
 /// A look at where the board stands with its network, for what only needs
 /// that.
 #[derive(Clone, Copy)]
@@ -299,6 +432,7 @@ pub struct Handle {
     requests: request::Client<Request, NetworkResult>,
     neighbor_requests: request::Client<NeighborsRequest, NeighborsResult>,
     router_requests: request::Client<RoutersRequest, RoutersResult>,
+    address_requests: request::Client<AddressesRequest, AddressesResult>,
     status: &'static Status,
 }
 
@@ -343,6 +477,14 @@ impl Handle {
             .unwrap_or(Err(NetworkError::Unresponsive))
     }
 
+    /// The addresses the board has on its network.
+    pub async fn addresses(&mut self) -> AddressesResult {
+        self.address_requests
+            .ask(AddressesRequest, REQUEST_TIMEOUT)
+            .await
+            .unwrap_or(Err(NetworkError::Unresponsive))
+    }
+
     async fn request(&mut self, request: Request) -> NetworkResult {
         self.requests
             .ask(request, REQUEST_TIMEOUT)
@@ -360,14 +502,17 @@ pub struct Thread<'a, 'd> {
     pub flash: &'a radio_flash::Shared<'d>,
 }
 
-/// The serving ends of what the [`Handle`] and the [`Socket`]s ask through.
+/// The serving ends of what the [`Handle`], the [`Socket`]s and the [`Tcp`]
+/// end ask through.
 #[derive(Clone, Copy)]
 struct Requests {
     changes: request::Server<Request, NetworkResult>,
     neighbors: request::Server<NeighborsRequest, NeighborsResult>,
     routers: request::Server<RoutersRequest, RoutersResult>,
+    addresses: request::Server<AddressesRequest, AddressesResult>,
     /// One for each [`Port`], at its index.
     sockets: [request::Server<SocketRequest, NetworkResult>; Port::ALL.len()],
+    tcp: request::Server<TcpRequest, TcpResult>,
 }
 
 /// A request that has been taken, and is owed an answer.
@@ -375,25 +520,38 @@ enum Asked {
     Change(request::Pending, Request),
     Neighbors(request::Pending),
     Routers(request::Pending),
+    Addresses(request::Pending),
     Socket(request::Pending, Port, SocketRequest),
+    Tcp(request::Pending, TcpRequest),
 }
 
 impl Requests {
     async fn receive(&self) -> Asked {
         let sockets = self.sockets.each_ref().map(|socket| socket.receive());
-        let next = select4(
-            self.changes.receive(),
+        let tables = select3(
             self.neighbors.receive(),
             self.routers.receive(),
+            self.addresses.receive(),
+        );
+        let next = select4(
+            self.changes.receive(),
+            tables,
             select_array(sockets),
+            self.tcp.receive(),
         );
         match next.await {
             Either4::First((pending, request)) => Asked::Change(pending, request),
-            Either4::Second((pending, NeighborsRequest)) => Asked::Neighbors(pending),
-            Either4::Third((pending, RoutersRequest)) => Asked::Routers(pending),
-            Either4::Fourth(((pending, request), socket)) => {
+            Either4::Second(Either3::First((pending, NeighborsRequest))) => {
+                Asked::Neighbors(pending)
+            }
+            Either4::Second(Either3::Second((pending, RoutersRequest))) => Asked::Routers(pending),
+            Either4::Second(Either3::Third((pending, AddressesRequest))) => {
+                Asked::Addresses(pending)
+            }
+            Either4::Third(((pending, request), socket)) => {
                 Asked::Socket(pending, Port::ALL[socket], request)
             }
+            Either4::Fourth((pending, request)) => Asked::Tcp(pending, request),
         }
     }
 
@@ -403,11 +561,56 @@ impl Requests {
             Asked::Change(pending, _) => self.changes.answer(pending, Err(error)),
             Asked::Neighbors(pending) => self.neighbors.answer(pending, Err(error)),
             Asked::Routers(pending) => self.routers.answer(pending, Err(error)),
+            Asked::Addresses(pending) => self.addresses.answer(pending, Err(error)),
             Asked::Socket(pending, port, _) => {
                 self.sockets[port.index()].answer(pending, Err(error))
             }
+            Asked::Tcp(pending, _) => self.tcp.answer(pending, Err(TcpError::Network(error))),
         }
     }
+}
+
+/// Where the TCP endpoint stands.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Connection {
+    /// Free to take a connection, or to open one.
+    Closed,
+    /// A connection is being opened, or coming in.
+    Opening,
+    Open,
+    /// The connection is over, and the endpoint not free yet (see
+    /// [`ot::TcpDisconnected::Lingering`]).
+    Over,
+}
+
+/// What the [`Tcp`] end is waiting for.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum TcpWait {
+    Accepted,
+    Connected,
+    Sent,
+    Received,
+}
+
+/// What a [`TcpRequest`] comes to at once: its answer, or a wait for it.
+enum TcpStep {
+    Done(TcpChunk),
+    Wait(TcpWait),
+}
+
+/// The TCP endpoint, as the service keeps track of it.
+struct TcpEndpoint {
+    /// Whether the stack has it.
+    ready: bool,
+    /// The port it takes connections to.
+    listening: Option<u16>,
+    connection: Connection,
+    /// Whether the stack still reads what was last sent.
+    sending: bool,
+    /// Whether the peer has said that it sends no more.
+    end_of_stream: bool,
+    /// What the [`Tcp`] end waits for, and is owed an answer about.
+    waiting: Option<(request::Pending, TcpWait)>,
 }
 
 /// What has arrived on the socket of each [`Port`], on its way to whoever
@@ -448,6 +651,14 @@ impl Service {
             status: self.status,
             buffers: self.buffers,
             listening: [false; Port::ALL.len()],
+            tcp: TcpEndpoint {
+                ready: false,
+                listening: None,
+                connection: Connection::Closed,
+                sending: false,
+                end_of_stream: false,
+                waiting: None,
+            },
         };
 
         // The stack stalls unless its CLI output is acknowledged. (The CLI
@@ -490,6 +701,7 @@ struct Network<'a, 'd> {
     buffers: &'static Buffers,
     /// Whether the socket of each [`Port`] is bound to it.
     listening: [bool; Port::ALL.len()],
+    tcp: TcpEndpoint,
 }
 
 impl Network<'_, '_> {
@@ -507,8 +719,17 @@ impl Network<'_, '_> {
         self.publish_status().await;
 
         loop {
-            let notification =
-                ot::notification(&mut self.notif_rx, &mut self.ot, &self.buffers.udp);
+            // A connection that comes in is taken if one is waited for and
+            // the endpoint has none.
+            let take_tcp =
+                self.tcp.listening.is_some() && self.tcp.connection == Connection::Closed;
+            let notification = ot::notification(
+                &mut self.notif_rx,
+                &mut self.ot,
+                &self.buffers.udp,
+                &self.buffers.tcp,
+                take_tcp,
+            );
             match select(self.requests.receive(), notification).await {
                 Either::First(asked) => self.answer(asked).await,
                 Either::Second(ot::Notification::StateChanged) => self.publish_status().await,
@@ -525,6 +746,7 @@ impl Network<'_, '_> {
                         defmt::warn!("thread: nothing is taking datagrams; dropped one");
                     }
                 }
+                Either::Second(ot::Notification::Tcp(event)) => self.tcp_event(event).await,
                 Either::Second(ot::Notification::Other(id)) => {
                     defmt::trace!("cpu2: notification {}", id);
                 }
@@ -551,6 +773,20 @@ impl Network<'_, '_> {
             Asked::Routers(pending) => {
                 let routers = self.routers().await;
                 self.requests.routers.answer(pending, routers);
+            }
+            Asked::Addresses(pending) => {
+                let addresses = self.ot.ip6_unicast_addresses().await;
+                self.requests.addresses.answer(pending, Ok(addresses));
+            }
+            Asked::Tcp(pending, request) => {
+                // Whoever asks one thing has given up on what it asked
+                // before.
+                self.tcp.waiting = None;
+                match self.tcp_step(request).await {
+                    Ok(TcpStep::Done(chunk)) => self.requests.tcp.answer(pending, Ok(chunk)),
+                    Ok(TcpStep::Wait(wait)) => self.tcp.waiting = Some((pending, wait)),
+                    Err(e) => self.requests.tcp.answer(pending, Err(e)),
+                }
             }
             Asked::Socket(pending, port, request) => {
                 let outcome = match request {
@@ -581,7 +817,167 @@ impl Network<'_, '_> {
             let socket = &self.buffers.udp[port.index()];
             self.ot.udp_open(socket, port.index()).await?;
         }
+        // Thread is of use without TCP, so it starts without it too.
+        match self.ot.tcp_init(&self.buffers.tcp).await {
+            Ok(()) => self.tcp.ready = true,
+            Err(e) => defmt::warn!("thread: no TCP: {}", e),
+        }
         Ok(())
+    }
+
+    /// Carry out what the [`Tcp`] end asks, as far as that can be done at
+    /// once.
+    async fn tcp_step(&mut self, request: TcpRequest) -> Result<TcpStep, TcpError> {
+        let buffer = &self.buffers.tcp;
+        if !self.tcp.ready {
+            return Err(OtError::NotImplemented.into());
+        }
+        let done = Ok(TcpStep::Done(TcpChunk::new()));
+
+        match request {
+            TcpRequest::Listen(port) => {
+                if self.tcp.listening.is_some() && self.tcp.listening != port {
+                    self.ot.tcp_stop_listening(buffer).await?;
+                    self.tcp.listening = None;
+                }
+                if let Some(port) = port
+                    && self.tcp.listening.is_none()
+                {
+                    self.ot.tcp_listen(buffer, port).await?;
+                    self.tcp.listening = Some(port);
+                }
+                done
+            }
+            TcpRequest::Accept => match self.tcp.connection {
+                Connection::Open => done,
+                Connection::Closed | Connection::Opening if self.tcp.listening.is_some() => {
+                    Ok(TcpStep::Wait(TcpWait::Accepted))
+                }
+                _ => Err(TcpError::OutOfSequence),
+            },
+            TcpRequest::Connect(peer) => {
+                if self.tcp.connection != Connection::Closed {
+                    return Err(TcpError::OutOfSequence);
+                }
+                self.ot.tcp_connect(buffer, peer).await?;
+                self.tcp.connection = Connection::Opening;
+                Ok(TcpStep::Wait(TcpWait::Connected))
+            }
+            TcpRequest::Send(chunk) => {
+                // The stack reads what is sent where it is until the peer
+                // has it: until then nothing else can go there.
+                if self.tcp.connection != Connection::Open || self.tcp.sending {
+                    return Err(TcpError::OutOfSequence);
+                }
+                self.ot.tcp_send(buffer, &chunk).await?;
+                self.tcp.sending = true;
+                Ok(TcpStep::Wait(TcpWait::Sent))
+            }
+            TcpRequest::Receive => {
+                let over = match self.tcp.connection {
+                    Connection::Open => self.tcp.end_of_stream,
+                    Connection::Over => true,
+                    Connection::Closed | Connection::Opening => {
+                        return Err(TcpError::OutOfSequence);
+                    }
+                };
+                let chunk = self.ot.tcp_receive(buffer).await?;
+                if chunk.is_empty() && !over {
+                    Ok(TcpStep::Wait(TcpWait::Received))
+                } else {
+                    Ok(TcpStep::Done(chunk))
+                }
+            }
+            TcpRequest::Finish => {
+                if self.tcp.connection != Connection::Open {
+                    return Err(TcpError::OutOfSequence);
+                }
+                self.ot.tcp_send_end_of_stream(buffer).await?;
+                done
+            }
+            TcpRequest::Close => {
+                if self.tcp.connection != Connection::Closed {
+                    let (aborted, state_changed) =
+                        ot::tcp_abort(&mut self.notif_rx, &mut self.ot, buffer).await;
+                    if state_changed {
+                        self.publish_status().await;
+                    }
+                    aborted?;
+                }
+                self.tcp.connection = Connection::Closed;
+                self.tcp.sending = false;
+                self.tcp.end_of_stream = false;
+                done
+            }
+        }
+    }
+
+    /// The stack calls back about the TCP endpoint.
+    async fn tcp_event(&mut self, event: ot::TcpEvent) {
+        use ot::{TcpDisconnected, TcpEvent};
+
+        match event {
+            TcpEvent::Incoming { taken: true } => self.tcp.connection = Connection::Opening,
+            TcpEvent::Incoming { taken: false } => {}
+            TcpEvent::Established => {
+                // The stack may say so twice of a connection that came in.
+                if self.tcp.connection != Connection::Open {
+                    self.tcp.connection = Connection::Open;
+                    self.tcp.end_of_stream = false;
+                }
+                let opened = |wait| matches!(wait, TcpWait::Accepted | TcpWait::Connected);
+                self.tcp_answer(opened, Ok(TcpChunk::new()));
+            }
+            TcpEvent::SendDone => {
+                self.tcp.sending = false;
+                self.tcp_answer(|wait| wait == TcpWait::Sent, Ok(TcpChunk::new()));
+            }
+            TcpEvent::ReceiveAvailable { end_of_stream } => {
+                self.tcp.end_of_stream |= end_of_stream;
+                if !matches!(self.tcp.waiting, Some((_, TcpWait::Received))) {
+                    return;
+                }
+                let received = self.ot.tcp_receive(&self.buffers.tcp).await;
+                match received {
+                    // Not yet what is waited for.
+                    Ok(chunk) if chunk.is_empty() && !self.tcp.end_of_stream => {}
+                    Ok(chunk) => self.tcp_answer(|_| true, Ok(chunk)),
+                    Err(e) => self.tcp_answer(|_| true, Err(e.into())),
+                }
+            }
+            TcpEvent::Disconnected(how) => {
+                // The stack is done with whatever it was given to send.
+                self.tcp.sending = false;
+                let ended = matches!(how, TcpDisconnected::Normal | TcpDisconnected::Lingering);
+                self.tcp.connection = match how {
+                    TcpDisconnected::Lingering => Connection::Over,
+                    _ => Connection::Closed,
+                };
+                let error = match how {
+                    TcpDisconnected::Refused => TcpError::Refused,
+                    TcpDisconnected::TimedOut => TcpError::TimedOut,
+                    _ => TcpError::Reset,
+                };
+                match self.tcp.waiting.as_ref().map(|(_, wait)| *wait) {
+                    // That was not the connection that is waited for.
+                    Some(TcpWait::Accepted) | None => {}
+                    // Both sides are done, so the peer has what was sent,
+                    // and has sent what it was going to.
+                    Some(TcpWait::Sent | TcpWait::Received) if ended => {
+                        self.tcp_answer(|_| true, Ok(TcpChunk::new()))
+                    }
+                    Some(_) => self.tcp_answer(|_| true, Err(error)),
+                }
+            }
+        }
+    }
+
+    /// Answer what the [`Tcp`] end waits for, if `is_it` says this is it.
+    fn tcp_answer(&mut self, is_it: impl FnOnce(TcpWait) -> bool, answer: TcpResult) {
+        let awaited = self.tcp.waiting.take_if(|(_, wait)| is_it(*wait));
+        if let Some((pending, _)) = awaited {
+            self.requests.tcp.answer(pending, answer);
+        }
     }
 
     /// Have the socket of `port` take in what is sent to it, or not.

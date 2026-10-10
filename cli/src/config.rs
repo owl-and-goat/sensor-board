@@ -2,7 +2,7 @@
 //! is powered. It is shown and changed on an attached board, or through one
 //! on a board on its network.
 
-use std::time::Duration;
+use std::{net::SocketAddrV6, time::Duration};
 
 use anyhow::{Result, bail};
 use clap::{Args, ValueEnum};
@@ -25,7 +25,16 @@ pub struct Changes {
     /// or not at all, as in `temperature=off`. Can be given several times
     #[arg(long = "sensor", value_name = "SENSOR=INTERVAL", value_parser = sensor_change)]
     sensors: Vec<SensorChange>,
+
+    /// The Prometheus Pushgateway that the board pushes its metrics to when it is on battery, as
+    /// in `[fd12:3456::1]:9091`, or `none`
+    #[arg(long, value_name = "[ADDRESS]:PORT", value_parser = pushgateway_change)]
+    pushgateway: Option<PushgatewayChange>,
 }
+
+/// What a board's Pushgateway is to be. `None` leaves it without one.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct PushgatewayChange(Option<SocketAddrV6>);
 
 /// What a sensor's configuration is to be. `None` turns the sensor off.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -36,7 +45,10 @@ struct SensorChange {
 
 impl Changes {
     fn is_empty(&self) -> bool {
-        self.id.is_none() && self.power_mode.is_none() && self.sensors.is_empty()
+        self.id.is_none()
+            && self.power_mode.is_none()
+            && self.sensors.is_empty()
+            && self.pushgateway.is_none()
     }
 
     /// `current` with the changes made to it. A board that has no
@@ -49,6 +61,7 @@ impl Changes {
                 board_id,
                 sensor_config: SensorsConfig::default(),
                 power_mode,
+                pushgateway: None,
             },
             (None, _, _) => bail!("it has no configuration yet: give it --id and --power-mode"),
         };
@@ -60,6 +73,9 @@ impl Changes {
         }
         for change in &self.sensors {
             config.sensor_config.0[change.sensor] = change.config;
+        }
+        if let Some(PushgatewayChange(pushgateway)) = self.pushgateway {
+            config.pushgateway = pushgateway;
         }
         Ok(config)
     }
@@ -80,7 +96,7 @@ pub async fn show(board: &Board, remote: Option<BoardId>) -> Result<()> {
 /// `board` reaches over its network, or `board`'s own.
 pub async fn set(board: &Board, remote: Option<BoardId>, changes: &Changes) -> Result<()> {
     if changes.is_empty() {
-        bail!("nothing to change: give --id, --power-mode or --sensor");
+        bail!("nothing to change: give --id, --power-mode, --sensor or --pushgateway");
     }
     let target = target(board, remote)?;
     let current = board.board_config(target).await?;
@@ -106,9 +122,12 @@ fn describe(config: &BoardConfig) -> String {
         board_id,
         sensor_config,
         power_mode,
+        pushgateway,
     } = config;
     let mut text = format!("  {:<12}  {board_id}\n", "id");
     text += &format!("  {:<12}  {}\n", "power mode", name(power_mode));
+    let pushgateway = pushgateway.map_or("none".to_owned(), |address| address.to_string());
+    text += &format!("  {:<12}  {pushgateway}\n", "pushgateway");
     for (sensor, config) in &sensor_config.0 {
         let read = match config {
             Some(SensorConfig { poll_interval }) => {
@@ -146,6 +165,17 @@ fn sensor_change(text: &str) -> Result<SensorChange, String> {
         }),
     };
     Ok(SensorChange { sensor, config })
+}
+
+/// A `--pushgateway` argument.
+fn pushgateway_change(text: &str) -> Result<PushgatewayChange, String> {
+    if text == "none" {
+        return Ok(PushgatewayChange(None));
+    }
+    match text.parse() {
+        Ok(address) => Ok(PushgatewayChange(Some(address))),
+        Err(_) => Err("write it as [ADDRESS]:PORT, with an IPv6 address, or none".to_owned()),
+    }
 }
 
 /// An interval as it is typed: a whole number of a unit.
@@ -201,6 +231,7 @@ mod tests {
             board_id: 3,
             sensor_config: sensors,
             power_mode: PowerMode::Aux,
+            pushgateway: None,
         }
     }
 
@@ -258,11 +289,18 @@ mod tests {
                 sensor_change("capacitance0=off").unwrap(),
                 sensor_change("humidity=1m").unwrap(),
             ],
+            pushgateway: Some(pushgateway_change("[fd12:3456::1]:9091").unwrap()),
         };
         let changed = changes.apply(Some(config())).unwrap();
 
         let mut expected = config();
         expected.power_mode = PowerMode::Battery;
+        expected.pushgateway = Some(SocketAddrV6::new(
+            "fd12:3456::1".parse().unwrap(),
+            9091,
+            0,
+            0,
+        ));
         expected.sensor_config.0[Sensor::Capacitance0] = None;
         expected.sensor_config.0[Sensor::Humidity] = every(Duration::from_secs(60));
         assert_eq!(changed, expected);
@@ -274,6 +312,7 @@ mod tests {
             id: Some(3),
             power_mode: None,
             sensors: vec![sensor_change("capacitance0=10s").unwrap()],
+            pushgateway: None,
         };
         assert!(changes.apply(None).is_err());
 
@@ -289,15 +328,29 @@ mod tests {
         let text = describe(&config());
         let lines: Vec<&str> = text.lines().collect();
         assert_eq!(
-            lines[..3],
+            lines[..4],
             [
                 "  id            3",
                 "  power mode    aux",
+                "  pushgateway   none",
                 "  capacitance0  every 10s"
             ]
         );
         assert!(lines.contains(&"  capacitance1  off"), "{text}");
         assert!(lines.contains(&"  temperature   every 5m"), "{text}");
-        assert_eq!(lines.len(), 2 + Sensor::value_variants().len());
+        assert_eq!(lines.len(), 3 + Sensor::value_variants().len());
+    }
+
+    #[test]
+    fn a_pushgateway_is_an_ipv6_address_and_a_port_or_none() {
+        let address = SocketAddrV6::new("fd12:3456::1".parse().unwrap(), 9091, 0, 0);
+        assert_eq!(
+            pushgateway_change("[fd12:3456::1]:9091"),
+            Ok(PushgatewayChange(Some(address)))
+        );
+        assert_eq!(pushgateway_change("none"), Ok(PushgatewayChange(None)));
+        for malformed in ["fd12:3456::1", "192.168.1.2:9091", "pushgateway:9091", ""] {
+            assert!(pushgateway_change(malformed).is_err(), "{malformed}");
+        }
     }
 }

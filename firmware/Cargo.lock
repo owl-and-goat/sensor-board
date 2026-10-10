@@ -1275,6 +1275,7 @@ dependencies = [
  "protocol",
  "sha2",
  "static_cell",
+ "tinymetrics",
 ]
 
 [[package]]
@@ -1518,6 +1519,14 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "1ad99c4c6d32803332c548b1af0540b357b3f5fc0be8f6c6bfe8b2e6ae784070"
 dependencies = [
  "cfg-if",
+]
+
+[[package]]
+name = "tinymetrics"
+version = "0.1.0"
+source = "git+https://github.com/hawkw/tinymetrics.git?rev=58a73feea1c94b858313e40dce0248f669a1c4f0#58a73feea1c94b858313e40dce0248f669a1c4f0"
+dependencies = [
+ "portable-atomic",
 ]
 
 [[package]]

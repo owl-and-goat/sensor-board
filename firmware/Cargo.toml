@@ -43,6 +43,10 @@ sha2 = { version = "0.10", default-features = false }
 
 bitvec = { version = "1.1", default-features = false }
 
+# The board's metrics, in Prometheus's text format. Not released on crates.io.
+# The default features add timestamps, which the board has no clock for.
+tinymetrics = { git = "https://github.com/hawkw/tinymetrics.git", rev = "58a73feea1c94b858313e40dce0248f669a1c4f0", default-features = false }
+
 # Same revision as the protocol crate, which says why it is not a release.
 [dependencies.postcard-rpc]
 git = "https://github.com/jamesmunns/postcard-rpc.git"

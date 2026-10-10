@@ -9,6 +9,10 @@
 //! flash is written in step with CPU2.
 
 use embassy_futures::select::{Either3, select3};
+use embassy_sync::{
+    blocking_mutex::raw::ThreadModeRawMutex,
+    watch::{self, Watch},
+};
 use embassy_time::{Duration, Instant, Timer};
 use protocol::{
     BoardConfig, BoardConfigResult, BoardId, ConfigError, ConfigFor, ConfigMessage, ConfigResult,
@@ -36,12 +40,51 @@ enum Request {
     Set(ConfigFor),
 }
 
-/// Make the two ends of the board's configuration. Panics if called a second
-/// time.
-pub fn init() -> (Handle, Service) {
-    static REQUESTS: StaticCell<request::Channel<Request, BoardConfigResult>> = StaticCell::new();
-    let (client, server) = REQUESTS.init(request::Channel::new()).split();
-    (Handle { requests: client }, Service { requests: server })
+/// The configuration the board has, as last kept.
+type Current = Watch<ThreadModeRawMutex, Option<BoardConfig>, 1>;
+
+struct Shared {
+    requests: request::Channel<Request, BoardConfigResult>,
+    current: Current,
+}
+
+/// Make the ends of the board's configuration: the two that set it, and the
+/// look at it for what acts on it. Panics if called a second time.
+pub fn init() -> (Handle, Service, Monitor) {
+    static SHARED: StaticCell<Shared> = StaticCell::new();
+    let shared: &'static Shared = SHARED.init(Shared {
+        requests: request::Channel::new(),
+        current: Watch::new_with(persistent_config::board_config()),
+    });
+
+    let (client, server) = shared.requests.split();
+    let service = Service {
+        requests: server,
+        current: &shared.current,
+    };
+    let monitor = Monitor {
+        // Cannot fail: this is the one place a look at it is taken.
+        current: shared.current.receiver().unwrap(),
+    };
+    (Handle { requests: client }, service, monitor)
+}
+
+/// A look at the configuration the board has, for what acts on it.
+pub struct Monitor {
+    current: watch::Receiver<'static, ThreadModeRawMutex, Option<BoardConfig>, 1>,
+}
+
+impl Monitor {
+    /// The configuration the board has now.
+    pub fn config(&mut self) -> Option<BoardConfig> {
+        self.current.try_get().flatten()
+    }
+
+    /// Wait for the board to be given another configuration, which is the
+    /// answer.
+    pub async fn changed(&mut self) -> Option<BoardConfig> {
+        self.current.changed().await
+    }
 }
 
 /// How the rest of the firmware gets at a board's configuration.
@@ -74,6 +117,7 @@ impl Handle {
 /// boards on the network.
 pub struct Service {
     requests: request::Server<Request, BoardConfigResult>,
+    current: &'static Current,
 }
 
 impl Service {
@@ -83,6 +127,7 @@ impl Service {
             flash,
             socket,
             requests: self.requests,
+            current: self.current,
             board: this_board(),
             asking: None,
             asked: 0,
@@ -144,6 +189,7 @@ struct Configs<'a, 'd> {
     /// What boards say to each other about their configurations.
     socket: thread::Socket,
     requests: request::Server<Request, BoardConfigResult>,
+    current: &'static Current,
     /// This board.
     board: BoardId,
     /// What a board on the network is being asked for the host.
@@ -208,7 +254,10 @@ impl Configs<'_, '_> {
         let mut flash = self.flash.lock().await;
         let kept = persistent_config::set_board_config(&mut flash, config).await;
         match kept {
-            Ok(()) => defmt::info!("config: kept a new one"),
+            Ok(()) => {
+                defmt::info!("config: kept a new one");
+                self.current.sender().send(Some(config.clone()));
+            }
             Err(e) => defmt::error!("config: flash: {}", e),
         }
         kept.map_err(|_| ConfigError::Storage)

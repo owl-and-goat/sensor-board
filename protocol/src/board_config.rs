@@ -1,3 +1,4 @@
+use core::net::SocketAddrV6;
 use core::time::Duration;
 
 use enum_map::{Enum, EnumMap};
@@ -35,11 +36,11 @@ pub struct SensorConfig {
 #[cfg_attr(feature = "clap", derive(clap::ValueEnum))]
 pub enum PowerMode {
     /// The device is powered via aux power. It does not register as a sleepy end device, allowing
-    /// it to act as a Thread router.
+    /// it to act as a Thread router. It serves its metrics to whoever scrapes them.
     Aux,
 
     /// The device is powered via battery, meaning it should try to conserve power as much as
-    /// possible.
+    /// possible. It pushes its metrics to the Pushgateway it is configured with.
     Battery,
 }
 
@@ -59,12 +60,15 @@ pub struct BoardConfig {
     pub board_id: u8,
     pub sensor_config: SensorsConfig,
     pub power_mode: PowerMode,
+    /// The Prometheus Pushgateway that the board pushes its metrics to when
+    /// it is on battery.
+    pub pushgateway: Option<SocketAddrV6>,
 }
 
 impl BoardConfig {
     /// The most bytes a configuration takes up as a board keeps it: the key,
-    /// and every interval at the longest postcard writes it.
-    pub const MAX_LEN: usize = 8 + 1 + Sensor::COUNT * (1 + 10 + 5) + 1;
+    /// and every interval and the port at the longest postcard writes them.
+    pub const MAX_LEN: usize = 8 + 1 + Sensor::COUNT * (1 + 10 + 5) + 1 + (1 + 16 + 3);
 
     /// The configuration as a board keeps it in flash: a key that stands for
     /// the layout of this type, and then the configuration in postcard's
@@ -101,6 +105,7 @@ mod tests {
             board_id: 7,
             sensor_config: sensors,
             power_mode: PowerMode::Aux,
+            pushgateway: Some("[fd12:3456::1]:9091".parse().unwrap()),
         }
     }
 
@@ -128,6 +133,7 @@ mod tests {
     fn longest_config_is_as_long_as_one_may_be() {
         let mut longest = config();
         longest.board_id = u8::MAX;
+        longest.pushgateway = Some(SocketAddrV6::new([0xffff; 8].into(), u16::MAX, 0, 0));
         for (_, sensor) in &mut longest.sensor_config.0 {
             *sensor = Some(SensorConfig {
                 poll_interval: Duration::MAX,
