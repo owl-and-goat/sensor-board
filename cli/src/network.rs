@@ -362,8 +362,7 @@ pub fn describe_routers(table: &RouterTable) -> String {
     text
 }
 
-/// The addresses as text: a line for each, with where it reaches the board
-/// from.
+/// Format the addresses as text, one per line, each with its kind.
 pub fn describe_addresses(addresses: &Addresses) -> String {
     let mut text = String::new();
     for Address { address, kind } in &addresses.addresses {

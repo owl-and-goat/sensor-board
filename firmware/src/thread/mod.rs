@@ -101,47 +101,46 @@ enum Request {
     Leave,
 }
 
-/// The [`Handle`] asking for the neighbor table, for the router table, and
-/// for the board's addresses. Each has an answer of its own type, and so a
-/// channel of its own.
+/// Requests from the [`Handle`] for the neighbor table, the router table and
+/// the board's addresses. Each has its own response type, so each has its
+/// own channel.
 struct NeighborsRequest;
 struct RoutersRequest;
 struct AddressesRequest;
 
-/// What a [`Tcp`] end can ask for. Each is answered when it is done or has
-/// failed, which for some takes the device at the other end.
+/// A request from the [`Tcp`] handle. The response is sent when the
+/// operation completes or fails. Some operations wait for the peer.
 enum TcpRequest {
-    /// Take connections to this port, one at a time, or with `None` take
-    /// none.
+    /// Listen on this port, or with `None` stop listening.
     Listen(Option<u16>),
-    /// Wait for a connection to have come in.
+    /// Wait for an incoming connection.
     Accept,
     /// Open a connection.
     Connect(SocketAddrV6),
-    /// Send, and wait for the peer to have it.
+    /// Send a chunk, and wait for the peer to acknowledge it.
     Send(TcpChunk),
-    /// Wait for something to arrive. An empty chunk is the end of what the
-    /// peer sends.
+    /// Wait for data. An empty chunk means the peer has closed its side.
     Receive,
-    /// Tell the peer that nothing more is sent.
+    /// Close the sending side of the connection.
     Finish,
-    /// Drop the connection, whatever state it is in.
+    /// Abort the connection, whatever state it is in.
     Close,
 }
 
-/// What comes of a [`TcpRequest`]: what has arrived, for a `Receive`, and
-/// otherwise nothing.
+/// The response to a [`TcpRequest`]. The chunk holds the received data for a
+/// `Receive`, and is empty for every other request.
 type TcpResult = Result<TcpChunk, TcpError>;
 
 #[derive(Clone, Copy, PartialEq, Eq, defmt::Format)]
 pub enum TcpError {
-    /// Thread is not up to it, or the stack refused.
+    /// Thread is not running, or the stack returned an error.
     Network(NetworkError),
-    /// Not as things stand: nothing is connected, or something already is.
+    /// The request is not valid in the current state: for example, a `Send`
+    /// with no connection, or a `Connect` with one.
     OutOfSequence,
     Refused,
     Reset,
-    /// The peer did not answer in time, or the stack did not.
+    /// The peer or the stack did not respond in time.
     TimedOut,
 }
 
@@ -217,9 +216,9 @@ struct Buffers {
     tcp: ot::TcpBuffer,
 }
 
-/// Make the ends of Thread: the handle, the sockets and the TCP end for the
-/// rest of the firmware, and the service for the coprocessor task to run.
-/// Panics if called a second time: the firmware has one of each.
+/// Create the [`Handle`], the [`Sockets`] and the [`Tcp`] handle for the rest
+/// of the firmware, and the [`Service`] for the coprocessor task to run.
+/// Panics if called a second time.
 pub fn init() -> (Handle, Sockets, Tcp, Service) {
     static SHARED: StaticCell<Shared> = StaticCell::new();
     let shared: &'static Shared = SHARED.init(Shared {
@@ -340,29 +339,29 @@ impl Socket {
     }
 }
 
-/// How long the device at the other end of a TCP connection gets: to answer
-/// when the connection is opened, to acknowledge what it is sent, and to
-/// send something when that is waited for.
+/// How long to wait for the TCP peer: for a connection to open, for sent
+/// data to be acknowledged, and for data to arrive.
 const TCP_TIMEOUT: Duration = Duration::from_secs(10);
 
-/// How long a wait for a connection to come in goes on before it is asked
-/// for again. However often that is, no connection is missed.
+/// How often [`Tcp::accept`] renews its request while it waits. A connection
+/// that arrives between two requests is not lost.
 const ACCEPT_INTERVAL: Duration = Duration::from_secs(60);
 
-/// A TCP connection to a device on the network, or beyond it through a
-/// border router. One at a time: opened from here, or taken as it comes in.
+/// The firmware's one TCP connection: to a device on the Thread network, or
+/// beyond it through a border router. It is either opened with
+/// [`Tcp::connect`] or accepted with [`Tcp::accept`].
 pub struct Tcp {
     requests: request::Client<TcpRequest, TcpResult>,
 }
 
 impl Tcp {
-    /// Take connections to `port`, one at a time, or with `None` take none.
+    /// Listen for connections on `port`, or with `None` stop listening.
     pub async fn listen(&mut self, port: Option<u16>) -> Result<(), TcpError> {
         self.request(TcpRequest::Listen(port), REQUEST_TIMEOUT)
             .await
     }
 
-    /// Wait for a connection to come in, however long that takes.
+    /// Wait for an incoming connection. Does not time out.
     pub async fn accept(&mut self) -> Result<(), TcpError> {
         loop {
             let accepted = self.requests.ask(TcpRequest::Accept, ACCEPT_INTERVAL);
@@ -377,7 +376,7 @@ impl Tcp {
         self.request(TcpRequest::Connect(peer), TCP_TIMEOUT).await
     }
 
-    /// Send `bytes`, and wait for the peer to have them.
+    /// Send `bytes`, and wait for the peer to acknowledge them.
     pub async fn send(&mut self, bytes: &[u8]) -> Result<(), TcpError> {
         for piece in bytes.chunks(TCP_CHUNK_LEN) {
             // Cannot fail: a piece is no longer than a chunk.
@@ -387,8 +386,7 @@ impl Tcp {
         Ok(())
     }
 
-    /// Wait for something to arrive. An empty chunk is the end of what the
-    /// peer sends.
+    /// Wait for data. An empty chunk means the peer has closed its side.
     pub async fn receive(&mut self) -> Result<TcpChunk, TcpError> {
         self.requests
             .ask(TcpRequest::Receive, TCP_TIMEOUT)
@@ -396,12 +394,13 @@ impl Tcp {
             .unwrap_or(Err(TcpError::TimedOut))
     }
 
-    /// Tell the peer that nothing more is sent.
+    /// Close the sending side. The peer can still send.
     pub async fn finish(&mut self) -> Result<(), TcpError> {
         self.request(TcpRequest::Finish, REQUEST_TIMEOUT).await
     }
 
-    /// Drop the connection, whatever state it is in.
+    /// Abort the connection, whatever state it is in. This frees the
+    /// endpoint for the next connection.
     pub async fn close(&mut self) {
         if let Err(e) = self.request(TcpRequest::Close, REQUEST_TIMEOUT).await {
             defmt::warn!("thread: a TCP connection could not be dropped: {}", e);
@@ -477,7 +476,7 @@ impl Handle {
             .unwrap_or(Err(NetworkError::Unresponsive))
     }
 
-    /// The addresses the board has on its network.
+    /// The board's IPv6 unicast addresses.
     pub async fn addresses(&mut self) -> AddressesResult {
         self.address_requests
             .ask(AddressesRequest, REQUEST_TIMEOUT)
@@ -502,8 +501,8 @@ pub struct Thread<'a, 'd> {
     pub flash: &'a radio_flash::Shared<'d>,
 }
 
-/// The serving ends of what the [`Handle`], the [`Socket`]s and the [`Tcp`]
-/// end ask through.
+/// The server ends of the request channels of the [`Handle`], the
+/// [`Socket`]s and the [`Tcp`] handle.
 #[derive(Clone, Copy)]
 struct Requests {
     changes: request::Server<Request, NetworkResult>,
@@ -570,20 +569,20 @@ impl Requests {
     }
 }
 
-/// Where the TCP endpoint stands.
+/// The state of the TCP endpoint's connection.
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Connection {
-    /// Free to take a connection, or to open one.
+    /// No connection. The endpoint can accept or open one.
     Closed,
-    /// A connection is being opened, or coming in.
+    /// A connection is being established, in either direction.
     Opening,
     Open,
-    /// The connection is over, and the endpoint not free yet (see
-    /// [`ot::TcpDisconnected::Lingering`]).
+    /// The connection has ended, but the endpoint is in TIME-WAIT and
+    /// cannot be reused yet (see [`ot::TcpDisconnected::Lingering`]).
     Over,
 }
 
-/// What the [`Tcp`] end is waiting for.
+/// The event that a pending [`TcpRequest`] is waiting for.
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum TcpWait {
     Accepted,
@@ -592,24 +591,26 @@ enum TcpWait {
     Received,
 }
 
-/// What a [`TcpRequest`] comes to at once: its answer, or a wait for it.
+/// The immediate outcome of a [`TcpRequest`]: its response, or the event to
+/// wait for before responding.
 enum TcpStep {
     Done(TcpChunk),
     Wait(TcpWait),
 }
 
-/// The TCP endpoint, as the service keeps track of it.
+/// The service's view of the TCP endpoint.
 struct TcpEndpoint {
-    /// Whether the stack has it.
+    /// Whether the endpoint has been initialized on CPU2.
     ready: bool,
-    /// The port it takes connections to.
+    /// The port the listener is listening on.
     listening: Option<u16>,
     connection: Connection,
-    /// Whether the stack still reads what was last sent.
+    /// Whether the last chunk sent is still unacknowledged, in which case
+    /// the stack is still reading the send buffer.
     sending: bool,
-    /// Whether the peer has said that it sends no more.
+    /// Whether the peer has closed its sending side.
     end_of_stream: bool,
-    /// What the [`Tcp`] end waits for, and is owed an answer about.
+    /// The pending request, and the event it is waiting for.
     waiting: Option<(request::Pending, TcpWait)>,
 }
 
@@ -719,8 +720,8 @@ impl Network<'_, '_> {
         self.publish_status().await;
 
         loop {
-            // A connection that comes in is taken if one is waited for and
-            // the endpoint has none.
+            // Accept an incoming connection only if the listener is active
+            // and the endpoint has no connection.
             let take_tcp =
                 self.tcp.listening.is_some() && self.tcp.connection == Connection::Closed;
             let notification = ot::notification(
@@ -779,8 +780,8 @@ impl Network<'_, '_> {
                 self.requests.addresses.answer(pending, Ok(addresses));
             }
             Asked::Tcp(pending, request) => {
-                // Whoever asks one thing has given up on what it asked
-                // before.
+                // A new request replaces the pending one, whose caller has
+                // stopped waiting.
                 self.tcp.waiting = None;
                 match self.tcp_step(request).await {
                     Ok(TcpStep::Done(chunk)) => self.requests.tcp.answer(pending, Ok(chunk)),
@@ -817,7 +818,7 @@ impl Network<'_, '_> {
             let socket = &self.buffers.udp[port.index()];
             self.ot.udp_open(socket, port.index()).await?;
         }
-        // Thread is of use without TCP, so it starts without it too.
+        // Thread works without TCP, so a failure here is not fatal.
         match self.ot.tcp_init(&self.buffers.tcp).await {
             Ok(()) => self.tcp.ready = true,
             Err(e) => defmt::warn!("thread: no TCP: {}", e),
@@ -825,8 +826,8 @@ impl Network<'_, '_> {
         Ok(())
     }
 
-    /// Carry out what the [`Tcp`] end asks, as far as that can be done at
-    /// once.
+    /// Start `request`. Returns its response if it completes immediately,
+    /// and otherwise the event to wait for.
     async fn tcp_step(&mut self, request: TcpRequest) -> Result<TcpStep, TcpError> {
         let buffer = &self.buffers.tcp;
         if !self.tcp.ready {
@@ -864,8 +865,9 @@ impl Network<'_, '_> {
                 Ok(TcpStep::Wait(TcpWait::Connected))
             }
             TcpRequest::Send(chunk) => {
-                // The stack reads what is sent where it is until the peer
-                // has it: until then nothing else can go there.
+                // The stack reads from the send buffer until the peer
+                // acknowledges the data, so the buffer cannot be reused
+                // before then.
                 if self.tcp.connection != Connection::Open || self.tcp.sending {
                     return Err(TcpError::OutOfSequence);
                 }
@@ -912,7 +914,7 @@ impl Network<'_, '_> {
         }
     }
 
-    /// The stack calls back about the TCP endpoint.
+    /// Handle a TCP callback from the stack.
     async fn tcp_event(&mut self, event: ot::TcpEvent) {
         use ot::{TcpDisconnected, TcpEvent};
 
@@ -920,7 +922,7 @@ impl Network<'_, '_> {
             TcpEvent::Incoming { taken: true } => self.tcp.connection = Connection::Opening,
             TcpEvent::Incoming { taken: false } => {}
             TcpEvent::Established => {
-                // The stack may say so twice of a connection that came in.
+                // The stack may report an accepted connection twice.
                 if self.tcp.connection != Connection::Open {
                     self.tcp.connection = Connection::Open;
                     self.tcp.end_of_stream = false;
@@ -939,14 +941,15 @@ impl Network<'_, '_> {
                 }
                 let received = self.ot.tcp_receive(&self.buffers.tcp).await;
                 match received {
-                    // Not yet what is waited for.
+                    // No data yet, and the stream is still open: keep
+                    // waiting.
                     Ok(chunk) if chunk.is_empty() && !self.tcp.end_of_stream => {}
                     Ok(chunk) => self.tcp_answer(|_| true, Ok(chunk)),
                     Err(e) => self.tcp_answer(|_| true, Err(e.into())),
                 }
             }
             TcpEvent::Disconnected(how) => {
-                // The stack is done with whatever it was given to send.
+                // The stack no longer reads the send buffer.
                 self.tcp.sending = false;
                 let ended = matches!(how, TcpDisconnected::Normal | TcpDisconnected::Lingering);
                 self.tcp.connection = match how {
@@ -959,10 +962,11 @@ impl Network<'_, '_> {
                     _ => TcpError::Reset,
                 };
                 match self.tcp.waiting.as_ref().map(|(_, wait)| *wait) {
-                    // That was not the connection that is waited for.
+                    // No request is affected: an `Accept` keeps waiting for
+                    // the next connection.
                     Some(TcpWait::Accepted) | None => {}
-                    // Both sides are done, so the peer has what was sent,
-                    // and has sent what it was going to.
+                    // A clean close: the peer acknowledged everything sent,
+                    // and has nothing more to send.
                     Some(TcpWait::Sent | TcpWait::Received) if ended => {
                         self.tcp_answer(|_| true, Ok(TcpChunk::new()))
                     }
@@ -972,7 +976,8 @@ impl Network<'_, '_> {
         }
     }
 
-    /// Answer what the [`Tcp`] end waits for, if `is_it` says this is it.
+    /// Respond to the pending request with `answer`, if `is_it` accepts the
+    /// event it is waiting for.
     fn tcp_answer(&mut self, is_it: impl FnOnce(TcpWait) -> bool, answer: TcpResult) {
         let awaited = self.tcp.waiting.take_if(|(_, wait)| is_it(*wait));
         if let Some((pending, _)) = awaited {

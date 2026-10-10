@@ -34,9 +34,9 @@ impl<'d> RadioFlash<'d> {
         &mut self.sys
     }
 
-    /// Erase the page that starts at `page`, and write each of `records` at
-    /// its offset into flash. Nothing else on CPU1 runs in between, so
-    /// nothing reads the page with only some of that done.
+    /// Erase the page at offset `page`, then write each of `records` at its
+    /// flash offset. No other CPU1 code runs between the erase and the last
+    /// write, so nothing can read a half-written page.
     pub async fn rewrite_page<'a>(
         &mut self,
         page: u32,

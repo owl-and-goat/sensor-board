@@ -1,14 +1,14 @@
 //! Persistent configuration in the 4 KB page after the firmware's own flash
 //! region (0x0803F000, outside the linker's FLASH region in memory.x and
-//! outside what a firmware update swaps). Two things are kept there, each in
-//! a record at a place of its own:
+//! outside what a firmware update swaps). The page holds two records, each at
+//! a fixed offset:
 //!
-//! - the Thread operational dataset, so a board rejoins its network by
-//!   itself at power-up. CPU2's own settings do not survive its restarts.
+//! - the Thread operational dataset, so that a board rejoins its network at
+//!   power-up. CPU2 does not keep its own settings across restarts.
 //! - the board's configuration ([`BoardConfig`]).
 //!
-//! A page is erased as a whole, so a change to either writes both again. A
-//! reset in the middle of that loses both.
+//! Flash is erased a page at a time, so changing either record rewrites
+//! both. A reset during the rewrite loses both.
 
 use core::ptr::read_volatile;
 
@@ -22,9 +22,9 @@ pub const PAGE_ADDR: u32 = 0x0800_0000 + PAGE_OFFSET;
 const MAGIC: u32 = 0x5342_4346; // "SBCF"
 const VERSION: u32 = 1;
 
-/// The dataset, at the start of the page. This is all that the firmwares
-/// from before the board's configuration was kept here know of the page:
-/// one of them still finds its dataset in it.
+/// The dataset record, at the start of the page. Its layout must not change:
+/// firmware from before the board configuration was added reads only this
+/// record, and has to keep finding its dataset here.
 #[repr(C)]
 #[derive(Clone, Copy)]
 struct DatasetRecord {
@@ -52,7 +52,7 @@ impl DatasetRecord {
         record
     }
 
-    /// The record in flash, if there is one.
+    /// Load the record from flash, if a valid one is there.
     fn load() -> Option<Self> {
         let record = unsafe { read_volatile(PAGE_ADDR as *const DatasetRecord) };
         let valid = record.magic == MAGIC
@@ -66,16 +66,17 @@ impl DatasetRecord {
     }
 }
 
-/// Where in the page the board's configuration is: behind the dataset, with
-/// room to spare.
+/// Offset of the board configuration record in the page. It leaves spare
+/// room after the dataset record.
 const BOARD_OFFSET: u32 = 0x200;
 const _: () = assert!(size_of::<DatasetRecord>() <= BOARD_OFFSET as usize);
 const BOARD_MAGIC: u32 = 0x5342_4243; // "SBBC"
 
-/// A whole number of flash words that the longest configuration fits in.
+/// The longest encoded configuration, rounded up to whole 8-byte flash words.
 const BOARD_LEN: usize = BoardConfig::MAX_LEN.next_multiple_of(8);
 
-/// The board's configuration, as [`BoardConfig::encode`] writes it.
+/// The board configuration record. The first `len` bytes of `config` are the
+/// output of [`BoardConfig::encode`].
 #[repr(C)]
 #[derive(Clone, Copy)]
 struct BoardRecord {
@@ -86,7 +87,7 @@ struct BoardRecord {
 const _: () = assert!(size_of::<BoardRecord>() % 8 == 0);
 
 impl BoardRecord {
-    /// `None` if the configuration is longer than one can be.
+    /// `None` if the encoded configuration does not fit in the record.
     fn new(config: &BoardConfig) -> Option<Self> {
         let mut record = BoardRecord {
             magic: BOARD_MAGIC,
@@ -97,9 +98,9 @@ impl BoardRecord {
         Some(record)
     }
 
-    /// The record in flash, if there is one. It may hold a configuration
-    /// that this firmware does not understand: one that a firmware with
-    /// another layout of it has kept.
+    /// Load the record from flash, if a valid one is there. This firmware
+    /// may not be able to decode it, if a firmware with a different
+    /// `BoardConfig` layout wrote it.
     fn load() -> Option<Self> {
         let record = unsafe { read_volatile((PAGE_ADDR + BOARD_OFFSET) as *const BoardRecord) };
         let valid = record.magic == BOARD_MAGIC && record.len as usize <= BOARD_LEN;
@@ -111,19 +112,19 @@ impl BoardRecord {
     }
 }
 
-/// The dataset of the network the board is to be on.
+/// The stored dataset: the network the board joins at power-up.
 pub fn dataset() -> Option<Dataset> {
     DatasetRecord::load()?.dataset()
 }
 
-/// The board's configuration, if it has been given one, and this firmware
-/// understands it.
+/// The stored board configuration. `None` if there is none, or if this
+/// firmware cannot decode it.
 pub fn board_config() -> Option<BoardConfig> {
     BoardRecord::load()?.config()
 }
 
-/// Keep `dataset`, or with `None` keep none. The board's configuration stays
-/// as it is, understood or not.
+/// Store `dataset`, or with `None` remove the stored one. The board
+/// configuration record is preserved, even if this firmware cannot decode it.
 pub async fn set_dataset(
     flash: &mut RadioFlash<'_>,
     dataset: Option<&Dataset>,
@@ -132,25 +133,25 @@ pub async fn set_dataset(
     write(flash, dataset.as_ref(), BoardRecord::load().as_ref()).await
 }
 
-/// Keep `config`. The dataset stays as it is.
+/// Store `config`. The dataset record is preserved.
 pub async fn set_board_config(
     flash: &mut RadioFlash<'_>,
     config: &BoardConfig,
 ) -> Result<(), Error> {
-    // No better variant, and it does not come to that: the record has room
-    // for the longest configuration.
+    // Unreachable, as the record has room for the longest configuration.
+    // `Error::Size` is the closest variant.
     let config = BoardRecord::new(config).ok_or(Error::Size)?;
     write(flash, DatasetRecord::load().as_ref(), Some(&config)).await
 }
 
-/// Write the page anew, with the records that there are to be.
+/// Erase the page and write the given records to it.
 async fn write(
     flash: &mut RadioFlash<'_>,
     dataset: Option<&DatasetRecord>,
     board: Option<&BoardRecord>,
 ) -> Result<(), Error> {
-    // SAFETY: both records are `repr(C)`, and of words and bytes that leave
-    // no padding between them.
+    // SAFETY: both records are `repr(C)` structs of `u32`s and byte arrays,
+    // with no padding.
     let records = unsafe {
         [
             dataset.map(|record| (PAGE_OFFSET, bytes_of(record))),
@@ -162,9 +163,9 @@ async fn write(
         .await
 }
 
-/// A record as the bytes that go into flash.
+/// The bytes of a record, as written to flash.
 ///
-/// SAFETY: every byte of `T` has to be one of its fields: no padding.
+/// SAFETY: `T` must have no padding bytes.
 unsafe fn bytes_of<T>(record: &T) -> &[u8] {
     unsafe { core::slice::from_raw_parts((record as *const T).cast::<u8>(), size_of::<T>()) }
 }

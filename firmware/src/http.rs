@@ -1,23 +1,23 @@
-//! Just enough HTTP for Prometheus: the request it scrapes a board with, and
-//! the one a board pushes to a Pushgateway with. Each has a connection to
-//! itself, which is closed once it has been answered.
+//! A minimal HTTP/1.1 implementation for Prometheus: a server for scrape
+//! requests, and a client for `PUT` requests to a Pushgateway. Every request
+//! uses its own connection, which is closed after the response.
 
 use core::fmt::{self, Write as _};
 use core::net::SocketAddrV6;
 
 use crate::thread::{Tcp, TcpChunk, TcpError};
 
-/// What both sides say the body is: Prometheus's text format.
+/// The `Content-Type` of Prometheus's text format, for responses and pushes.
 const CONTENT_TYPE: &str = "text/plain; version=0.0.4; charset=utf-8";
 
-/// The most that is read of a request before its end has to have come, and
-/// of an answer before its first line has to be complete.
+/// The most bytes read while waiting for the end of a request head, or for
+/// the status line of a response.
 const MAX_HEAD: usize = 2048;
 
 #[derive(Clone, Copy, defmt::Format)]
 pub enum Error {
     Tcp(TcpError),
-    /// What arrived is not HTTP, or goes on for longer than it may.
+    /// The message is not valid HTTP, is cut short, or is too long.
     Malformed,
 }
 
@@ -27,7 +27,7 @@ impl From<TcpError> for Error {
     }
 }
 
-/// What a request asks for.
+/// The request that was received.
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum Asked {
     /// `GET /metrics`
@@ -52,12 +52,12 @@ impl fmt::Display for Status {
     }
 }
 
-/// The first line of what arrives on a connection, and whether the blank
-/// line that ends a request's or an answer's head has arrived.
+/// Incremental parser for the head of an HTTP message. It keeps the first
+/// line, and detects the blank line that ends the head.
 struct Head {
     first_line: heapless::String<64>,
     first_line_done: bool,
-    /// How much of the `\r\n\r\n` that ends the head has just arrived.
+    /// How many bytes of the terminating `\r\n\r\n` have matched so far.
     ending: usize,
     len: usize,
 }
@@ -78,7 +78,7 @@ impl Head {
         self.ending == Self::ENDING.len()
     }
 
-    /// Take in more of what arrives.
+    /// Feed received bytes to the parser.
     fn take(&mut self, bytes: &[u8]) {
         for &byte in bytes {
             if self.is_complete() {
@@ -92,14 +92,14 @@ impl Head {
             };
             self.first_line_done |= byte == b'\r' || byte == b'\n';
             if !self.first_line_done {
-                // A line that is cut short is no line this understands.
+                // A first line that does not fit is truncated.
                 let _ = self.first_line.push(char::from(byte));
             }
         }
     }
 }
 
-/// Take in the request that the connection which has come in brings.
+/// Read a request from an accepted connection.
 pub async fn request(tcp: &mut Tcp) -> Result<Asked, Error> {
     let mut head = Head::new();
     while !head.is_complete() {
@@ -120,8 +120,7 @@ pub async fn request(tcp: &mut Tcp) -> Result<Asked, Error> {
     }
 }
 
-/// Answer the request, and wait for the peer to be done with the
-/// connection.
+/// Send a response, then wait for the peer to close the connection.
 pub async fn respond(tcp: &mut Tcp, status: Status, body: &str) -> Result<(), Error> {
     let mut head: heapless::String<160> = heapless::String::new();
     let written = write!(
@@ -137,14 +136,14 @@ pub async fn respond(tcp: &mut Tcp, status: Status, body: &str) -> Result<(), Er
     send(tcp, &head, body).await?;
     tcp.finish().await?;
 
-    // The peer has it all once it closes its side too. Whatever it sends
-    // until then is of no interest, and neither is how the connection ends.
+    // The peer closes its side once it has the whole response. Anything it
+    // sends before that is discarded, and a receive error ends the wait.
     while matches!(tcp.receive().await, Ok(chunk) if !chunk.is_empty()) {}
     Ok(())
 }
 
-/// Send `body` to `to` in a PUT request for `path`, and answer with the
-/// status that comes back.
+/// Send `body` to `to` in a `PUT` request for `path`. Returns the status code
+/// of the response.
 pub async fn put(tcp: &mut Tcp, to: SocketAddrV6, path: &str, body: &str) -> Result<u16, Error> {
     let mut head: heapless::String<256> = heapless::String::new();
     let written = write!(
@@ -177,10 +176,11 @@ pub async fn put(tcp: &mut Tcp, to: SocketAddrV6, path: &str, body: &str) -> Res
         .ok_or(Error::Malformed)
 }
 
-/// Send a head and the body after it, in as few pieces as they fit in.
+/// Send a head followed by a body, in as few chunks as possible.
 async fn send(tcp: &mut Tcp, head: &str, body: &str) -> Result<(), TcpError> {
-    // Neither can fail: a head is shorter than a chunk, going by the room it
-    // is written in, and of the body only what fits is added.
+    // Neither `extend_from_slice` can fail: the heads are written into
+    // strings shorter than a chunk, and only as much of the body is added as
+    // fits after the head.
     let mut chunk = TcpChunk::new();
     let _ = chunk.extend_from_slice(head.as_bytes());
     let with_head = body.len().min(chunk.capacity() - chunk.len());

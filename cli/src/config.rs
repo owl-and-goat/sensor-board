@@ -1,6 +1,6 @@
-//! A board's configuration: which sensors it reads and how often, and how it
-//! is powered. It is shown and changed on an attached board, or through one
-//! on a board on its network.
+//! The `config` commands: show or change a board's configuration, which sets
+//! the sensors it reads, how often, and how it is powered. The target is an
+//! attached board, or a board on its network.
 
 use std::{net::SocketAddrV6, time::Duration};
 
@@ -10,7 +10,7 @@ use protocol::{BoardConfig, BoardId, PowerMode, Sensor, SensorConfig, SensorsCon
 
 use crate::board::Board;
 
-/// What to change in a board's configuration.
+/// The changes to make to a board's configuration.
 #[derive(Args)]
 pub struct Changes {
     /// The board's number
@@ -21,22 +21,22 @@ pub struct Changes {
     #[arg(long, value_enum)]
     power_mode: Option<PowerMode>,
 
-    /// Have the board read a sensor at an interval, as in `temperature=30s` (in ms, s, m or h),
-    /// or not at all, as in `temperature=off`. Can be given several times
+    /// Set a sensor's poll interval, as in `temperature=30s` (units: ms, s, m or h), or disable
+    /// the sensor with `temperature=off`. Can be given several times
     #[arg(long = "sensor", value_name = "SENSOR=INTERVAL", value_parser = sensor_change)]
     sensors: Vec<SensorChange>,
 
-    /// The Prometheus Pushgateway that the board pushes its metrics to when it is on battery, as
-    /// in `[fd12:3456::1]:9091`, or `none`
+    /// The Prometheus Pushgateway to push metrics to in battery mode, as in
+    /// `[fd12:3456::1]:9091`, or `none` to clear it
     #[arg(long, value_name = "[ADDRESS]:PORT", value_parser = pushgateway_change)]
     pushgateway: Option<PushgatewayChange>,
 }
 
-/// What a board's Pushgateway is to be. `None` leaves it without one.
+/// The new Pushgateway setting. `None` clears it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct PushgatewayChange(Option<SocketAddrV6>);
 
-/// What a sensor's configuration is to be. `None` turns the sensor off.
+/// The new configuration of one sensor. `None` disables the sensor.
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct SensorChange {
     sensor: Sensor,
@@ -51,9 +51,9 @@ impl Changes {
             && self.pushgateway.is_none()
     }
 
-    /// `current` with the changes made to it. A board that has no
-    /// configuration gets one that is made of the changes alone, which then
-    /// have to say what a configuration cannot be without.
+    /// Apply the changes to `current`. If the board has no configuration
+    /// yet, build one from the changes, which then have to include `--id`
+    /// and `--power-mode`.
     fn apply(&self, current: Option<BoardConfig>) -> Result<BoardConfig> {
         let mut config = match (current, self.id, self.power_mode) {
             (Some(config), _, _) => config,
@@ -81,8 +81,8 @@ impl Changes {
     }
 }
 
-/// Print a board's configuration: that of `remote`, which `board` asks over
-/// its network, or `board`'s own.
+/// Print the configuration of `remote`, which `board` asks over the network,
+/// or with `None` of `board` itself.
 pub async fn show(board: &Board, remote: Option<BoardId>) -> Result<()> {
     let target = target(board, remote)?;
     match board.board_config(target).await? {
@@ -92,8 +92,8 @@ pub async fn show(board: &Board, remote: Option<BoardId>) -> Result<()> {
     Ok(())
 }
 
-/// Make `changes` to a board's configuration: that of `remote`, which
-/// `board` reaches over its network, or `board`'s own.
+/// Apply `changes` to the configuration of `remote`, which `board` reaches
+/// over the network, or with `None` to that of `board` itself.
 pub async fn set(board: &Board, remote: Option<BoardId>, changes: &Changes) -> Result<()> {
     if changes.is_empty() {
         bail!("nothing to change: give --id, --power-mode, --sensor or --pushgateway");
@@ -116,7 +116,7 @@ fn target(board: &Board, remote: Option<BoardId>) -> Result<BoardId> {
     }
 }
 
-/// The configuration as text: a line for each thing in it.
+/// Format the configuration as text, one setting per line.
 fn describe(config: &BoardConfig) -> String {
     let BoardConfig {
         board_id,
@@ -140,13 +140,13 @@ fn describe(config: &BoardConfig) -> String {
     text
 }
 
-/// What the command line calls `value`.
+/// The name of `value` on the command line.
 fn name(value: &impl ValueEnum) -> String {
     let name = value.to_possible_value();
     name.map_or_else(String::new, |name| name.get_name().to_owned())
 }
 
-/// A `--sensor` argument.
+/// Parse a `--sensor` argument.
 fn sensor_change(text: &str) -> Result<SensorChange, String> {
     let Some((sensor, interval)) = text.split_once('=') else {
         return Err("write it as SENSOR=INTERVAL, as in temperature=30s".to_owned());
@@ -167,7 +167,7 @@ fn sensor_change(text: &str) -> Result<SensorChange, String> {
     Ok(SensorChange { sensor, config })
 }
 
-/// A `--pushgateway` argument.
+/// Parse a `--pushgateway` argument.
 fn pushgateway_change(text: &str) -> Result<PushgatewayChange, String> {
     if text == "none" {
         return Ok(PushgatewayChange(None));
@@ -178,7 +178,7 @@ fn pushgateway_change(text: &str) -> Result<PushgatewayChange, String> {
     }
 }
 
-/// An interval as it is typed: a whole number of a unit.
+/// Parse an interval: a whole number followed by a unit, as in `30s`.
 fn parse_interval(text: &str) -> Result<Duration, String> {
     let malformed = || format!("{text} is no interval: write one as 500ms, 30s, 5m or 1h");
 
@@ -197,12 +197,12 @@ fn parse_interval(text: &str) -> Result<Duration, String> {
     }
 }
 
-/// An interval as it is typed, in the largest unit that it is a whole number
-/// of.
+/// Format an interval the way [`parse_interval`] reads it, using the largest
+/// unit that divides it evenly.
 fn describe_interval(interval: Duration) -> String {
     let ms = interval.as_millis();
     if interval.subsec_nanos() % 1_000_000 != 0 {
-        // Not anything that can be typed.
+        // Not a whole number of milliseconds, so it has no such form.
         return format!("{interval:?}");
     }
     for (unit, len) in [("h", 3_600_000), ("m", 60_000), ("s", 1000)] {

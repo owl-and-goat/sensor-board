@@ -261,90 +261,104 @@ Things learned the hard way:
 
 ## Sensor reports
 
-`firmware/src/report.rs` sends a `protocol::Report` to every board
-(`ff03::1`, UDP port 61620) every ten seconds. A board that the host has told
-to collect binds that port and passes on what arrives as the `ReportReceived`
-topic. A new sensor goes into `protocol::Readings`, `Task::readings` in
-`report.rs`, and `describe` in `cli/src/reports.rs`. Changing `Report`
-changes the key its datagrams start with, so boards with the old layout and
-boards with the new one do not hear each other. `firmware push` goes by the
-reports to tell what build a board runs: a board whose reports are not
-heard is not waited for.
+`firmware/src/report.rs` multicasts a `protocol::Report` to every board
+(`ff03::1`, UDP port 61620) every ten seconds. When the host tells a board to
+collect, the board binds that port and forwards each report it receives to
+the host as the `ReportReceived` topic.
+
+- To add a sensor, add it to `protocol::Readings`, to `Task::readings` in
+  `report.rs`, and to `describe` in `cli/src/reports.rs`.
+- Changing `Report` changes the key that its datagrams start with. Boards
+  with the old layout and boards with the new one then ignore each other's
+  reports.
+- `firmware push` uses the reports to learn which build each board runs. It
+  does not wait for a board whose reports it does not receive.
 
 ## Metrics
 
-`firmware/src/metrics.rs` reads the sensors that the board's configuration
-names, each at its interval, and gets the readings to Prometheus as the
-power mode in that configuration has it: a board on aux power serves them
-at `/metrics` on TCP port 9469, a board on battery pushes them to its
-Pushgateway each time it has read. The metrics are tinymetrics', and the
-HTTP is in `firmware/src/http.rs`: one request and its answer to a
-connection. A new sensor goes into `Metrics` and the polls in `metrics.rs`,
-next to the capacitance channels.
+`firmware/src/metrics.rs` polls the sensors that are enabled in the board's
+configuration, each at its own interval, and exports the readings to
+Prometheus. The power mode in the configuration selects how:
 
-TCP is the stack's own, on CPU2 (`otTcp*`, wrapped in `thread/ot.rs`), and
-the Thread service has one endpoint of it, so one connection at a time,
-which the rest of the firmware reaches as `thread::Tcp`. What CPU2 does with
-it, it tells in callbacks, which arrive as notifications.
+- `Aux`: the board serves a scrape endpoint at `/metrics` on TCP port 9469.
+- `Battery`: the board pushes to its configured Pushgateway after every
+  sensor read.
 
-- CPU2 asks in a callback whether to take a connection that comes in, and
-  into which endpoint. The answer goes where ST's own handler puts it: the
-  return value in place of the notification's first argument, before the
-  acknowledgement (`answer_callback`), and the endpoint through the pointer
-  that came with it.
-- `otTcpAbort` calls back about the end of the connection from inside the
-  call, and waits for that to be acknowledged before it answers. So
-  notifications are taken while that call is out (`ot::tcp_abort`), which
-  is what `Ot_Cmd_TransferWithNotif` in ST's wrapper is for. No other call
-  is like that so far.
-- An endpoint that has closed its side first lingers (TIME-WAIT) and takes
-  no connection until it is aborted, which is why every exchange ends in
+The metric types come from tinymetrics. `firmware/src/http.rs` implements
+the HTTP: one request and one response per connection. To add a sensor, add
+its metrics to `Metrics` and poll it in `metrics.rs`, alongside the
+capacitance channels.
+
+TCP is OpenThread's own implementation, running on CPU2 (`otTcp*`, wrapped
+in `thread/ot.rs`). The Thread service has one TCP endpoint, so the firmware
+has one connection at a time. The rest of the firmware uses it through
+`thread::Tcp`. CPU2 reports TCP events in callbacks, which arrive as
+notifications.
+
+Things learned about the TCP API:
+
+- When a connection comes in, CPU2 asks in a callback whether to accept it,
+  and into which endpoint. The return value is written where ST's handler
+  writes it: over the notification's first argument, before the
+  acknowledgement (`answer_callback`). The endpoint is written through the
+  pointer passed in the callback.
+- `otTcpAbort` sends the disconnected callback from inside the call, and
+  does not return until that notification is acknowledged. So
+  `ot::tcp_abort` acknowledges notifications while the call is in progress.
+  That is what `Ot_Cmd_TransferWithNotif` in ST's wrapper is for. So far no
+  other call needs this.
+- An endpoint that closed its side first stays in TIME-WAIT and accepts no
+  connection until it is aborted. For that reason every exchange ends with
   `Tcp::close`.
-- What is being sent is read by CPU2 where it is until the peer has
-  acknowledged it, so nothing else is sent until the callback for that.
-- The bindings are regenerated with `firmware/tools/gen-thread-bindings.sh`
-  when a type is missing from them, and formatted with the rest of the
-  crate.
-- `otIp6GetUnicastAddresses` answers with a pointer into CPU2's own memory,
-  which CPU1 can read. The list is followed only as far as it stays in RAM.
+- CPU2 reads sent data from the send buffer until the peer has acknowledged
+  it. Nothing else can be sent before the send-done callback.
+- If a type is missing from the bindings, regenerate them with
+  `firmware/tools/gen-thread-bindings.sh`, then format them with the rest of
+  the crate.
+- `otIp6GetUnicastAddresses` returns a pointer into CPU2's own memory, which
+  CPU1 can read. The firmware follows the list only while its pointers stay
+  in RAM.
 
-Seen on a board on 2026-10-10: the calls that set up the endpoint and the
-listener and that listen, connections that are refused or never answered,
-aborting one that is being opened, and the change from serving to pushing
-and back as the configuration changes. Not seen, for want of a border
-router: a connection that comes in, and anything sent or received over one.
+Tested on a board on 2026-10-10: initializing the endpoint and the listener,
+listening, connections that are refused or never answered, aborting a
+connection that is being opened, and switching between serving and pushing
+when the configuration changes. Not tested yet, because there was no border
+router: an incoming connection, and any data sent or received over a
+connection.
 
 ## Board configuration
 
-`protocol::BoardConfig` is kept in the stored-configuration page, behind the
-dataset (`firmware/src/persistent_config.rs`). The dataset's record is at
-the start of the page, as the firmwares from before 2026-10-07 wrote it and
-still read it. The configuration is 0x200 into the page, in postcard's
-encoding behind a key that stands for the layout of `BoardConfig`.
+`protocol::BoardConfig` is stored in the stored-configuration page, after
+the dataset (`firmware/src/persistent_config.rs`). The dataset record is at
+the start of the page, where firmware from before 2026-10-07 wrote it and
+still reads it. The configuration record is at offset 0x200: the postcard
+encoding of `BoardConfig`, prefixed with a key derived from its layout.
 
-`firmware/src/board_config.rs` serves it, inside the coprocessor task
-because it writes flash. For a board that is not attached, the attached
-board asks all the boards (`ConfigMessage`, UDP port 61622, which every
-board listens on). The board that is named answers with what it has then,
-which after a `Set` tells whether it kept what it was given. The attached
-board asks again every two seconds, and gives up after six.
+`firmware/src/board_config.rs` serves the configuration. It runs inside the
+coprocessor task because it writes flash. For a board that is not attached,
+the attached board multicasts a request (`ConfigMessage`, UDP port 61622,
+which every board listens on). The target board replies with the
+configuration it then has stored, which after a `Set` shows whether it
+stored the new one. The attached board resends the request every two
+seconds, and gives up after six.
 
-- Changing `BoardConfig` (a new sensor, a new field) changes both keys, the
-  one in flash and the one `ConfigMessage` starts with. A board then has no
-  configuration until it is given one again, and boards on either side of
-  the change do not answer each other, rather than misread.
-- Whichever of the two records is written, the page is erased and both are
-  written again, with nothing else on CPU1 running in between
-  (`RadioFlash::rewrite_page`): the Thread service reads the dataset from
-  flash to tell whether the board has a network. A reset in the middle
-  loses both.
-- The record of a configuration that the firmware does not understand is
-  carried over as it is when the dataset is written.
-- What acts on the configuration is the metrics (`Monitor` in
-  `board_config.rs` tells them when it changes). The reports do not, and
-  neither does Thread: a board on battery is a router like any other.
-- A question goes to `ff03::1`, which does not reach a sleepy end device.
+- Changing `BoardConfig` (a new sensor, a new field) changes both keys: the
+  one in flash and the one that `ConfigMessage` starts with. A board then
+  has no configuration until it is set again. Boards on different sides of
+  the change ignore each other's requests instead of misreading them.
+- Writing either record erases the page and writes both records again, with
+  no other CPU1 code running in between (`RadioFlash::rewrite_page`). This
+  matters because the Thread service reads the dataset from flash to tell
+  whether the board has a network. A reset during the rewrite loses both
+  records.
+- When the dataset is written, a configuration record that the firmware
+  cannot decode is copied over unchanged.
+- Only the metrics use the configuration (`Monitor` in `board_config.rs`
+  notifies them when it changes). The reports and Thread do not: a board on
+  battery is a router like any other.
+- A request goes to `ff03::1`, which does not reach a sleepy end device.
 
-Seen on boards on 2026-10-07: a configuration set over USB, and on another
-board through the attached one; both kept through a firmware update, and
-the attached board's through leaving its network and joining it again.
+Tested on boards on 2026-10-07: setting a configuration over USB, and on
+another board through the attached one. Both configurations survived a
+firmware update, and the attached board's survived leaving its network and
+joining it again.

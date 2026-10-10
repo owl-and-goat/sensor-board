@@ -1,12 +1,14 @@
 //! The board's configuration ([`BoardConfig`]): which sensors it reads and
-//! how often, and how it is powered. The board keeps it in flash
-//! ([`persistent_config`]). The host sets it on the board it is attached to,
-//! or through that one on a board on its network: the attached board asks
-//! all the boards, and the one that is meant answers.
+//! how often, and how it is powered. It is stored in flash
+//! ([`persistent_config`]).
 //!
-//! [`init`] makes the two ends: the [`Handle`] for the rest of the firmware,
-//! and the [`Service`], which runs inside the coprocessor task, because
-//! flash is written in step with CPU2.
+//! The host reads and sets the configuration of the attached board over USB.
+//! For any other board, the attached board relays the request over the
+//! network: it multicasts a [`ConfigMessage`], and the target board replies.
+//!
+//! [`init`] returns the [`Handle`] for the rest of the firmware, the
+//! [`Service`], and a [`Monitor`]. The service runs inside the coprocessor
+//! task, because flash writes have to be coordinated with CPU2.
 
 use embassy_futures::select::{Either3, select3};
 use embassy_sync::{
@@ -24,15 +26,14 @@ use crate::{persistent_config, radio_flash, request, thread};
 
 const _: () = assert!(ConfigMessage::MAX_LEN <= thread::MAX_DATAGRAM_LEN);
 
-/// How long a board on the network gets to answer, and how long it is left
-/// before it is asked again. A question goes to all the boards, and nothing
-/// sends one of those a second time when it is lost on the way.
+/// How long to wait for another board's reply, and how often to resend the
+/// request in that time. A request is multicast, so nothing retransmits it if
+/// it is lost.
 const ANSWER_TIMEOUT: Duration = Duration::from_secs(6);
 const ASK_INTERVAL: Duration = Duration::from_secs(2);
 
-/// How long a request gets: at the longest, the wait for a board on the
-/// network that does not answer. Less than the host waits for its own
-/// answer.
+/// Timeout for a request through the [`Handle`]. Longer than
+/// [`ANSWER_TIMEOUT`], and shorter than the host's own timeout.
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(8);
 
 enum Request {
@@ -40,7 +41,7 @@ enum Request {
     Set(ConfigFor),
 }
 
-/// The configuration the board has, as last kept.
+/// The board's current configuration, updated when a new one is stored.
 type Current = Watch<ThreadModeRawMutex, Option<BoardConfig>, 1>;
 
 struct Shared {
@@ -48,8 +49,8 @@ struct Shared {
     current: Current,
 }
 
-/// Make the ends of the board's configuration: the two that set it, and the
-/// look at it for what acts on it. Panics if called a second time.
+/// Create the [`Handle`] and [`Service`] that read and set the configuration,
+/// and the [`Monitor`] that watches it. Panics if called a second time.
 pub fn init() -> (Handle, Service, Monitor) {
     static SHARED: StaticCell<Shared> = StaticCell::new();
     let shared: &'static Shared = SHARED.init(Shared {
@@ -63,44 +64,45 @@ pub fn init() -> (Handle, Service, Monitor) {
         current: &shared.current,
     };
     let monitor = Monitor {
-        // Cannot fail: this is the one place a look at it is taken.
+        // Cannot fail: the `Watch` allows one receiver, and this is the
+        // only one.
         current: shared.current.receiver().unwrap(),
     };
     (Handle { requests: client }, service, monitor)
 }
 
-/// A look at the configuration the board has, for what acts on it.
+/// Watches the board's configuration for changes.
 pub struct Monitor {
     current: watch::Receiver<'static, ThreadModeRawMutex, Option<BoardConfig>, 1>,
 }
 
 impl Monitor {
-    /// The configuration the board has now.
+    /// The board's current configuration.
     pub fn config(&mut self) -> Option<BoardConfig> {
         self.current.try_get().flatten()
     }
 
-    /// Wait for the board to be given another configuration, which is the
-    /// answer.
+    /// Wait for the configuration to change. Returns the new one.
     pub async fn changed(&mut self) -> Option<BoardConfig> {
         self.current.changed().await
     }
 }
 
-/// How the rest of the firmware gets at a board's configuration.
+/// Reads and sets the configuration of this board, or of another board on
+/// its network.
 pub struct Handle {
     requests: request::Client<Request, BoardConfigResult>,
 }
 
 impl Handle {
-    /// The configuration of `board`: this board, or one on its network,
-    /// which is asked.
+    /// Get the configuration of `board`. Another board is asked over the
+    /// network.
     pub async fn get(&mut self, board: BoardId) -> BoardConfigResult {
         self.request(Request::Get(board)).await
     }
 
-    /// Have the board that `config` is for keep it: this board, or one on
-    /// its network, which is asked to.
+    /// Store `config.config` on `config.board`. Another board is asked over
+    /// the network.
     pub async fn set(&mut self, config: ConfigFor) -> ConfigResult {
         self.request(Request::Set(config)).await.map(|_| ())
     }
@@ -113,15 +115,14 @@ impl Handle {
     }
 }
 
-/// The end of the board's configuration that answers the [`Handle`], and the
-/// boards on the network.
+/// Serves requests from the [`Handle`] and from other boards.
 pub struct Service {
     requests: request::Server<Request, BoardConfigResult>,
     current: &'static Current,
 }
 
 impl Service {
-    /// Serve the configuration on a board whose CPU2 runs a wireless stack.
+    /// Run the service on a board whose CPU2 runs a wireless stack.
     pub async fn run(self, flash: &radio_flash::Shared<'_>, socket: thread::Socket) -> ! {
         let mut configs = Configs {
             flash,
@@ -135,8 +136,9 @@ impl Service {
         configs.serve().await
     }
 
-    /// Stand in for it on a board that cannot write its flash, and is on no
-    /// network: all it can do is say what it has.
+    /// Run in place of [`Service::run`] on a board without a wireless stack.
+    /// Such a board cannot write flash or reach the network, so only a `Get`
+    /// for this board succeeds.
     pub async fn unavailable(self) -> ! {
         let board = this_board();
         loop {
@@ -154,18 +156,15 @@ fn this_board() -> BoardId {
     BoardId(embassy_stm32::uid::uid())
 }
 
-/// A question to a board on the network, which the host waits for the answer
-/// to.
+/// A pending request to another board, made on behalf of the host.
 struct Asking {
     pending: request::Pending,
     board: BoardId,
-    /// The number the question goes out under, and its answer comes back
-    /// under.
+    /// Identifies the request. The reply carries the same number.
     question: u32,
-    /// What the board is asked to keep. `None` if it is only asked what it
-    /// has.
+    /// The configuration to store, for a `Set`. `None` for a `Get`.
     config: Option<BoardConfig>,
-    /// When it is put again, if no answer has come by then.
+    /// When to resend the request, if there is no reply by then.
     again_at: Instant,
     give_up_at: Instant,
 }
@@ -186,21 +185,21 @@ impl Asking {
 
 struct Configs<'a, 'd> {
     flash: &'a radio_flash::Shared<'d>,
-    /// What boards say to each other about their configurations.
+    /// The UDP socket for [`ConfigMessage`]s.
     socket: thread::Socket,
     requests: request::Server<Request, BoardConfigResult>,
     current: &'static Current,
-    /// This board.
+    /// This board's ID.
     board: BoardId,
-    /// What a board on the network is being asked for the host.
+    /// The pending request to another board, if there is one.
     asking: Option<Asking>,
-    /// How many questions this board has put, which numbers the next.
+    /// The number for the next request. Incremented for each one.
     asked: u32,
 }
 
 impl Configs<'_, '_> {
     async fn serve(&mut self) -> ! {
-        // A question goes to every board, so every board listens for one.
+        // Requests are multicast, so every board has to listen for them.
         if let Err(e) = self.socket.listen(true).await {
             defmt::warn!("config: none over the network: {}", e);
         }
@@ -225,7 +224,8 @@ impl Configs<'_, '_> {
     }
 
     async fn answer(&mut self, pending: request::Pending, request: Request) {
-        // Whoever asks one thing has given up on what it asked before.
+        // A new request replaces the pending one, whose caller has stopped
+        // waiting.
         self.asking = None;
 
         match request {
@@ -246,8 +246,8 @@ impl Configs<'_, '_> {
 
     /// Keep `config` as this board's configuration.
     async fn keep(&mut self, config: &BoardConfig) -> ConfigResult {
-        // A board is asked again when its answer is slow, or lost. Flash is
-        // not worn for what it holds already.
+        // A request is resent when the reply is slow or lost. Do not rewrite
+        // flash with what it already holds.
         if persistent_config::board_config().as_ref() == Some(config) {
             return Ok(());
         }
@@ -263,8 +263,8 @@ impl Configs<'_, '_> {
         kept.map_err(|_| ConfigError::Storage)
     }
 
-    /// Put a question to `board` over the network, for the host: to keep
-    /// `config`, or with `None` what it has.
+    /// Send a request to `board` over the network: a `Set` of `config`, or
+    /// with `None` a `Get`.
     async fn ask(
         &mut self,
         pending: request::Pending,
@@ -291,15 +291,15 @@ impl Configs<'_, '_> {
         }
     }
 
-    /// No answer has come: put the question again, or give it up.
+    /// The reply has not arrived: resend the request, or give up.
     async fn ask_again(&mut self) {
         let now = Instant::now();
         match &mut self.asking {
             Some(asking) if now < asking.give_up_at => {
                 asking.again_at = now + ASK_INTERVAL;
                 let question = asking.message();
-                // It could be sent the first time, and what comes of this
-                // time is the same either way: an answer, or none.
+                // A send error is ignored here: the first send worked, and
+                // the request times out anyway if no reply arrives.
                 let _ = self.send(None, &question).await;
             }
             _ => {
@@ -322,8 +322,8 @@ impl Configs<'_, '_> {
                 question,
                 config,
             }) if board == self.board => {
-                // Whatever comes of it, the answer is what the board has
-                // then, which tells.
+                // The result is not needed: the reply carries what the board
+                // now has stored, which shows whether the write worked.
                 let _ = self.keep(&config).await;
                 self.tell(from, question).await
             }
@@ -332,13 +332,14 @@ impl Configs<'_, '_> {
                 question,
                 config,
             }) => self.answered(board, question, config),
-            // A question to another board, this board's own to all of them,
-            // or the word of a firmware with another layout of all this.
+            // A request for another board, this board's own multicast, or a
+            // message from a firmware with a different layout.
             _ => {}
         }
     }
 
-    /// Tell the board that put `question` what this one has.
+    /// Reply to `asker`'s request number `question` with this board's
+    /// configuration.
     async fn tell(&mut self, asker: thread::Peer, question: u32) {
         let has = ConfigMessage::Has {
             board: self.board,
@@ -350,27 +351,27 @@ impl Configs<'_, '_> {
         }
     }
 
-    /// `board` says what it has, in answer to `question`. If that is what
-    /// the host waits for, the host gets its answer.
+    /// Handle a reply from `board` to request number `question`. If it
+    /// matches the pending request, complete that request.
     fn answered(&mut self, board: BoardId, question: u32, has: Option<BoardConfig>) {
         let awaited = |asking: &mut Asking| (asking.board, asking.question) == (board, question);
-        // Anything else comes late, to a question that has been given up.
+        // Otherwise it is a late reply to a request that was given up.
         let Some(asking) = self.asking.take_if(awaited) else {
             return;
         };
         let outcome = match &asking.config {
-            // The board was to keep this, and has something else.
+            // The board did not store the configuration it was sent.
             Some(config) if has.as_ref() != Some(config) => Err(ConfigError::Storage),
             _ => Ok(has),
         };
         self.requests.answer(asking.pending, outcome);
     }
 
-    /// Send to one board, or to all of them. Nothing tells whether it
-    /// arrives.
+    /// Send `message` to one board, or with `None` to every board. Delivery
+    /// is not confirmed.
     async fn send(&mut self, to: Option<thread::Peer>, message: &ConfigMessage) -> NetworkResult {
         let mut datagram = thread::Datagram::new();
-        // Neither can fail: a datagram has room for the longest message.
+        // Neither call can fail: a datagram has room for the longest message.
         let _ = datagram.resize_default(ConfigMessage::MAX_LEN);
         let len = message.encode(&mut datagram).map_or(0, <[u8]>::len);
         datagram.truncate(len);

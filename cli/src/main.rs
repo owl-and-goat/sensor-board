@@ -41,7 +41,7 @@ enum Command {
     /// attached
     #[command(subcommand)]
     Reports(ReportsCommand),
-    /// Look at the metrics a board has for Prometheus
+    /// Inspect a board's Prometheus metrics
     #[command(subcommand)]
     Metrics(MetricsCommand),
     /// Update a board's firmware without its ROM bootloader
@@ -57,7 +57,7 @@ enum Command {
 enum ConfigCommand {
     /// Print a board's configuration
     Show(ConfigTarget),
-    /// Change a board's configuration. What is not named stays as it is
+    /// Change a board's configuration. Settings that are not given keep their values
     Set {
         #[command(flatten)]
         changes: config::Changes,
@@ -99,8 +99,8 @@ enum ReportsCommand {
 
 #[derive(Subcommand)]
 enum MetricsCommand {
-    /// Print a board's metrics as they are now, the way it serves them to Prometheus or pushes
-    /// them to a Pushgateway
+    /// Print a board's current metrics, in the text format it serves to Prometheus or pushes to
+    /// a Pushgateway
     Show(Target),
 }
 
@@ -133,8 +133,7 @@ enum NetworkCommand {
     /// Print a board's router table: every router on its network, and whether the board reaches it
     /// directly or through another router
     Routers(Target),
-    /// Print the IPv6 addresses a board has on its network. A routable one is where Prometheus
-    /// scrapes the board
+    /// Print a board's IPv6 addresses. Prometheus needs a routable one to scrape the board
     Addresses(Target),
 }
 
@@ -186,12 +185,12 @@ impl Target {
     }
 }
 
-/// The board whose configuration a command is about: an attached one, or one that an attached one
-/// reaches over its network.
+/// The board that a `config` command applies to: an attached board, or a board that the attached
+/// one reaches over its network.
 #[derive(Args)]
 struct ConfigTarget {
-    /// A board on the attached board's network, by its whole serial number. It is reached over that
-    /// network, through the attached board
+    /// The full serial number of a board on the attached board's network. The attached board
+    /// relays the command to it
     #[arg(long, value_name = "SERIAL")]
     remote: Option<BoardId>,
 

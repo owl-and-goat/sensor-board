@@ -99,7 +99,7 @@ impl Board {
         &self.serial
     }
 
-    /// Which board this is, which its serial number says.
+    /// The board's ID, parsed from its USB serial number.
     pub fn id(&self) -> Result<BoardId> {
         let id = self.serial.parse();
         id.map_err(|_| anyhow!("board {}: its serial number is no board's", self.serial))
@@ -164,13 +164,13 @@ impl Board {
         self.network_result(result)
     }
 
-    /// The addresses the board has on its network.
+    /// The board's IPv6 unicast addresses.
     pub async fn addresses(&self) -> Result<Addresses> {
         let result = self.call::<GetNetworkAddresses>(&()).await?;
         self.network_result(result)
     }
 
-    /// The board's metrics as they are now, in Prometheus's text format.
+    /// The board's current metrics, in Prometheus's text format.
     pub async fn metrics(&self) -> Result<String> {
         let mut text = String::new();
         loop {
@@ -280,15 +280,15 @@ impl Board {
         result.map_err(|e| anyhow!("board {}: {e}", self.serial))
     }
 
-    /// The configuration of `board`: this board, or one on its network,
-    /// which it asks.
+    /// Get the configuration of `board`. If `board` is not this board, this
+    /// board asks it over the network.
     pub async fn board_config(&self, board: BoardId) -> Result<Option<BoardConfig>> {
         let result = self.call::<GetBoardConfig>(&board).await?;
         result.map_err(|e| self.config_error(board, e))
     }
 
-    /// Have `board` keep `config`: this board, or one on its network, which
-    /// it passes the configuration on to.
+    /// Store `config` on `board`. If `board` is not this board, this board
+    /// forwards the configuration over the network.
     pub async fn set_board_config(&self, board: BoardId, config: &BoardConfig) -> Result<()> {
         let config = ConfigFor {
             board,

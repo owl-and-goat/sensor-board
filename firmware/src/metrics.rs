@@ -1,11 +1,12 @@
-//! The board's metrics, for Prometheus: what its sensors read, and how
-//! getting that to Prometheus goes. How they get there depends on how the
-//! board is powered ([`PowerMode`]). A board on aux power serves them to
-//! whoever scrapes it, at `/metrics` on [`SCRAPE_PORT`]. A board on battery
-//! pushes them to the Pushgateway it is configured with, each time it has
-//! read a sensor. A board that has no configuration does neither.
+//! Prometheus metrics: sensor readings, and counters for the export itself.
+//! How a board exports them depends on its [`PowerMode`]:
 //!
-//! Which sensors are read, and how often, is in the configuration too.
+//! - `Aux`: it serves them at `GET /metrics` on [`SCRAPE_PORT`].
+//! - `Battery`: it pushes them to the configured Pushgateway after every
+//!   sensor read.
+//!
+//! A board without a configuration exports nothing. The configuration also
+//! sets which sensors are read and how often.
 
 use core::cell::RefCell;
 use core::fmt::{self, Write as _};
@@ -27,25 +28,23 @@ use crate::{
     thread, update,
 };
 
-/// The TCP port a board on aux power serves its metrics on.
+/// TCP port of the scrape endpoint.
 const SCRAPE_PORT: u16 = 9469;
 
-/// The job that a board on battery pushes its metrics as. The instance is
-/// the board.
+/// The Pushgateway job name. The instance is the board's serial number.
 const JOB: &str = "sensor_board";
 
-/// How long a Pushgateway that did not take a push is left alone.
+/// Delay before the next push after a failed one.
 const PUSH_RETRY: Duration = Duration::from_secs(60);
 
-/// How long to leave it when connections cannot be waited for, which is so
-/// until Thread has started.
+/// Delay before trying to listen again. Listening fails until Thread has
+/// started.
 const RETRY: Duration = Duration::from_secs(5);
 
-/// No sensor is read more often than this, whatever its configuration says.
+/// The shortest poll interval. A shorter configured interval is raised to it.
 const MIN_INTERVAL: Duration = Duration::from_millis(100);
 
-/// The sensors this firmware has a driver for: the channels of the
-/// capacitance sensor.
+/// The sensors that have a driver: the four capacitance channels.
 const CAPACITANCE: [(Sensor, Channel); 4] = [
     (Sensor::Capacitance0, Channel::Ch0),
     (Sensor::Capacitance1, Channel::Ch1),
@@ -53,7 +52,7 @@ const CAPACITANCE: [(Sensor, Channel); 4] = [
     (Sensor::Capacitance3, Channel::Ch3),
 ];
 
-/// The labels of a metric of the board as a whole.
+/// Labels of a per-board metric.
 #[derive(PartialEq)]
 struct OfBoard(BoardId);
 
@@ -63,7 +62,7 @@ impl FmtLabels for OfBoard {
     }
 }
 
-/// The labels of a metric of one channel of the capacitance sensor.
+/// Labels of a per-channel capacitance metric.
 #[derive(PartialEq)]
 struct OfChannel {
     board: BoardId,
@@ -77,7 +76,7 @@ impl FmtLabels for OfChannel {
     }
 }
 
-/// Room for the metrics as text.
+/// Buffer for the metrics in Prometheus's text format.
 type Text = heapless::String<4096>;
 
 type OfBoardFamily<M> = MetricFamily<'static, M, 1, OfBoard>;
@@ -124,7 +123,7 @@ impl Metrics {
         }
     }
 
-    /// The metrics in Prometheus's text format.
+    /// Write the metrics in Prometheus's text format.
     fn write(&self, text: &mut impl fmt::Write) -> fmt::Result {
         self.firmware_build.fmt_metric(text)?;
         self.capacitance.fmt_metric(text)?;
@@ -136,10 +135,10 @@ impl Metrics {
     }
 }
 
-/// The metrics, as the task that records them and the handle that shows them
-/// have them between them. Recording needs no more than a look at them. The
-/// lock is for starting them afresh, and for writing them down as they are
-/// at one moment.
+/// The metrics, shared by the [`Task`] and the [`Handle`]. Recording a value
+/// only needs `&Metrics`. The `RefCell` allows replacing them all in
+/// [`Recorded::start_afresh`]. Each access runs to completion inside the
+/// lock, so the text is always rendered from one consistent state.
 struct Recorded(Mutex<ThreadModeRawMutex, RefCell<Metrics>>);
 
 impl Recorded {
@@ -147,14 +146,14 @@ impl Recorded {
         self.0.lock(|metrics| f(&metrics.borrow()))
     }
 
-    /// Forget everything that was recorded.
+    /// Reset every metric.
     fn start_afresh(&self) {
         self.0.lock(|metrics| metrics.replace(Metrics::new()));
     }
 }
 
 pub struct Builder {
-    /// The TCP connection a scrape comes in on, or a push goes out on.
+    /// The TCP connection, used for scrapes and for pushes.
     pub tcp: thread::Tcp,
     pub config: board_config::Monitor,
     pub capacitance: &'static sensor::Shared<CapacitanceSensor<'static>>,
@@ -183,13 +182,13 @@ impl Builder {
     }
 }
 
-/// How the rest of the firmware gets at the metrics.
+/// Gives the rest of the firmware read access to the metrics.
 pub struct Handle {
     metrics: &'static Recorded,
 }
 
 impl Handle {
-    /// The piece at `offset` of the metrics as text, as they are now.
+    /// The chunk of the current metrics text that starts at byte `offset`.
     pub fn text(&self, offset: u32) -> MetricsChunk {
         let mut window = Window {
             before: offset as usize,
@@ -198,16 +197,16 @@ impl Handle {
                 more: false,
             },
         };
-        // Cannot fail: the window takes whatever it is given.
+        // Cannot fail: `Window::write_str` always returns `Ok`.
         let _ = self.metrics.with(|metrics| metrics.write(&mut window));
         window.chunk
     }
 }
 
-/// Keeps the piece of what is written to it that a chunk has room for, from
-/// an offset on.
+/// A `fmt::Write` sink that skips the first `before` bytes written to it and
+/// keeps as much of the rest as fits in one chunk.
 struct Window {
-    /// How much is still to go by before the piece starts.
+    /// Bytes still to skip.
     before: usize,
     chunk: MetricsChunk,
 }
@@ -234,7 +233,8 @@ impl Task {
     pub async fn run(mut self) -> ! {
         let mut config = self.config.config();
         loop {
-            // Until the board is given another configuration.
+            // Export until the configuration changes, then start over with
+            // the new one.
             let export = self.exporter.export(config.as_ref());
             config = match select(self.config.changed(), export).await {
                 Either::First(config) => config,
@@ -245,7 +245,7 @@ impl Task {
     }
 }
 
-/// When a sensor is next read, and how long after that again.
+/// A sensor's polling schedule: when it is next due, and its interval.
 #[derive(Clone, Copy)]
 struct Poll {
     due: Instant,
@@ -255,21 +255,20 @@ struct Poll {
 struct Exporter {
     tcp: thread::Tcp,
     capacitance: &'static sensor::Shared<CapacitanceSensor<'static>>,
-    /// This board.
+    /// This board's ID.
     board: BoardId,
     metrics: &'static Recorded,
-    /// The metrics as they were last written down, to be sent.
+    /// The rendered metrics text, for the response or push being sent.
     text: &'static mut Text,
-    /// One for each of [`CAPACITANCE`], at its index: `None` for a sensor
-    /// that is not read.
+    /// The schedule of each sensor in [`CAPACITANCE`], by index. `None` if
+    /// the sensor is disabled.
     polls: [Option<Poll>; CAPACITANCE.len()],
 }
 
 impl Exporter {
-    /// Read the sensors and get the metrics to Prometheus, the way `config`
-    /// has it.
+    /// Poll the sensors and export the metrics as `config` specifies.
     async fn export(&mut self, config: Option<&BoardConfig>) -> ! {
-        // Nothing stays of what another configuration had the board read.
+        // Drop the metrics recorded under the previous configuration.
         self.metrics.start_afresh();
         self.metrics.with(|metrics| {
             if let Some(build) = metrics.firmware_build.register(OfBoard(self.board)) {
@@ -299,7 +298,7 @@ impl Exporter {
         }
     }
 
-    /// Leave the network as a board without a configuration has it.
+    /// Close the connection and stop listening.
     async fn stop(&mut self) {
         self.tcp.close().await;
         if let Err(e) = self.tcp.listen(None).await {
@@ -307,7 +306,7 @@ impl Exporter {
         }
     }
 
-    /// Serve the metrics to whoever scrapes them.
+    /// Serve the scrape endpoint and poll the sensors.
     async fn serve(&mut self) -> ! {
         self.count(|metrics| &metrics.scrapes, 0);
         loop {
@@ -319,12 +318,13 @@ impl Exporter {
         }
     }
 
-    /// Wait for a connection to come in.
+    /// Wait for an incoming connection on [`SCRAPE_PORT`].
     async fn scrape(tcp: &mut thread::Tcp) {
         loop {
             let came_in = async {
-                // Asked for each time, in case Thread had not started the
-                // last time. It costs nothing where it is listening already.
+                // Listen on every attempt: the last one may have failed
+                // because Thread had not started. Listening on the same port
+                // again is a no-op.
                 tcp.listen(Some(SCRAPE_PORT)).await?;
                 tcp.accept().await
             };
@@ -338,7 +338,7 @@ impl Exporter {
         }
     }
 
-    /// Answer the request that has come in.
+    /// Handle the HTTP request on the accepted connection.
     async fn scraped(&mut self) {
         let answered = async {
             match http::request(&mut self.tcp).await? {
@@ -362,15 +362,16 @@ impl Exporter {
         self.tcp.close().await;
     }
 
-    /// Push the metrics to `gateway` each time a sensor has been read. With
-    /// no gateway, the sensors are only read.
+    /// Poll the sensors, and push the metrics to `gateway` after each read.
+    /// Without a gateway, only poll.
     async fn push(&mut self, gateway: Option<SocketAddrV6>) -> ! {
-        // A gateway that did not take a push is left alone for a while.
+        // No push before this time. Set after a failed push.
         let mut not_before = Instant::now();
         loop {
             let sensor = Self::poll_due(&self.polls).await;
             self.read(sensor).await;
-            // What else is due by now goes in the same push.
+            // Also read every other sensor that is due, so that one push
+            // covers them all.
             let now = Instant::now();
             for sensor in 0..self.polls.len() {
                 if self.polls[sensor].is_some_and(|poll| poll.due <= now) {
@@ -387,7 +388,7 @@ impl Exporter {
         }
     }
 
-    /// Whether `gateway` took the metrics.
+    /// Push the metrics to `gateway`. Returns whether it accepted them.
     async fn push_to(&mut self, gateway: SocketAddrV6) -> bool {
         self.count(|metrics| &metrics.pushes, 1);
 
@@ -414,8 +415,7 @@ impl Exporter {
         taken
     }
 
-    /// Wait for the next sensor to be due, and answer which: its index in
-    /// [`CAPACITANCE`].
+    /// Wait until a sensor is due. Returns its index in [`CAPACITANCE`].
     async fn poll_due(polls: &[Option<Poll>]) -> usize {
         let dues = polls.iter().enumerate();
         let next = dues.filter_map(|(sensor, poll)| Some(((*poll)?.due, sensor)));
@@ -428,7 +428,8 @@ impl Exporter {
         }
     }
 
-    /// Read the sensor at `sensor` in [`CAPACITANCE`].
+    /// Read the sensor at index `sensor` in [`CAPACITANCE`], and record the
+    /// result.
     async fn read(&mut self, sensor: usize) {
         if let Some(poll) = &mut self.polls[sensor] {
             poll.due = Instant::now() + poll.every;
@@ -453,7 +454,7 @@ impl Exporter {
         });
     }
 
-    /// Add `n` to one of the counters of the board as a whole.
+    /// Add `n` to a per-board counter.
     fn count(&self, counter: impl FnOnce(&Metrics) -> &OfBoardFamily<Counter>, n: usize) {
         self.metrics.with(|metrics| {
             if let Some(counter) = counter(metrics).register(OfBoard(self.board)) {
@@ -462,8 +463,8 @@ impl Exporter {
         });
     }
 
-    /// Write the metrics down as they are now, to be sent. An error if there
-    /// is more of them than there is room for, which leaves nothing written.
+    /// Render the current metrics into `self.text`. Fails if they do not
+    /// fit, and leaves the text empty.
     fn write(&mut self) -> fmt::Result {
         self.text.clear();
         let written = self.metrics.with(|metrics| metrics.write(self.text));

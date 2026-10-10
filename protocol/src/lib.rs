@@ -728,8 +728,9 @@ impl Report {
     }
 }
 
-/// `value` in postcard's encoding, behind `prefix`, which tells what it is
-/// from anything else. `None` if `buf` is too short.
+/// Write `prefix`, then the postcard encoding of `value`, into `buf`. The
+/// prefix identifies the type and layout of `value` to the receiver. Returns
+/// the bytes written, or `None` if `buf` is too short.
 fn encode_behind<'a>(prefix: &[u8], value: &impl Serialize, buf: &'a mut [u8]) -> Option<&'a [u8]> {
     let (head, body) = buf.split_at_mut_checked(prefix.len())?;
     head.copy_from_slice(prefix);
@@ -737,7 +738,8 @@ fn encode_behind<'a>(prefix: &[u8], value: &impl Serialize, buf: &'a mut [u8]) -
     Some(&buf[..prefix.len() + body])
 }
 
-/// `None` for anything but what [`encode_behind`] makes with `prefix`.
+/// Decode the output of [`encode_behind`]. `None` if `bytes` does not start
+/// with `prefix`, or if what follows is not a valid `T`.
 fn decode_behind<T: serde::de::DeserializeOwned>(prefix: &[u8], bytes: &[u8]) -> Option<T> {
     let body = bytes.strip_prefix(prefix)?;
     postcard_rpc::postcard::from_bytes(body).ok()
@@ -981,15 +983,15 @@ impl ImageChunk {
     }
 }
 
-/// What a board has for a configuration: `None` if it has been given none,
-/// or keeps one in a layout that its firmware does not know.
+/// A board's configuration. `None` if it has none stored, or if its firmware
+/// cannot decode the stored one.
 pub type BoardConfigResult = Result<Option<BoardConfig>, ConfigError>;
 
-/// How giving a board a configuration went.
+/// The result of [`SetBoardConfig`].
 pub type ConfigResult = Result<(), ConfigError>;
 
-/// A configuration, and the board it is for: the one that is asked, or one
-/// on its network, which it passes the configuration on to.
+/// A configuration and the board to store it on. If that is not the board
+/// that receives the request, it forwards the configuration over the network.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Schema)]
 pub struct ConfigFor {
     pub board: BoardId,
@@ -999,19 +1001,16 @@ pub struct ConfigFor {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Schema)]
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]
 pub enum ConfigError {
-    /// The board's radio coprocessor runs no wireless stack, and a board
-    /// only writes its flash in step with one. Or the board is still
-    /// starting.
+    /// The board's radio coprocessor runs no wireless stack, which flash
+    /// writes depend on, or the board is still starting.
     Unavailable,
-    /// The configuration could not be written to the flash of the board it
-    /// is for.
+    /// The target board could not write the configuration to flash.
     Storage,
-    /// The board that was asked could not put the question to its network.
+    /// The board could not forward the request over the network.
     Network(NetworkError),
-    /// The board in question is not the one that was asked, and did not
-    /// answer when that one asked it over the network.
+    /// The target board did not reply to the forwarded request.
     NoAnswer,
-    /// The board did not get the request done in time.
+    /// The board did not complete the request in time.
     Unresponsive,
 }
 
@@ -1031,29 +1030,28 @@ impl fmt::Display for ConfigError {
     }
 }
 
-/// What boards say to each other about their configurations, over their
-/// network. It is how the host gets at the configuration of a board it is
-/// not attached to, through one that it is ([`GetBoardConfig`],
-/// [`SetBoardConfig`]).
+/// The messages boards exchange over the network to read and set each
+/// other's configurations. The attached board uses them to forward
+/// [`GetBoardConfig`] and [`SetBoardConfig`] requests for other boards.
 ///
-/// A message starts with a key that stands for the layout of this type, and
-/// so for that of [`BoardConfig`]: boards whose firmwares differ in it do
-/// not understand each other, rather than misread.
+/// An encoded message starts with a key derived from the layout of this
+/// type, which includes [`BoardConfig`]. Boards whose firmwares disagree on
+/// the layout ignore each other's messages instead of misreading them.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Schema)]
 pub enum ConfigMessage {
-    /// Asks `board` what configuration it has. Said to all the boards:
-    /// nothing tells the one that asks where on the network `board` is. It
-    /// numbers its questions, and `question` comes back with the answer.
+    /// Asks `board` for its configuration. Sent to every board, because the
+    /// sender does not know `board`'s address. `question` identifies the
+    /// request, and the reply repeats it.
     Get { board: BoardId, question: u32 },
-    /// Asks `board` to keep `config`, the same way.
+    /// Asks `board` to store `config`. Sent the same way as `Get`.
     Set {
         board: BoardId,
         question: u32,
         config: BoardConfig,
     },
-    /// The answer of `board` to either, to the board that asked: what it has
-    /// now. After a `Set` that it could not carry out, that is something
-    /// other than what it was given.
+    /// The reply of `board` to a `Get` or a `Set`, sent to the board that
+    /// asked: its current configuration. After a failed `Set`, that differs
+    /// from the configuration it was sent.
     Has {
         board: BoardId,
         question: u32,
@@ -1062,9 +1060,8 @@ pub enum ConfigMessage {
 }
 
 impl ConfigMessage {
-    /// The most bytes a message takes up: the key, which message it is, the
-    /// board, the number of the question, and a configuration that there may
-    /// be none of.
+    /// The longest encoded message: the key, the variant, the board, the
+    /// question number, and an optional configuration.
     pub const MAX_LEN: usize = 8 + 1 + 12 + 5 + 1 + (BoardConfig::MAX_LEN - 8);
 
     /// `None` if `buf` is too short.
@@ -1072,7 +1069,7 @@ impl ConfigMessage {
         encode_behind(&Self::key(), self, buf)
     }
 
-    /// `None` for anything but a message of this very layout.
+    /// `None` if `bytes` is not a message encoded with this layout.
     pub fn decode(bytes: &[u8]) -> Option<ConfigMessage> {
         decode_behind(&Self::key(), bytes)
     }
@@ -1085,7 +1082,7 @@ impl ConfigMessage {
 /// The result of [`GetNetworkAddresses`].
 pub type AddressesResult = Result<Addresses, NetworkError>;
 
-/// The IPv6 addresses a board has on its network.
+/// The IPv6 unicast addresses of a board's Thread interface.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, Schema)]
 pub struct Addresses {
     pub addresses: heapless::Vec<Address, { Addresses::MAX_LEN }>,
@@ -1103,19 +1100,20 @@ pub struct Address {
     pub kind: AddressKind,
 }
 
-/// Where an address of a board reaches it from.
+/// The kind of an address, which determines where it is reachable from.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Schema)]
 pub enum AddressKind {
-    /// From the devices in radio range of the board.
+    /// Reachable only from devices in radio range.
     LinkLocal,
-    /// From anywhere on the board's Thread network, wherever in it the board
-    /// is.
+    /// Reachable from anywhere on the Thread network (the ML-EID). It does
+    /// not change when the board's place in the topology does.
     MeshLocal,
-    /// From anywhere on the board's Thread network, by where in it the
-    /// board is: its routing locator, which changes when that does.
+    /// A routing locator (RLOC), or an anycast locator for a role such as
+    /// leader. Reachable from anywhere on the Thread network, but it changes
+    /// with the board's place in the topology.
     Locator,
-    /// From outside the board's Thread network: an address in a prefix that
-    /// a border router gives out.
+    /// Reachable from outside the Thread network: an address in a prefix
+    /// that a border router advertises.
     Routable,
 }
 
@@ -1130,13 +1128,13 @@ impl fmt::Display for AddressKind {
     }
 }
 
-/// A piece of a board's metrics in Prometheus's text format: what is at the
-/// offset that [`GetMetrics`] names, in the text as it is when asked. Read a
-/// piece after the other, the metrics may have changed in between.
+/// A chunk of a board's metrics in Prometheus's text format, starting at the
+/// byte offset given to [`GetMetrics`]. Each request renders the metrics
+/// again, so values can change between one chunk and the next.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Schema)]
 pub struct MetricsChunk {
     pub text: heapless::String<{ MetricsChunk::MAX_LEN }>,
-    /// Whether the text goes on after this piece.
+    /// Whether more text follows this chunk.
     pub more: bool,
 }
 
@@ -1356,7 +1354,7 @@ mod tests {
         );
     }
 
-    /// A configuration whose every field takes as many bytes as it can.
+    /// A configuration whose encoding is as long as possible.
     fn longest_config() -> BoardConfig {
         let mut sensors = SensorsConfig::default();
         for (_, sensor) in &mut sensors.0 {

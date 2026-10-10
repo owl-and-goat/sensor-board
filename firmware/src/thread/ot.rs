@@ -177,32 +177,32 @@ pub const MAX_DATAGRAM_LEN: usize = 256;
 /// The payload of a UDP datagram.
 pub type Datagram = heapless::Vec<u8, MAX_DATAGRAM_LEN>;
 
-/// How much of what arrives over TCP CPU2 keeps until it is taken: what
-/// OpenThread recommends for a connection that goes a few hops.
+/// Size of the TCP receive buffer: the size OpenThread recommends for a
+/// connection that crosses a few hops.
 const TCP_RECEIVE_LEN: usize = ffi::OT_TCP_RECEIVE_BUFFER_SIZE_FEW_HOPS as usize;
 
-/// The most bytes of a TCP connection that are sent, or taken, at a time.
+/// The most bytes sent or received over TCP in one call.
 pub const TCP_CHUNK_LEN: usize = 512;
 
-/// A piece of what a TCP connection carries.
+/// A chunk of TCP data.
 pub type TcpChunk = heapless::Vec<u8, TCP_CHUNK_LEN>;
 
-/// CPU1 memory for TCP: an endpoint, which is one connection at a time, and
-/// the listener that takes connections into it. CPU2 links both into its
-/// lists when they are set up and goes on using them, along with the room
-/// for what arrives, so this has to be `&'static` for the same reason as
-/// [`UdpBuffer`]. What is being sent CPU2 reads until the peer has
-/// acknowledged it. The rest it reads or writes within one call.
+/// CPU1 memory for TCP: one endpoint, which holds one connection at a time,
+/// and the listener that accepts connections into it. CPU2 links both into
+/// its own lists at initialization and keeps using them, and it keeps
+/// writing to the receive buffer, so this has to be `&'static` for the same
+/// reason as [`UdpBuffer`]. CPU2 reads the send buffer until the peer has
+/// acknowledged the data. It accesses the other fields only during a call.
 pub struct TcpBuffer {
     endpoint: UnsafeCell<MaybeUninit<ffi::otTcpEndpoint>>,
     endpoint_args: UnsafeCell<MaybeUninit<ffi::otTcpEndpointInitializeArgs>>,
     listener: UnsafeCell<MaybeUninit<ffi::otTcpListener>>,
     listener_args: UnsafeCell<MaybeUninit<ffi::otTcpListenerInitializeArgs>>,
-    /// The address that is listened on, or connected to.
+    /// The address argument of `otTcpListen` and `otTcpConnect`.
     name: UnsafeCell<MaybeUninit<ffi::otSockAddr>>,
     received: UnsafeCell<[u8; TCP_RECEIVE_LEN]>,
-    /// Where `otTcpReceiveByReference` answers: with a pointer to the
-    /// endpoint's own links to what has arrived.
+    /// The out argument of `otTcpReceiveByReference`: a pointer to the
+    /// endpoint's chain of `otLinkedBuffer`s that hold the received data.
     received_link: UnsafeCell<*const ffi::otLinkedBuffer>,
     sending: UnsafeCell<[u8; TCP_CHUNK_LEN]>,
     sending_link: UnsafeCell<MaybeUninit<ffi::otLinkedBuffer>>,
@@ -231,10 +231,10 @@ impl TcpBuffer {
         self.listener.get() as u32
     }
 
-    /// Put `address` where the calls that take one read it, and give CPU2's
-    /// pointer to it.
+    /// Write `address` to the `name` field, and return a pointer to it to
+    /// pass to CPU2.
     ///
-    /// SAFETY: not while CPU2 has a call to answer.
+    /// SAFETY: no call to CPU2 may be in progress.
     unsafe fn name(&self, address: SocketAddrV6) -> u32 {
         let name = ffi::otSockAddr {
             mAddress: ip6_address(*address.ip()),
@@ -246,13 +246,13 @@ impl TcpBuffer {
     }
 }
 
-/// A callback to give CPU2 where it may insist on one. Nothing calls it: what
-/// CPU2 calls back about arrives as a notification.
+/// A placeholder for callback pointers that CPU2 may require to be non-null.
+/// It is never called: CPU2 delivers its callbacks as notifications.
 unsafe extern "C" fn never_called() {}
 
-/// [`never_called`] as a callback of the type `F`.
+/// [`never_called`], cast to the callback type `F`.
 ///
-/// SAFETY: `F` has to be an optional `extern "C"` function pointer.
+/// SAFETY: `F` must be an `Option` of an `extern "C"` function pointer.
 unsafe fn placeholder<F>() -> F {
     const { assert!(size_of::<F>() == size_of::<*const ()>()) };
     unsafe { transmute_copy(&(never_called as *const ())) }
@@ -277,43 +277,43 @@ pub enum Notification {
         from: Ipv6Addr,
         payload: Datagram,
     },
-    /// Something has come of the TCP endpoint.
+    /// A TCP callback.
     Tcp(TcpEvent),
     /// Anything else, by its ID, and a datagram that could not be taken.
     Other(u32),
 }
 
-/// What CPU2 calls back about the TCP endpoint.
+/// A TCP callback from CPU2.
 #[derive(Clone, Copy)]
 pub enum TcpEvent {
-    /// A connection has come in to the listener. `taken` is what CPU2 was
-    /// told: that it goes into the endpoint, or that it is refused.
+    /// The listener has an incoming connection. `taken` is the answer CPU2
+    /// was given: accept it into the endpoint, or refuse it.
     Incoming {
         taken: bool,
     },
-    /// The connection is there to be used: the one that was opened, or the
-    /// one that came in.
+    /// The connection is established. This covers both a connection opened
+    /// from here and an accepted one.
     Established,
-    /// The peer has acknowledged what was being sent.
+    /// The peer has acknowledged the data being sent.
     SendDone,
-    /// More has arrived, or the peer has said that it sends no more.
+    /// More data has arrived, or the peer has closed its sending side.
     ReceiveAvailable {
         end_of_stream: bool,
     },
     Disconnected(TcpDisconnected),
 }
 
-/// How a TCP connection has ended.
+/// Why a TCP connection ended.
 #[derive(Clone, Copy, PartialEq, Eq, defmt::Format)]
 pub enum TcpDisconnected {
-    /// Both sides are done, or the connection was dropped from here.
+    /// Both sides closed the connection, or it was aborted from here.
     Normal,
     Refused,
     Reset,
     TimedOut,
-    /// Both sides are done, and the endpoint waits out the time in which
-    /// something of the connection may still turn up. Until then, or until
-    /// it is aborted, it takes no other connection.
+    /// Both sides closed the connection, and the endpoint is now in
+    /// TIME-WAIT. It cannot accept or open another connection until that
+    /// state expires or the endpoint is aborted.
     Lingering,
 }
 
@@ -328,12 +328,12 @@ fn disconnected_from_raw(reason: u32) -> TcpDisconnected {
     }
 }
 
-/// Give CPU2 the return value of the callback it is in. ST's own handlers
-/// put it where the callback's first argument arrived, before they
-/// acknowledge.
+/// Set the return value of the callback that CPU2 is waiting in. As ST's
+/// handlers do, write it over the callback's first argument in the
+/// notification buffer, before the notification is acknowledged.
 ///
-/// SAFETY: only inside the handling of a notification, before it is
-/// acknowledged: until then its buffer is CPU1's to write.
+/// SAFETY: call this only while handling a notification, before it is
+/// acknowledged. Until then CPU1 may write to the notification buffer.
 unsafe fn answer_callback(value: u32) {
     use embassy_stm32_wpan::consts::{TL_EVT_HEADER_SIZE, TL_PACKET_HEADER_SIZE};
     use embassy_stm32_wpan::tables::THREAD_NOTIF_RSP_EVT_BUFFER;
@@ -351,9 +351,9 @@ unsafe fn answer_callback(value: u32) {
 }
 
 /// Wait for the stack's next callback. `sockets` are the buffers of the UDP
-/// sockets, each at the index that is the context it was opened with. `tcp`
-/// is that of the TCP endpoint, and `take_tcp` whether a connection that
-/// comes in is to go into it: CPU2 wants to know inside the callback.
+/// sockets, indexed by the context each was opened with. `tcp` is the buffer
+/// of the TCP endpoint. `take_tcp` says whether to accept an incoming TCP
+/// connection, which has to be decided inside the callback.
 ///
 /// CPU2 is inside that callback until its notification is acknowledged, and
 /// the message a datagram arrives in is only there that long. So the payload
@@ -413,9 +413,9 @@ pub async fn notification(
         TCP_ACCEPT_READY => {
             use ffi::otTcpIncomingConnectionAction as Action;
 
-            // The arguments of the listener's callback: the listener, the
-            // peer's address, and where to put a pointer to the endpoint
-            // that is to take the connection.
+            // The accept-ready callback's arguments: the listener, the
+            // peer's address, and an out pointer for the endpoint that
+            // accepts the connection.
             let [_, _, endpoint_out, _] = raw.data;
             let taken = take_tcp && raw.size >= 3 && endpoint_out != 0;
             let action = if taken {
@@ -424,9 +424,9 @@ pub async fn notification(
                 Action::OT_TCP_INCOMING_CONNECTION_ACTION_REFUSE
             };
             unsafe {
-                // SAFETY: CPU2 waits for the acknowledgement with a place
-                // for that pointer, which is in memory CPU1 can write: ST's
-                // own handler hands it to the application to write to.
+                // SAFETY: `endpoint_out` stays valid until the notification
+                // is acknowledged, and CPU1 can write to it: ST's handler
+                // passes it to the application for exactly that.
                 if taken {
                     write_volatile(endpoint_out as *mut u32, tcp.endpoint());
                 }
@@ -439,8 +439,9 @@ pub async fn notification(
         TCP_ACCEPT_DONE | TCP_ESTABLISHED => Notification::Tcp(TcpEvent::Established),
         TCP_SEND_DONE => Notification::Tcp(TcpEvent::SendDone),
         TCP_RECEIVE_AVAILABLE => {
-            // The endpoint, how much has arrived, whether the peer is done
-            // sending, and how much room is left.
+            // The arguments: the endpoint, the bytes available, whether the
+            // peer has closed its sending side, and the bytes of buffer
+            // remaining.
             let [_, _, end_of_stream, _] = raw.data;
             Notification::Tcp(TcpEvent::ReceiveAvailable {
                 end_of_stream: end_of_stream != 0,
@@ -455,9 +456,10 @@ pub async fn notification(
     notif_rx.receive_with(acknowledged_after).await
 }
 
-/// Whether `pointer` is to somewhere in RAM that an otNetifAddress fits in.
+/// Whether an otNetifAddress at `pointer` would be aligned and entirely in
+/// RAM.
 fn is_in_ram(pointer: *const ffi::otNetifAddress) -> bool {
-    /// SRAM1 and SRAM2, which follow each other.
+    /// SRAM1 and SRAM2, which are contiguous.
     const RAM: core::ops::Range<usize> = 0x2000_0000..0x2004_0000;
     let (from, to) = (
         pointer as usize,
@@ -467,10 +469,10 @@ fn is_in_ram(pointer: *const ffi::otNetifAddress) -> bool {
 }
 
 fn address_from_raw(raw: &ffi::otNetifAddress) -> Address {
-    // SAFETY: every bit pattern is an address.
+    // SAFETY: every bit pattern is valid for this field of the union.
     let address = Ipv6Addr::from(unsafe { raw.mAddress.mFields.m8 });
-    // The interface identifier of a locator ends in what locates: the
-    // device's RLOC16, or the like for a role it has, such as leader.
+    // A locator's interface identifier is 0000:00ff:fe00:xxxx, where xxxx is
+    // the RLOC16, or an anycast locator such as the leader's.
     let is_locator = address.segments()[4..7] == [0, 0xff, 0xfe00];
     let kind = if raw.mRloc() || (raw.mMeshLocal() && is_locator) {
         AddressKind::Locator
@@ -484,15 +486,15 @@ fn address_from_raw(raw: &ffi::otNetifAddress) -> Address {
     Address { address, kind }
 }
 
-/// Drop the connection of the TCP endpoint, whatever state it is in. The
-/// endpoint is free for another one afterwards. Answers whether the stack's
-/// state changed meanwhile.
+/// Abort the TCP endpoint's connection, whatever state it is in. The
+/// endpoint can then be used for another connection. Returns the result,
+/// and whether a state-change notification arrived during the call.
 ///
-/// CPU2 calls back about the end of the connection from inside this call,
-/// and waits for that to be acknowledged before it answers. So the
-/// notifications are taken while the call is out, which is what ST's own
-/// wrapper for this does. Nothing can be asked of CPU2 then: a datagram that
-/// arrives just now is lost.
+/// CPU2 sends the disconnected callback from inside `otTcpAbort`, and does
+/// not answer the call until that notification is acknowledged. So this
+/// acknowledges notifications while the call is in progress, as ST's wrapper
+/// does. No other call can be made during that time, so a UDP datagram that
+/// arrives then cannot be read and is dropped.
 pub async fn tcp_abort(
     notif_rx: &mut ThreadNotifRx<'_>,
     ot: &mut ThreadOt<'_>,
@@ -935,7 +937,8 @@ pub unsafe trait OpenThread {
         }
     }
 
-    /// Set up the TCP endpoint and its listener. Once: CPU2 keeps both.
+    /// Initialize the TCP endpoint and its listener. Call this once: CPU2
+    /// keeps both from then on.
     async fn tcp_init(&mut self, buffer: &'static TcpBuffer) -> Result<()> {
         let endpoint_args = buffer
             .endpoint_args
@@ -946,17 +949,17 @@ pub unsafe trait OpenThread {
             .get()
             .cast::<ffi::otTcpListenerInitializeArgs>();
         unsafe {
-            // SAFETY: this is the only place CPU1 touches either set of
-            // arguments, never through a reference, and CPU2 only reads
-            // them. Every callback is an optional function pointer.
+            // SAFETY: CPU1 accesses the two argument structs only here, and
+            // never through a reference. CPU2 only reads them. Every
+            // callback field is an optional function pointer.
             write_volatile(
                 endpoint_args,
                 ffi::otTcpEndpointInitializeArgs {
                     mContext: null_mut(),
                     mEstablishedCallback: placeholder(),
                     mSendDoneCallback: placeholder(),
-                    // How much of what is being sent has got how far: more
-                    // than there is a use for.
+                    // Not used: it reports send progress in more detail than
+                    // the firmware needs.
                     mForwardProgressCallback: None,
                     mReceiveAvailableCallback: placeholder(),
                     mDisconnectedCallback: placeholder(),
@@ -972,10 +975,11 @@ pub unsafe trait OpenThread {
                     mAcceptDoneCallback: placeholder(),
                 },
             );
-            // SAFETY: each expects a pointer to memory for the endpoint, or
-            // the listener, which CPU2 fills in and keeps, and a pointer to
-            // its arguments, which it copies. The room for what arrives is
-            // CPU2's from here on: CPU1 only reads it where CPU2 says.
+            // SAFETY: each call expects a pointer to the endpoint or the
+            // listener, which CPU2 initializes and keeps, and a pointer to
+            // its arguments, which CPU2 copies. From here on CPU2 owns the
+            // receive buffer, and CPU1 reads only the parts CPU2 points it
+            // at.
             self.ffi_try(
                 ffi_command::MSG_M4TOM0_OT_TCP_ENDPOINT_INITIALIZE,
                 &[buffer.endpoint(), endpoint_args as u32],
@@ -989,12 +993,12 @@ pub unsafe trait OpenThread {
         }
     }
 
-    /// Have the listener take connections to `port`, on any address of the
-    /// device.
+    /// Listen for connections on `port`, on every address of the device.
     async fn tcp_listen(&mut self, buffer: &'static TcpBuffer, port: u16) -> Result<()> {
         unsafe {
-            // SAFETY: no call is waiting for its answer. Expects pointers to
-            // the listener and to an otSockAddr, which it copies.
+            // SAFETY: no call to CPU2 is in progress. The call expects
+            // pointers to the listener and to an otSockAddr, which CPU2
+            // copies.
             let name = buffer.name(SocketAddrV6::new(Ipv6Addr::UNSPECIFIED, port, 0, 0));
             self.ffi_try(
                 ffi_command::MSG_M4TOM0_OT_TCP_LISTEN,
@@ -1015,12 +1019,13 @@ pub unsafe trait OpenThread {
         }
     }
 
-    /// Start opening a connection from the endpoint to `peer`. A callback
-    /// tells what comes of it.
+    /// Start connecting the endpoint to `peer`. A callback reports the
+    /// outcome.
     async fn tcp_connect(&mut self, buffer: &'static TcpBuffer, peer: SocketAddrV6) -> Result<()> {
         unsafe {
-            // SAFETY: no call is waiting for its answer. Expects pointers to
-            // the endpoint and to an otSockAddr, which it copies, and flags.
+            // SAFETY: no call to CPU2 is in progress. The call expects
+            // pointers to the endpoint and to an otSockAddr, which CPU2
+            // copies, and flags.
             let name = buffer.name(peer);
             self.ffi_try(
                 ffi_command::MSG_M4TOM0_OT_TCP_CONNECT,
@@ -1034,16 +1039,16 @@ pub unsafe trait OpenThread {
         }
     }
 
-    /// Send `bytes` over the endpoint's connection. Nothing more may be sent
-    /// until a callback has told that the peer has these, or that the
-    /// connection is over: CPU2 reads them where they are until then.
+    /// Send `bytes` over the endpoint's connection. CPU2 reads them from the
+    /// send buffer until the peer acknowledges them, so do not call this
+    /// again before the send-done or disconnected callback.
     async fn tcp_send(&mut self, buffer: &'static TcpBuffer, bytes: &TcpChunk) -> Result<()> {
         let data = buffer.sending.get().cast::<u8>();
         let link = buffer.sending_link.get().cast::<ffi::otLinkedBuffer>();
         unsafe {
-            // SAFETY: CPU1 touches what is being sent, and the link to it,
-            // only here and never through a reference. That CPU2 is done
-            // with the last of it is the caller's to see to.
+            // SAFETY: CPU1 accesses the send buffer and its link only here,
+            // and never through a reference. The caller ensures that CPU2
+            // has finished with the previous chunk.
             copy_nonoverlapping(bytes.as_ptr(), data, bytes.len());
             write_volatile(
                 link,
@@ -1054,8 +1059,8 @@ pub unsafe trait OpenThread {
                 },
             );
             // SAFETY: expects pointers to the endpoint and to an
-            // otLinkedBuffer, which it keeps until the peer has what the
-            // buffer links to, and flags.
+            // otLinkedBuffer, and flags. CPU2 keeps the otLinkedBuffer until
+            // the peer has acknowledged its data.
             self.ffi_try(
                 ffi_command::MSG_M4TOM0_OT_TCP_SEND_BY_REFERENCE,
                 &[buffer.endpoint(), link as u32, 0],
@@ -1064,13 +1069,13 @@ pub unsafe trait OpenThread {
         }
     }
 
-    /// Take what has arrived on the endpoint's connection, as far as a chunk
-    /// has room. An empty one if nothing has.
+    /// Read received data from the endpoint's connection, up to one chunk.
+    /// Returns an empty chunk if there is none.
     async fn tcp_receive(&mut self, buffer: &'static TcpBuffer) -> Result<TcpChunk> {
         let link_out = buffer.received_link.get();
         unsafe {
-            // SAFETY: expects pointers to the endpoint and to where it puts
-            // a pointer to the first of the links to what has arrived.
+            // SAFETY: expects a pointer to the endpoint, and an out pointer
+            // for the first otLinkedBuffer of the received data.
             self.ffi_try(
                 ffi_command::MSG_M4TOM0_OT_TCP_RECEIVE_BY_REFERENCE,
                 &[buffer.endpoint(), link_out as u32],
@@ -1078,21 +1083,22 @@ pub unsafe trait OpenThread {
             .await?;
         }
 
-        // The links are the endpoint's own, and what they link to is in the
-        // room it was given: anything else is not followed.
+        // Valid links are inside the endpoint struct, and their data is
+        // inside the receive buffer. A link elsewhere ends the list, and
+        // data elsewhere is an error.
         let endpoint = buffer.endpoint.get() as usize;
         let links = endpoint..endpoint + size_of::<ffi::otTcpEndpoint>();
         let received = buffer.received.get() as usize;
         let room = received..=received + TCP_RECEIVE_LEN;
 
         let mut chunk = TcpChunk::new();
-        // SAFETY: CPU2 wrote the pointer within the call, and has no call to
-        // answer now.
+        // SAFETY: CPU2 wrote the pointer during the call, and no call is in
+        // progress now.
         let mut link = unsafe { read_volatile(link_out) };
         while links.contains(&(link as usize)) && !chunk.is_full() {
-            // SAFETY: `link` is inside the endpoint, which is in the buffer.
-            // CPU2 writes the links when it is asked for them, which it is
-            // not now.
+            // SAFETY: `link` points into the endpoint, which is in `buffer`.
+            // CPU2 writes the links only during a receive-by-reference call,
+            // and none is in progress.
             let ffi::otLinkedBuffer {
                 mNext,
                 mData,
@@ -1104,19 +1110,19 @@ pub unsafe trait OpenThread {
             }
             let old = chunk.len();
             let taken = mLength.min(chunk.capacity() - old);
-            // Cannot fail: no more than the chunk has room for.
+            // Cannot fail: `old + taken` is at most the chunk's capacity.
             let _ = chunk.resize_default(old + taken);
-            // SAFETY: `taken` bytes from `mData` are in the room for what
-            // arrives, which CPU2 leaves as it is until they are committed,
-            // and the chunk has that much room after `old`.
+            // SAFETY: `taken` bytes at `mData` are inside the receive
+            // buffer, and CPU2 does not overwrite them before they are
+            // committed. The chunk has `taken` bytes of room after `old`.
             unsafe { copy_nonoverlapping(mData, chunk.as_mut_ptr().add(old), taken) };
             link = mNext;
         }
 
         if !chunk.is_empty() {
             unsafe {
-                // SAFETY: expects a pointer to the endpoint, how many bytes
-                // at the front of what has arrived it may let go of, and
+                // SAFETY: expects a pointer to the endpoint, the number of
+                // bytes to release from the front of the received data, and
                 // flags.
                 self.ffi_try(
                     ffi_command::MSG_M4TOM0_OT_TCP_COMMIT_RECEIVE,
@@ -1128,7 +1134,7 @@ pub unsafe trait OpenThread {
         Ok(chunk)
     }
 
-    /// Tell the peer that nothing more is sent on the endpoint's connection.
+    /// Close the sending side of the endpoint's connection.
     async fn tcp_send_end_of_stream(&mut self, buffer: &'static TcpBuffer) -> Result<()> {
         unsafe {
             // SAFETY: expects a pointer to the endpoint.
@@ -1140,23 +1146,23 @@ pub unsafe trait OpenThread {
         }
     }
 
-    /// The device's unicast addresses, as far as [`Addresses`] has room.
+    /// The device's unicast addresses, as many as fit in [`Addresses`].
     async fn ip6_unicast_addresses(&mut self) -> Addresses {
         let mut next = unsafe {
-            // SAFETY: expects no arguments, and answers with a pointer to
-            // the first of a linked list of otNetifAddress, or null.
+            // SAFETY: expects no arguments. Returns a pointer to the head of
+            // a linked list of otNetifAddress, or null.
             self.ffi_call(ffi_command::MSG_M4TOM0_OT_IP6_GET_UNICAST_ADDRESSES, &[])
                 .await
         } as *const ffi::otNetifAddress;
 
         let mut addresses = Addresses::default();
-        // The list is CPU2's, in its memory, and nothing keeps CPU2 from
-        // changing it while it is read. So only what is in RAM is followed,
-        // and no further than there is room for.
+        // The list is in CPU2's memory, and CPU2 may change it while it is
+        // being read. So follow a pointer only if it is in RAM, and stop
+        // when `addresses` is full.
         while is_in_ram(next) {
-            // SAFETY: `next` is the address of readable memory, aligned for
-            // an otNetifAddress, whose fields are numbers and a pointer that
-            // is not followed unchecked.
+            // SAFETY: `next` points to readable memory and is aligned for an
+            // otNetifAddress. Its fields are integers, plus a pointer that
+            // is checked before it is followed.
             let raw = unsafe { read_volatile(next) };
             if addresses.addresses.push(address_from_raw(&raw)).is_err() {
                 addresses.truncated = true;

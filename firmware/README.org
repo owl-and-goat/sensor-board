@@ -110,8 +110,8 @@ unique id, and =--board= takes any unambiguous start of it.
   cargo run -- firmware push <image> --board 4d    # to every board on the network
   cargo run -- network addresses --board 4b  # that board's ipv6 addresses
   cargo run -- reports watch               # print the boards' sensor reports as they arrive
-  cargo run -- metrics show --board 4d     # what the board has for prometheus, as it is now
-  cargo run -- config show --board 4d      # what the board is configured to do
+  cargo run -- metrics show --board 4d     # the board's current prometheus metrics
+  cargo run -- config show --board 4d      # the board's configuration
   cargo run -- config set --board 4d --sensor temperature=30s  # see "board configuration" below
 #+end_src
 
@@ -130,36 +130,37 @@ leave=.
 
 ** sensor reports
 
-every board sends its readings to all the boards on its network every ten
-seconds. =reports watch= takes them in through one board, which has to stay
-attached: it passes on what reaches it, its own reports among them, for as
-long as the command runs. if that board goes away (unplugged, reflashed) the
-command waits for it. any board will do, and every board needs a firmware
-that sends reports in the same layout; one that does not is not heard.
-=firmware push= goes by these reports too: they say what build a board runs.
+every board multicasts a report with its sensor readings to its network
+every ten seconds. =reports watch= prints the reports that one attached
+board receives, including that board's own, for as long as the command runs.
+the board has to stay attached: if it goes away (unplugged, reflashed), the
+command waits for it to come back. any board can do this. a board only
+understands reports from firmware with the same report layout, and ignores
+the rest. =firmware push= also uses these reports, to learn which build each
+board runs.
 
 ** metrics
 
-a board gets its metrics to prometheus by itself, over its thread network
-and the border router between that and the rest. how depends on the power
-mode in its configuration (see below), and a board without a configuration
-does neither:
+a board exports its metrics to prometheus itself, over its thread network
+and a border router. how it exports them depends on the power mode in its
+configuration (see below):
 
-- =aux=: the board serves them at =/metrics= on tcp port 9469, to one
-  scraper at a time.
-- =battery=: the board pushes them to the pushgateway in its configuration,
-  each time it has read a sensor, as job =sensor_board= with the board's
-  serial number for the instance. a gateway that does not take a push is
-  left alone for a minute.
+- =aux=: the board serves a scrape endpoint at =/metrics= on tcp port 9469.
+  it handles one scrape at a time.
+- =battery=: the board pushes to the pushgateway in its configuration after
+  every sensor read, as job =sensor_board= with its serial number as the
+  instance. after a failed push it waits a minute before the next one.
 
-the metrics are the readings of the sensors that the configuration has the
-board read, each at its interval, and counts of the scrapes or pushes. every
-one bears the board's serial number as =board=. =metrics show= prints them
-over usb, as they are at that moment.
+a board without a configuration does neither.
 
-to scrape a board, prometheus needs an address of it that can be reached
-from outside the thread network: the one =network addresses= calls
-=routable=, which the board has once a border router gives out a prefix.
+the metrics are the readings of the sensors enabled in the configuration,
+each read at its own interval, plus counters for scrapes and pushes. every
+metric has a =board= label with the board's serial number. =metrics show=
+prints the current metrics over usb.
+
+to scrape a board, prometheus needs an address that is reachable from
+outside the thread network. =network addresses= lists it as =routable=. a
+board gets one once a border router advertises a prefix.
 
 #+begin_src yaml
   scrape_configs:
@@ -168,25 +169,25 @@ from outside the thread network: the one =network addresses= calls
         - targets: ["[fd12:3456:789a:1:4c51:2d3d:c69c:4af6]:9469"]
 #+end_src
 
-a pushgateway is named by an ipv6 address and a port, which has to be one
-that the border router gets the board to:
+a pushgateway is set as an ipv6 address and a port. the border router has to
+be able to route from the board to that address:
 
 #+begin_src sh
   cargo run -- config set --power-mode battery --pushgateway '[fd12:3456::1]:9091'
 #+end_src
 
-seen on a board on 2026-10-10: the metrics over usb, the change from one
-mode to the other as the configuration changes, and pushes to addresses
-where nothing answers. not seen, for want of a border router or a second
-board to try it with: a scrape, and a push that arrives.
+tested on a board on 2026-10-10: metrics over usb, switching between the two
+modes when the configuration changes, and pushes to addresses where nothing
+answers. not tested yet, because there was no border router or second board
+to test with: a scrape, and a push that succeeds.
 
 ** board configuration
 
-a board keeps a configuration in flash, next to its network's dataset: its
-number, how it is powered, and for each sensor how often it is read, or that
-it is not read at all. =config show= prints it. =config set= changes what it
-is told to and leaves the rest. how the board is powered also says how
-its metrics get to prometheus (see "metrics" above):
+a board stores a configuration in flash, next to its network's dataset. it
+holds the board's number, its power mode, and for each sensor either a poll
+interval or that the sensor is off. =config show= prints it. =config set=
+changes the settings it is given and keeps the rest. the power mode also
+selects how the board exports its metrics (see "metrics" above):
 
 #+begin_src sh
   cargo run -- config set --id 3 --power-mode aux    # a board's first configuration needs these two
@@ -194,24 +195,24 @@ its metrics get to prometheus (see "metrics" above):
   cargo run -- config show
 #+end_src
 
-with =--remote <serial>= both are about a board that is not attached: the
-attached board asks it over their network, and gives up after six seconds.
-that takes the board's whole serial number, as =reports watch= prints it.
+with =--remote <serial>=, both commands apply to a board that is not
+attached. the attached board asks it over their network, and gives up after
+six seconds. =--remote= takes the board's full serial number, as =reports
+watch= prints it.
 
 #+begin_src sh
   cargo run -- config set --remote 4D0021000350475532303120 --sensor temperature=30s
 #+end_src
 
-a firmware that changes what a configuration is made of (a new sensor, say)
-does not read what the one before it kept: the board has no configuration
-until it is given one again. two boards whose firmwares differ in that do
-not answer each other either.
+a firmware that changes the layout of the configuration (by adding a sensor,
+for example) cannot read a configuration that the previous firmware stored.
+the board then has no configuration until it is set again. two boards whose
+firmwares have different layouts do not answer each other's requests either.
 
-what acts on the configuration so far is the metrics: they take the power
-mode, the pushgateway, and the intervals of the sensors that the firmware
-has a driver for. the board's number is not used yet, the sensor reports are
-sent every ten seconds whatever it says, and a board on battery is as much a
-router as any other.
+so far only the metrics use the configuration: the power mode, the
+pushgateway, and the intervals of the sensors that have a driver. the
+board's number is not used yet. sensor reports are sent every ten seconds
+regardless, and a board on battery is still a full router.
 
 * getting into the bootloader
 

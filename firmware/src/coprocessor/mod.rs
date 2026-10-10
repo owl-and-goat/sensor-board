@@ -81,16 +81,16 @@ pub struct Builder<'d> {
     /// The firmware-update service, which this task runs: it writes flash in
     /// step with CPU2.
     pub update: update::Service,
-    /// The service for the board's configuration, which this task runs for
-    /// the same reason.
+    /// The board-configuration service. This task runs it for the same
+    /// reason.
     pub board_config: board_config::Service,
 }
 
 impl<'d> Builder<'d> {
     /// Panics if called a second time: there is one coprocessor.
-    /// The socket for reports goes to whoever sends them, and the TCP end to
-    /// whoever has a use for it. The sockets for firmware updates and for
-    /// configurations stay with the task, which runs their services.
+    /// Returns the reports socket and the TCP connection for other tasks to
+    /// use. The task keeps the sockets for firmware updates and board
+    /// configuration, because it runs those services.
     pub fn init(
         self,
     ) -> (

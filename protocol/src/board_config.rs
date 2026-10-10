@@ -36,11 +36,11 @@ pub struct SensorConfig {
 #[cfg_attr(feature = "clap", derive(clap::ValueEnum))]
 pub enum PowerMode {
     /// The device is powered via aux power. It does not register as a sleepy end device, allowing
-    /// it to act as a Thread router. It serves its metrics to whoever scrapes them.
+    /// it to act as a Thread router. It serves its metrics on a Prometheus scrape endpoint.
     Aux,
 
     /// The device is powered via battery, meaning it should try to conserve power as much as
-    /// possible. It pushes its metrics to the Pushgateway it is configured with.
+    /// possible. It pushes its metrics to the configured Pushgateway.
     Battery,
 }
 
@@ -60,26 +60,26 @@ pub struct BoardConfig {
     pub board_id: u8,
     pub sensor_config: SensorsConfig,
     pub power_mode: PowerMode,
-    /// The Prometheus Pushgateway that the board pushes its metrics to when
-    /// it is on battery.
+    /// The Prometheus Pushgateway to push metrics to. Used only in
+    /// [`PowerMode::Battery`].
     pub pushgateway: Option<SocketAddrV6>,
 }
 
 impl BoardConfig {
-    /// The most bytes a configuration takes up as a board keeps it: the key,
-    /// and every interval and the port at the longest postcard writes them.
+    /// The longest encoded configuration: the key, then every field at its
+    /// largest size (postcard encodes the intervals and the port as varints).
     pub const MAX_LEN: usize = 8 + 1 + Sensor::COUNT * (1 + 10 + 5) + 1 + (1 + 16 + 3);
 
-    /// The configuration as a board keeps it in flash: a key that stands for
-    /// the layout of this type, and then the configuration in postcard's
-    /// encoding. `None` if `buf` is too short.
+    /// Encode the configuration for storage in flash: a key derived from the
+    /// layout of this type, then the postcard encoding. `None` if `buf` is
+    /// too short.
     pub fn encode<'a>(&self, buf: &'a mut [u8]) -> Option<&'a [u8]> {
         crate::encode_behind(&Self::key(), self, buf)
     }
 
-    /// `None` for anything but a configuration of this very layout. One that
-    /// a firmware with another layout has kept is not understood, rather
-    /// than misread.
+    /// Decode a stored configuration. `None` if `bytes` was not encoded with
+    /// this layout, so a configuration that a firmware with a different
+    /// layout stored is rejected instead of misread.
     pub fn decode(bytes: &[u8]) -> Option<BoardConfig> {
         crate::decode_behind(&Self::key(), bytes)
     }
@@ -125,7 +125,7 @@ mod tests {
         assert_eq!(BoardConfig::decode(&other), None);
         assert_eq!(BoardConfig::decode(&encoded[..encoded.len() - 1]), None);
         assert_eq!(BoardConfig::decode(&[]), None);
-        // What erased flash holds.
+        // Erased flash.
         assert_eq!(BoardConfig::decode(&[0xff; BoardConfig::MAX_LEN]), None);
     }
 
