@@ -29,11 +29,11 @@ const _: () = assert!(ConfigMessage::MAX_LEN <= thread::MAX_DATAGRAM_LEN);
 /// How long to wait for another board's reply, and how often to resend the
 /// request in that time. A request is multicast, so nothing retransmits it if
 /// it is lost.
-const ANSWER_TIMEOUT: Duration = Duration::from_secs(6);
-const ASK_INTERVAL: Duration = Duration::from_secs(2);
+const REPLY_TIMEOUT: Duration = Duration::from_secs(6);
+const RESEND_INTERVAL: Duration = Duration::from_secs(2);
 
 /// Timeout for a request through the [`Handle`]. Longer than
-/// [`ANSWER_TIMEOUT`], and shorter than the host's own timeout.
+/// [`REPLY_TIMEOUT`], and shorter than the host's own timeout.
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(8);
 
 enum Request {
@@ -109,7 +109,7 @@ impl Handle {
 
     async fn request(&mut self, request: Request) -> BoardConfigResult {
         self.requests
-            .ask(request, REQUEST_TIMEOUT)
+            .call(request, REQUEST_TIMEOUT)
             .await
             .unwrap_or(Err(ConfigError::Unresponsive))
     }
@@ -130,8 +130,8 @@ impl Service {
             requests: self.requests,
             current: self.current,
             board: this_board(),
-            asking: None,
-            asked: 0,
+            forwarded: None,
+            next_question: 0,
         };
         configs.serve().await
     }
@@ -143,11 +143,11 @@ impl Service {
         let board = this_board();
         loop {
             let (pending, request) = self.requests.receive().await;
-            let answer = match request {
-                Request::Get(asked) if asked == board => Ok(persistent_config::board_config()),
+            let response = match request {
+                Request::Get(target) if target == board => Ok(persistent_config::board_config()),
                 _ => Err(ConfigError::Unavailable),
             };
-            self.requests.answer(pending, answer);
+            self.requests.respond(pending, response);
         }
     }
 }
@@ -157,7 +157,7 @@ fn this_board() -> BoardId {
 }
 
 /// A pending request to another board, made on behalf of the host.
-struct Asking {
+struct Forwarded {
     pending: request::Pending,
     board: BoardId,
     /// Identifies the request. The reply carries the same number.
@@ -165,11 +165,11 @@ struct Asking {
     /// The configuration to store, for a `Set`. `None` for a `Get`.
     config: Option<BoardConfig>,
     /// When to resend the request, if there is no reply by then.
-    again_at: Instant,
-    give_up_at: Instant,
+    resend_at: Instant,
+    deadline: Instant,
 }
 
-impl Asking {
+impl Forwarded {
     fn message(&self) -> ConfigMessage {
         let (board, question) = (self.board, self.question);
         match self.config.clone() {
@@ -192,9 +192,9 @@ struct Configs<'a, 'd> {
     /// This board's ID.
     board: BoardId,
     /// The pending request to another board, if there is one.
-    asking: Option<Asking>,
+    forwarded: Option<Forwarded>,
     /// The number for the next request. Incremented for each one.
-    asked: u32,
+    next_question: u32,
 }
 
 impl Configs<'_, '_> {
@@ -206,9 +206,9 @@ impl Configs<'_, '_> {
 
         loop {
             let due = self
-                .asking
+                .forwarded
                 .as_ref()
-                .map(|asking| asking.again_at.min(asking.give_up_at));
+                .map(|forwarded| forwarded.resend_at.min(forwarded.deadline));
             let next = select3(self.requests.receive(), self.socket.receive(), async {
                 match due {
                     Some(at) => Timer::at(at).await,
@@ -216,106 +216,107 @@ impl Configs<'_, '_> {
                 }
             });
             match next.await {
-                Either3::First((pending, request)) => self.answer(pending, request).await,
-                Either3::Second(received) => self.heard(received).await,
-                Either3::Third(()) => self.ask_again().await,
+                Either3::First((pending, request)) => self.handle_request(pending, request).await,
+                Either3::Second(received) => self.handle_datagram(received).await,
+                Either3::Third(()) => self.resend().await,
             }
         }
     }
 
-    async fn answer(&mut self, pending: request::Pending, request: Request) {
+    async fn handle_request(&mut self, pending: request::Pending, request: Request) {
         // A new request replaces the pending one, whose caller has stopped
         // waiting.
-        self.asking = None;
+        self.forwarded = None;
 
         match request {
             Request::Get(board) if board == self.board => {
-                let has = persistent_config::board_config();
-                self.requests.answer(pending, Ok(has));
+                let stored = persistent_config::board_config();
+                self.requests.respond(pending, Ok(stored));
             }
             Request::Set(ConfigFor { board, config }) if board == self.board => {
-                let kept = self.keep(&config).await;
-                self.requests.answer(pending, kept.map(|()| Some(config)));
+                let result = self.store(&config).await;
+                self.requests
+                    .respond(pending, result.map(|()| Some(config)));
             }
-            Request::Get(board) => self.ask(pending, board, None).await,
+            Request::Get(board) => self.forward(pending, board, None).await,
             Request::Set(ConfigFor { board, config }) => {
-                self.ask(pending, board, Some(config)).await
+                self.forward(pending, board, Some(config)).await
             }
         }
     }
 
     /// Store `config` as this board's configuration.
-    async fn keep(&mut self, config: &BoardConfig) -> ConfigResult {
+    async fn store(&mut self, config: &BoardConfig) -> ConfigResult {
         // A request is resent when the reply is slow or lost. Do not rewrite
         // flash with what it already holds.
         if persistent_config::board_config().as_ref() == Some(config) {
             return Ok(());
         }
         let mut flash = self.flash.lock().await;
-        let kept = persistent_config::set_board_config(&mut flash, config).await;
-        match kept {
+        let written = persistent_config::set_board_config(&mut flash, config).await;
+        match written {
             Ok(()) => {
                 defmt::info!("config: stored a new configuration");
                 self.current.sender().send(Some(config.clone()));
             }
             Err(e) => defmt::error!("config: flash write failed: {}", e),
         }
-        kept.map_err(|_| ConfigError::Storage)
+        written.map_err(|_| ConfigError::Storage)
     }
 
     /// Send a request to `board` over the network: a `Set` of `config`, or
     /// with `None` a `Get`.
-    async fn ask(
+    async fn forward(
         &mut self,
         pending: request::Pending,
         board: BoardId,
         config: Option<BoardConfig>,
     ) {
         let now = Instant::now();
-        let asking = Asking {
+        let forwarded = Forwarded {
             pending,
             board,
-            question: self.asked,
+            question: self.next_question,
             config,
-            again_at: now + ASK_INTERVAL,
-            give_up_at: now + ANSWER_TIMEOUT,
+            resend_at: now + RESEND_INTERVAL,
+            deadline: now + REPLY_TIMEOUT,
         };
-        self.asked = self.asked.wrapping_add(1);
+        self.next_question = self.next_question.wrapping_add(1);
 
-        match self.send(None, &asking.message()).await {
-            Ok(()) => self.asking = Some(asking),
+        match self.send(None, &forwarded.message()).await {
+            Ok(()) => self.forwarded = Some(forwarded),
             Err(e) => {
-                let refused = Err(ConfigError::Network(e));
-                self.requests.answer(asking.pending, refused);
+                let error = Err(ConfigError::Network(e));
+                self.requests.respond(forwarded.pending, error);
             }
         }
     }
 
     /// The reply has not arrived: resend the request, or give up.
-    async fn ask_again(&mut self) {
+    async fn resend(&mut self) {
         let now = Instant::now();
-        match &mut self.asking {
-            Some(asking) if now < asking.give_up_at => {
-                asking.again_at = now + ASK_INTERVAL;
-                let question = asking.message();
+        match &mut self.forwarded {
+            Some(forwarded) if now < forwarded.deadline => {
+                forwarded.resend_at = now + RESEND_INTERVAL;
+                let question = forwarded.message();
                 // A send error is ignored here: the first send worked, and
                 // the request times out anyway if no reply arrives.
                 let _ = self.send(None, &question).await;
             }
             _ => {
-                if let Some(asking) = self.asking.take() {
+                if let Some(forwarded) = self.forwarded.take() {
                     self.requests
-                        .answer(asking.pending, Err(ConfigError::NoAnswer));
+                        .respond(forwarded.pending, Err(ConfigError::NoAnswer));
                 }
             }
         }
     }
 
-    async fn heard(&mut self, received: thread::Received) {
+    async fn handle_datagram(&mut self, received: thread::Received) {
         let thread::Received { from, datagram } = received;
         match ConfigMessage::decode(&datagram) {
             Some(ConfigMessage::Get { board, question }) if board == self.board => {
-                self.tell(from, question).await
+                self.reply(from, question).await
             }
             Some(ConfigMessage::Set {
                 board,
@@ -324,47 +325,48 @@ impl Configs<'_, '_> {
             }) if board == self.board => {
                 // The result is not needed: the reply carries what the board
                 // now has stored, which shows whether the write worked.
-                let _ = self.keep(&config).await;
-                self.tell(from, question).await
+                let _ = self.store(&config).await;
+                self.reply(from, question).await
             }
             Some(ConfigMessage::Has {
                 board,
                 question,
                 config,
-            }) => self.answered(board, question, config),
+            }) => self.handle_reply(board, question, config),
             // A request for another board, this board's own multicast, or a
             // message from a firmware with a different layout.
             _ => {}
         }
     }
 
-    /// Reply to `asker`'s request number `question` with this board's
+    /// Reply to `peer`'s request number `question` with this board's
     /// configuration.
-    async fn tell(&mut self, asker: thread::Peer, question: u32) {
-        let has = ConfigMessage::Has {
+    async fn reply(&mut self, peer: thread::Peer, question: u32) {
+        let message = ConfigMessage::Has {
             board: self.board,
             question,
             config: persistent_config::board_config(),
         };
-        if let Err(e) = self.send(Some(asker), &has).await {
+        if let Err(e) = self.send(Some(peer), &message).await {
             defmt::debug!("config: could not send a reply: {}", e);
         }
     }
 
     /// Handle a reply from `board` to request number `question`. If it
     /// matches the pending request, complete that request.
-    fn answered(&mut self, board: BoardId, question: u32, has: Option<BoardConfig>) {
-        let awaited = |asking: &mut Asking| (asking.board, asking.question) == (board, question);
+    fn handle_reply(&mut self, board: BoardId, question: u32, stored: Option<BoardConfig>) {
+        let matches =
+            |forwarded: &mut Forwarded| (forwarded.board, forwarded.question) == (board, question);
         // Otherwise it is a late reply to a request that was given up.
-        let Some(asking) = self.asking.take_if(awaited) else {
+        let Some(forwarded) = self.forwarded.take_if(matches) else {
             return;
         };
-        let outcome = match &asking.config {
+        let outcome = match &forwarded.config {
             // The board did not store the configuration it was sent.
-            Some(config) if has.as_ref() != Some(config) => Err(ConfigError::Storage),
-            _ => Ok(has),
+            Some(config) if stored.as_ref() != Some(config) => Err(ConfigError::Storage),
+            _ => Ok(stored),
         };
-        self.requests.answer(asking.pending, outcome);
+        self.requests.respond(forwarded.pending, outcome);
     }
 
     /// Send `message` to one board, or with `None` to every board. Delivery

@@ -261,14 +261,14 @@ pub async fn init(boards: &[Board], saved: &SavedDataset, force_reinit: bool) ->
             }
             board.join(&dataset).await?;
         }
-        let link = attached(board).await?;
+        let link = wait_until_attached(board).await?;
         println!("{}  {}", board.serial(), describe_link(&link));
     }
     Ok(())
 }
 
 /// Wait until `board` is attached to its network.
-pub async fn attached(board: &Board) -> Result<Link> {
+pub async fn wait_until_attached(board: &Board) -> Result<Link> {
     let deadline = Instant::now() + ATTACH_TIMEOUT;
     loop {
         match board.network_status().await? {
@@ -386,7 +386,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn routers_line_up_under_their_headings() {
+    fn router_table_columns_are_aligned() {
         let mut table = RouterTable::default();
         let routes = [
             (24, Route::Direct { cost: 1 }),
@@ -416,7 +416,7 @@ mod tests {
     }
 
     #[test]
-    fn neighbors_line_up_under_their_headings() {
+    fn neighbor_table_columns_are_aligned() {
         let neighbor = Neighbor {
             kind: NeighborKind::Child,
             rloc16: 0xd401,
@@ -469,7 +469,7 @@ mod tests {
     }
 
     #[test]
-    fn init_makes_a_network_when_there_is_none_or_when_forced() {
+    fn init_creates_a_network_when_none_exists_or_forced() {
         assert_eq!(Source::choose(None, &[None, None], false), Source::New);
         assert_eq!(
             Source::choose(Some(dataset(1)), &[Some(dataset(1))], true),
@@ -495,7 +495,7 @@ mod tests {
     }
 
     #[test]
-    fn state_is_kept_where_xdg_says() {
+    fn state_dir_follows_xdg() {
         let os = |s: &str| Some(OsString::from(s));
         assert_eq!(
             state_dir(os("/state"), os("/home/me")),
@@ -516,7 +516,7 @@ mod tests {
     /// boards' own OpenThread stack generated, except that its wake-up
     /// channel TLV (type 74) is left out.
     #[test]
-    fn dataset_is_laid_out_like_openthreads() {
+    fn dataset_matches_openthread_layout() {
         let network = NewNetwork {
             name: "OpenThread-5938".into(),
             channel: 15,

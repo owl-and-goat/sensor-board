@@ -163,7 +163,7 @@ impl Handle {
 
     async fn request(&mut self, request: fus::Request) -> CoprocessorResult {
         self.requests
-            .ask(request, REQUEST_TIMEOUT)
+            .call(request, REQUEST_TIMEOUT)
             .await
             .unwrap_or(Err(CoprocessorError::Unresponsive))
     }
@@ -189,7 +189,7 @@ impl<'d> Task<'d> {
         let flash = Flash::new_blocking(self.flash);
         let (ot, cli_rx, notif_rx) = mbox.thread_subsystem.split();
 
-        let sides = async {
+        let services = async {
             match Running::read(&sys) {
                 Running::Stack(firmware) => {
                     if fus::pending() == Some(Pending::Uninstall(UninstallStep::EnterFus)) {
@@ -204,7 +204,7 @@ impl<'d> Task<'d> {
                     fus::set_pending(None);
                     self.status.publish(CoprocessorStatus::Stack(firmware));
 
-                    let installer = fus::serve_beside_stack(self.requests, self.status);
+                    let installer = fus::serve_with_stack(self.requests, self.status);
                     // From here on every flash write is coordinated with
                     // the stack. Thread writes its dataset, the update
                     // service the staged image, and the configuration
@@ -252,7 +252,7 @@ impl<'d> Task<'d> {
         // are returned and its traces are read.
         join(
             join(mm.run_queue(), drain_traces(mbox.traces_subsystem)),
-            sides,
+            services,
         )
         .await
         .1

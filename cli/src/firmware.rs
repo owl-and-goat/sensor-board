@@ -156,7 +156,7 @@ pub async fn push(gateway: Board, image: &Image) -> Result<()> {
         image.build()
     );
 
-    let outcome = boards_updated(&gateway, &mut reports, image).await;
+    let outcome = wait_for_boards(&gateway, &mut reports, image).await;
     // Best effort: a board that keeps offering and collecting only does
     // unneeded work.
     let _ = gateway.stop_offering().await;
@@ -175,7 +175,7 @@ pub async fn push(gateway: Board, image: &Image) -> Result<()> {
 /// Watch the reports that `gateway` forwards until every board except the
 /// gateway runs `image`, and show the progress of the boards that are
 /// fetching it. Returns `false` if interrupted before that.
-async fn boards_updated(
+async fn wait_for_boards(
     gateway: &Board,
     reports: &mut MultiSubscription<Report>,
     image: &Image,
@@ -189,7 +189,7 @@ async fn boards_updated(
     let mut progress_due = tokio::time::interval(PROGRESS_INTERVAL);
     progress_due.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
     // Set to false if the gateway's firmware cannot report progress.
-    let mut tells_progress = true;
+    let mut reports_progress = true;
 
     let interrupted = tokio::signal::ctrl_c();
     tokio::pin!(interrupted);
@@ -199,7 +199,7 @@ async fn boards_updated(
         // still waiting to be heard from.
         let all_heard = started.elapsed() > ALL_HEARD_AFTER;
         if all_heard && builds.values().all(|&running| running == build) {
-            progress.say(&match builds.len() {
+            progress.println(&match builds.len() {
                 0 => "No other board was heard from.".into(),
                 n => format!("All {n} other boards run build {build}."),
             });
@@ -217,12 +217,12 @@ async fn boards_updated(
         let report = tokio::select! {
             _ = &mut interrupted => return Ok(false),
             () = tokio::time::sleep(POLL_INTERVAL) => continue,
-            _ = progress_due.tick(), if tells_progress => {
+            _ = progress_due.tick(), if reports_progress => {
                 match gateway.offer_progress().await {
                     Ok(Some(fetching)) => progress.show(&fetching),
                     Ok(None) => {
-                        tells_progress = false;
-                        progress.say(&format!(
+                        reports_progress = false;
+                        progress.println(&format!(
                             "Board {} runs a firmware that cannot tell how far the others have \
                              got. Update it first (firmware update) to see that.",
                             gateway.serial()
@@ -244,7 +244,7 @@ async fn boards_updated(
                     } else {
                         "to update"
                     };
-                    progress.say(&format!(
+                    progress.println(&format!(
                         "{}  build {}  {state}",
                         report.board, report.firmware
                     ));
@@ -262,7 +262,7 @@ async fn boards_updated(
 /// The display of a push while the boards update: a summary line with how
 /// many boards run the image, and below it a bar for each board that is
 /// fetching it. The bars are only drawn on a terminal. Lines printed with
-/// [`PushProgress::say`] appear above the bars, on a terminal or not.
+/// [`PushProgress::println`] appear above the bars, on a terminal or not.
 struct PushProgress {
     bars: MultiProgress,
     summary: ProgressBar,
@@ -297,7 +297,7 @@ impl PushProgress {
     }
 
     /// Print a line above the bars.
-    fn say(&self, line: &str) {
+    fn println(&self, line: &str) {
         self.bars.suspend(|| println!("{line}"));
     }
 
@@ -428,7 +428,7 @@ mod tests {
     }
 
     #[test]
-    fn a_board_that_fetches_keeps_its_bar() {
+    fn fetcher_keeps_its_bar() {
         let (a, b) = (Some(BoardId([0xA; 12])), Some(BoardId([0xB; 12])));
         let fetchers = |boards: &[Option<BoardId>]| -> Vec<Fetcher> {
             boards.iter().map(|&board| fetcher(board, 0)).collect()
@@ -452,7 +452,7 @@ mod tests {
     }
 
     #[test]
-    fn a_push_shows_a_bar_for_each_board_that_fetches() {
+    fn push_shows_one_bar_per_fetcher() {
         let terminal = InMemoryTerm::new(10, 100);
         let target = ProgressDrawTarget::term_like(Box::new(terminal.clone()));
         let mut progress = PushProgress::drawn_on(target, ImageSize(200_000));
@@ -495,7 +495,7 @@ mod tests {
     }
 
     #[test]
-    fn only_an_image_of_the_firmware_is_taken() {
+    fn rejects_images_without_build_marker() {
         assert!(Image::from_bytes(vec![0; 4096]).is_err());
 
         let mut bytes = vec![0x11; 300];

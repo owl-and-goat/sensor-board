@@ -715,14 +715,14 @@ impl Report {
     /// [`ReportReceived`], which is derived from the layout of this type,
     /// then the postcard encoding. `None` if `buf` is too short.
     pub fn encode<'a>(&self, buf: &'a mut [u8]) -> Option<&'a [u8]> {
-        encode_behind(&Self::key(), self, buf)
+        encode_with_prefix(&Self::key(), self, buf)
     }
 
     /// Decode a report. `None` if `bytes` was not encoded with this layout,
     /// so a report from a firmware with a different layout is rejected
     /// instead of misread.
     pub fn decode(bytes: &[u8]) -> Option<Report> {
-        decode_behind(&Self::key(), bytes)
+        decode_with_prefix(&Self::key(), bytes)
     }
 
     fn key() -> [u8; 8] {
@@ -733,16 +733,20 @@ impl Report {
 /// Write `prefix`, then the postcard encoding of `value`, into `buf`. The
 /// prefix identifies the type and layout of `value` to the receiver. Returns
 /// the bytes written, or `None` if `buf` is too short.
-fn encode_behind<'a>(prefix: &[u8], value: &impl Serialize, buf: &'a mut [u8]) -> Option<&'a [u8]> {
+fn encode_with_prefix<'a>(
+    prefix: &[u8],
+    value: &impl Serialize,
+    buf: &'a mut [u8],
+) -> Option<&'a [u8]> {
     let (head, body) = buf.split_at_mut_checked(prefix.len())?;
     head.copy_from_slice(prefix);
     let body = postcard_rpc::postcard::to_slice(value, body).ok()?.len();
     Some(&buf[..prefix.len() + body])
 }
 
-/// Decode the output of [`encode_behind`]. `None` if `bytes` does not start
+/// Decode the output of [`encode_with_prefix`]. `None` if `bytes` does not start
 /// with `prefix`, or if what follows is not a valid `T`.
-fn decode_behind<T: serde::de::DeserializeOwned>(prefix: &[u8], bytes: &[u8]) -> Option<T> {
+fn decode_with_prefix<T: serde::de::DeserializeOwned>(prefix: &[u8], bytes: &[u8]) -> Option<T> {
     let body = bytes.strip_prefix(prefix)?;
     postcard_rpc::postcard::from_bytes(body).ok()
 }
@@ -953,11 +957,11 @@ impl UpdateMessage {
 
     /// `None` if `buf` is too short.
     pub fn encode<'a>(&self, buf: &'a mut [u8]) -> Option<&'a [u8]> {
-        encode_behind(&Self::MAGIC, self, buf)
+        encode_with_prefix(&Self::MAGIC, self, buf)
     }
 
     pub fn decode(bytes: &[u8]) -> Option<UpdateMessage> {
-        decode_behind(&Self::MAGIC, bytes)
+        decode_with_prefix(&Self::MAGIC, bytes)
     }
 }
 
@@ -1071,12 +1075,12 @@ impl ConfigMessage {
 
     /// `None` if `buf` is too short.
     pub fn encode<'a>(&self, buf: &'a mut [u8]) -> Option<&'a [u8]> {
-        encode_behind(&Self::key(), self, buf)
+        encode_with_prefix(&Self::key(), self, buf)
     }
 
     /// `None` if `bytes` is not a message encoded with this layout.
     pub fn decode(bytes: &[u8]) -> Option<ConfigMessage> {
-        decode_behind(&Self::key(), bytes)
+        decode_with_prefix(&Self::key(), bytes)
     }
 
     fn key() -> [u8; 8] {
@@ -1164,7 +1168,7 @@ mod tests {
     }
 
     #[test]
-    fn dataset_rejects_what_is_not_hex_bytes() {
+    fn dataset_rejects_invalid_hex() {
         assert_eq!("0e0".parse::<Dataset>(), Err(ParseDatasetError::NotHex));
         assert_eq!("0g".parse::<Dataset>(), Err(ParseDatasetError::NotHex));
         assert_eq!("é0".parse::<Dataset>(), Err(ParseDatasetError::NotHex));
@@ -1184,7 +1188,7 @@ mod tests {
     /// longest header postcard-rpc writes: a 1-byte discriminant, an 8-byte
     /// key and a 4-byte sequence number.
     #[test]
-    fn full_neighbor_table_fits_the_firmwares_send_buffer() {
+    fn full_neighbor_table_fits_send_buffer() {
         let neighbor = Neighbor {
             kind: NeighborKind::Router,
             rloc16: u16::MAX,
@@ -1227,14 +1231,14 @@ mod tests {
     }
 
     #[test]
-    fn report_survives_the_trip_between_boards() {
+    fn report_round_trips() {
         let mut buf = [0; Report::MAX_LEN];
         let encoded = report().encode(&mut buf).unwrap();
         assert_eq!(Report::decode(encoded), Some(report()));
     }
 
     #[test]
-    fn report_of_another_layout_is_not_understood() {
+    fn report_with_other_layout_is_rejected() {
         let mut buf = [0; Report::MAX_LEN];
         let encoded = report().encode(&mut buf).unwrap();
         let mut other = encoded.to_vec();
@@ -1245,12 +1249,12 @@ mod tests {
     }
 
     #[test]
-    fn report_does_not_fit_a_buffer_that_is_too_short() {
+    fn report_encode_fails_on_short_buffer() {
         assert_eq!(report().encode(&mut [0; 16]), None);
     }
 
     #[test]
-    fn update_messages_survive_the_trip_between_boards() {
+    fn update_messages_round_trip() {
         let image = UpdateImage {
             build: BuildId(u32::MAX),
             size: ImageSize(u32::MAX),
@@ -1276,7 +1280,7 @@ mod tests {
 
     /// Pins the exact bytes, which boards on older firmware depend on.
     #[test]
-    fn update_message_encoding_has_not_changed() {
+    fn update_message_encoding_is_stable() {
         let mut buf = [0; UpdateMessage::MAX_LEN];
         let request = UpdateMessage::ChunkRequest {
             build: BuildId(1),
@@ -1312,12 +1316,12 @@ mod tests {
     /// A board whose firmware lacks a variant cannot decode a message of
     /// that variant.
     #[test]
-    fn update_message_of_an_unknown_kind_is_not_understood() {
+    fn update_message_with_unknown_variant_is_rejected() {
         assert_eq!(UpdateMessage::decode(b"SBU1\x040123456789ab"), None);
     }
 
     #[test]
-    fn build_marker_is_found_wherever_in_an_image_it_is() {
+    fn build_marker_is_found_anywhere_in_image() {
         let marker = BuildMarker::new(BuildId(1_791_145_757));
         assert_eq!(marker.build(), BuildId(1_791_145_757));
 
@@ -1339,12 +1343,12 @@ mod tests {
     }
 
     #[test]
-    fn board_id_is_written_like_the_usb_serial() {
+    fn board_id_displays_as_usb_serial() {
         assert_eq!(report().board.to_string(), "4B0041000350475532303120");
     }
 
     #[test]
-    fn board_id_is_read_the_way_it_is_written() {
+    fn board_id_parses_its_display_form() {
         let board = report().board;
         assert_eq!("4B0041000350475532303120".parse(), Ok(board));
         assert_eq!("4b0041000350475532303120".parse(), Ok(board));
@@ -1376,7 +1380,7 @@ mod tests {
     }
 
     #[test]
-    fn config_messages_survive_the_trip_between_boards() {
+    fn config_messages_round_trip() {
         let board = report().board;
         let messages = [
             ConfigMessage::Get { board, question: 0 },
@@ -1404,7 +1408,7 @@ mod tests {
     }
 
     #[test]
-    fn longest_config_message_is_as_long_as_one_may_be() {
+    fn longest_config_message_has_max_len() {
         let longest = ConfigMessage::Has {
             board: report().board,
             question: u32::MAX,
@@ -1416,7 +1420,7 @@ mod tests {
     }
 
     #[test]
-    fn config_message_of_another_layout_is_not_understood() {
+    fn config_message_with_other_layout_is_rejected() {
         let message = ConfigMessage::Get {
             board: report().board,
             question: 0,
@@ -1430,7 +1434,7 @@ mod tests {
     }
 
     #[test]
-    fn router_id_is_the_top_of_an_rloc16() {
+    fn router_id_is_top_bits_of_rloc16() {
         assert_eq!(RouterId(27).rloc16(), 0x6c00);
         assert_eq!(RouterId::of_rloc16(0x6c00), RouterId(27));
         // A child of that router.
@@ -1440,7 +1444,7 @@ mod tests {
     }
 
     #[test]
-    fn ext_address_is_written_as_hex() {
+    fn ext_address_displays_as_hex() {
         let address = ExtAddress([0x02, 0xa1, 0, 0, 0, 0, 0x0f, 0xff]);
         assert_eq!(address.to_string(), "02a1000000000fff");
     }

@@ -151,21 +151,21 @@ pub fn set_pending(pending: Option<Pending>) {
 
 /// Serve requests while the wireless stack is running. Installing needs
 /// FUS, so only an uninstall is accepted.
-pub async fn serve_beside_stack(requests: Requests, status: &Status) -> ! {
+pub async fn serve_with_stack(requests: Requests, status: &Status) -> ! {
     loop {
         let (pending, request) = requests.receive().await;
         match request {
             Request::Uninstall => {
                 set_pending(Some(Pending::Uninstall(UninstallStep::EnterFus)));
                 status.publish(CoprocessorStatus::Starting);
-                requests.answer(pending, Ok(()));
+                requests.respond(pending, Ok(()));
                 // Give the response time to reach the host. The next boot
                 // does the rest, because at boot nothing else is using CPU2
                 // yet.
                 Timer::after_millis(100).await;
                 cortex_m::peripheral::SCB::sys_reset();
             }
-            _ => requests.answer(pending, Err(CoprocessorError::StackRunning)),
+            _ => requests.respond(pending, Err(CoprocessorError::StackRunning)),
         }
     }
 }
@@ -229,9 +229,9 @@ impl Installer<'_> {
         let requests = self.requests;
         let resumed = async {
             match pending() {
-                Some(Pending::Install { from }) => self.installed(from).await,
+                Some(Pending::Install { from }) => self.await_install(from).await,
                 Some(Pending::Uninstall(step)) => self.uninstall(step).await,
-                None => self.idle(Duration::MIN).await,
+                None => self.wait_idle(Duration::MIN).await,
             }
         };
         let mut state = while_busy(requests, resumed).await;
@@ -262,10 +262,10 @@ impl Installer<'_> {
                                 // that the caller never reads a status that
                                 // is older than the response.
                                 self.publish(FusState::Busy);
-                                requests.answer(pending, Ok(()));
+                                requests.respond(pending, Ok(()));
                                 // If FUS accepts the image, it resets the
                                 // chip and this call never returns.
-                                state = while_busy(requests, self.installed(from)).await;
+                                state = while_busy(requests, self.await_install(from)).await;
                                 set_pending(None);
                                 continue;
                             }
@@ -279,13 +279,13 @@ impl Installer<'_> {
                 Request::Uninstall if self.firmware.stack.is_some() => {
                     set_pending(Some(Pending::Uninstall(UninstallStep::Delete)));
                     self.status.publish(CoprocessorStatus::Starting);
-                    requests.answer(pending, Ok(()));
+                    requests.respond(pending, Ok(()));
                     Timer::after_millis(100).await;
                     cortex_m::peripheral::SCB::sys_reset();
                 }
                 Request::Uninstall => Ok(()),
             };
-            requests.answer(pending, result);
+            requests.respond(pending, result);
         }
     }
 
@@ -297,7 +297,7 @@ impl Installer<'_> {
     }
 
     /// Wait until FUS has been idle for `settle`, or has failed.
-    async fn idle(&mut self, settle: Duration) -> FusState {
+    async fn wait_idle(&mut self, settle: Duration) -> FusState {
         let mut idle_since = None;
         loop {
             match self.sys.shci_c2_fus_get_state().await {
@@ -318,30 +318,30 @@ impl Installer<'_> {
 
     /// Wait for an install to finish. This runs in the boot that started
     /// the install, and again in each later boot until it is over.
-    async fn installed(&mut self, from: Installed) -> FusState {
+    async fn await_install(&mut self, from: Installed) -> FusState {
         if Installed::from(self.firmware) != from {
             // The installed versions have changed: the image is installed.
             // FUS goes idle after that.
-            return self.idle(Duration::MIN).await;
+            return self.wait_idle(Duration::MIN).await;
         }
         // Nothing has changed yet. FUS resets the chip when it installs
         // something, so if this wait completes, nothing was installed.
-        self.idle(INSTALL_SETTLE).await
+        self.wait_idle(INSTALL_SETTLE).await
     }
 
     /// Run the next step of removing the stack. Returns when there is
     /// nothing left to do.
     async fn uninstall(&mut self, step: UninstallStep) -> FusState {
         if self.firmware.stack.is_none() {
-            return self.idle(Duration::MIN).await;
+            return self.wait_idle(Duration::MIN).await;
         }
         if step == UninstallStep::Check {
             // The stack is still installed after the delete. Do not retry.
             defmt::warn!("fus: the wireless stack is still there");
-            return self.idle(Duration::MIN).await;
+            return self.wait_idle(Duration::MIN).await;
         }
 
-        let state = self.idle(Duration::MIN).await;
+        let state = self.wait_idle(Duration::MIN).await;
         if state != FusState::Idle {
             return state;
         }
@@ -349,7 +349,7 @@ impl Installer<'_> {
         self.publish(FusState::Busy);
         let status = self.sys.shci_c2_fus_fw_delete().await;
         defmt::info!("fus: delete -> {}", status);
-        let state = self.idle(DELETE_SETTLE).await;
+        let state = self.wait_idle(DELETE_SETTLE).await;
         if state != FusState::Idle {
             return state;
         }
@@ -442,13 +442,13 @@ impl Installer<'_> {
 /// Run `work`, which needs exclusive use of CPU2. Requests that arrive in
 /// the meantime are answered with [`CoprocessorError::Busy`].
 async fn while_busy<T>(requests: Requests, work: impl Future<Output = T>) -> T {
-    let turn_down = async {
+    let reject = async {
         loop {
             let (pending, _) = requests.receive().await;
-            requests.answer(pending, Err(CoprocessorError::Busy));
+            requests.respond(pending, Err(CoprocessorError::Busy));
         }
     };
-    match select(work, turn_down).await {
+    match select(work, reject).await {
         Either::First(done) => done,
         Either::Second(never) => never,
     }

@@ -88,7 +88,7 @@ const MAX_ATTEMPTS: u8 = 8;
 
 /// A board that has requested no chunk for this long no longer counts as
 /// fetching.
-const FETCHER_QUIET: Duration = Duration::from_secs(30);
+const FETCHER_TIMEOUT: Duration = Duration::from_secs(30);
 
 /// Wait until the earlier of two instants. `None` means never.
 async fn until_earlier(a: Option<Instant>, b: Option<Instant>) {
@@ -206,7 +206,7 @@ impl Handle {
 
     async fn request(&mut self, request: Request) -> UpdateResult {
         self.requests
-            .ask(request, REQUEST_TIMEOUT)
+            .call(request, REQUEST_TIMEOUT)
             .await
             .unwrap_or(Err(UpdateError::Unresponsive))
     }
@@ -239,26 +239,26 @@ impl Service {
             requests: self.requests,
             status: self.status,
             progress: self.progress,
-            arriving: None,
+            incoming: None,
             staged: None,
             socket,
             fetching: None,
             offering: None,
-            refused: None,
+            rolled_back: None,
             board: BoardId(embassy_stm32::uid::uid()),
             fetchers: heapless::Vec::new(),
         };
 
         match updates.state.get_state().await {
-            Ok(State::Swap) => updates.trial(network).await,
+            Ok(State::Swap) => updates.run_trial(network).await,
             Ok(State::Revert) => {
                 // The bootloader has swapped the update back into the
                 // staging area.
                 let whole = updates.staging_area.capacity() as u32;
-                updates.refused = updates.build_in_staging_area(whole).await;
+                updates.rolled_back = updates.build_in_staging_area(whole).await;
                 defmt::warn!(
                     "update: build {} did not work out, and was put back",
-                    updates.refused
+                    updates.rolled_back
                 );
                 self.status.publish(UpdateStatus::RolledBack);
             }
@@ -273,7 +273,8 @@ impl Service {
         self.status.publish(UpdateStatus::Unavailable);
         loop {
             let (pending, _) = self.requests.receive().await;
-            self.requests.answer(pending, Err(UpdateError::Unavailable));
+            self.requests
+                .respond(pending, Err(UpdateError::Unavailable));
         }
     }
 }
@@ -281,7 +282,7 @@ impl Service {
 type Region<'a, 'd> = Partition<'a, NoopRawMutex, RadioFlash<'d>>;
 
 /// An image that is being received.
-struct Arriving {
+struct Incoming {
     image: UpdateImage,
     received: u32,
     /// The staging area has been erased up to this offset.
@@ -290,13 +291,13 @@ struct Arriving {
 
 /// A board that is fetching the staged image from this one, as far as its
 /// requests show.
-struct FetcherHeard {
+struct TrackedFetcher {
     peer: thread::Peer,
     /// The board's ID, once it has sent it.
     board: Option<BoardId>,
     /// How much of the image it has, judging by the last chunk it requested.
     received: u32,
-    heard_at: Instant,
+    last_seen: Instant,
 }
 
 /// The state of fetching an image, chunk by chunk, from a board that offers
@@ -320,7 +321,7 @@ struct Updates<'a, 'd> {
     requests: request::Server<Request, UpdateResult>,
     status: &'static Status,
     progress: &'static Progress,
-    arriving: Option<Arriving>,
+    incoming: Option<Incoming>,
     staged: Option<UpdateImage>,
     /// The UDP socket for [`UpdateMessage`]s.
     socket: thread::Socket,
@@ -331,11 +332,11 @@ struct Updates<'a, 'd> {
     offering: Option<Instant>,
     /// The build of an update that was rolled back after its trial. It is
     /// not fetched again.
-    refused: Option<BuildId>,
+    rolled_back: Option<BuildId>,
     /// This board's ID.
     board: BoardId,
     /// The boards that are fetching the staged image from this one.
-    fetchers: heapless::Vec<FetcherHeard, { OfferProgress::MAX_FETCHERS }>,
+    fetchers: heapless::Vec<TrackedFetcher, { OfferProgress::MAX_FETCHERS }>,
 }
 
 impl Updates<'_, '_> {
@@ -343,7 +344,7 @@ impl Updates<'_, '_> {
     /// just swapped in. Returns once the update is confirmed. If the trial
     /// fails, this resets the board, and the bootloader restores the old
     /// firmware.
-    async fn trial(&mut self, network: thread::Monitor) {
+    async fn run_trial(&mut self, network: thread::Monitor) {
         defmt::info!("update: on trial as build {}", build());
         self.status.publish(UpdateStatus::OnTrial);
         let deadline = Instant::now() + TRIAL_TIMEOUT;
@@ -364,7 +365,7 @@ impl Updates<'_, '_> {
             if let Either::First((pending, _)) =
                 select(self.requests.receive(), Timer::after(TRIAL_POLL)).await
             {
-                self.requests.answer(pending, Err(UpdateError::OnTrial));
+                self.requests.respond(pending, Err(UpdateError::OnTrial));
             }
         }
 
@@ -378,7 +379,7 @@ impl Updates<'_, '_> {
             Err(_) => loop {
                 defmt::error!("update: could not be marked as kept");
                 let (pending, _) = self.requests.receive().await;
-                self.requests.answer(pending, Err(UpdateError::Flash));
+                self.requests.respond(pending, Err(UpdateError::Flash));
             },
         }
     }
@@ -397,14 +398,14 @@ impl Updates<'_, '_> {
                 until_earlier(fetch_due, self.offering),
             );
             match next.await {
-                Either3::First((pending, request)) => self.answer(pending, request).await,
-                Either3::Second(received) => self.heard(received).await,
-                Either3::Third(()) => self.tick().await,
+                Either3::First((pending, request)) => self.handle_request(pending, request).await,
+                Either3::Second(received) => self.handle_datagram(received).await,
+                Either3::Third(()) => self.handle_timers().await,
             }
         }
     }
 
-    async fn answer(&mut self, pending: request::Pending, request: Request) {
+    async fn handle_request(&mut self, pending: request::Pending, request: Request) {
         let apply = matches!(request, Request::Apply);
         let outcome = match request {
             Request::Begin(image) => {
@@ -429,12 +430,12 @@ impl Updates<'_, '_> {
             },
             Request::Offer(false) => {
                 self.offering = None;
-                self.forget_fetchers();
+                self.clear_fetchers();
                 Ok(())
             }
         };
         let applying = apply && outcome.is_ok();
-        self.requests.answer(pending, outcome);
+        self.requests.respond(pending, outcome);
 
         if applying {
             Timer::after(RESET_DELAY).await;
@@ -444,7 +445,7 @@ impl Updates<'_, '_> {
 
     /// Handle the timers that are due: request the missing chunk again, and
     /// offer the staged image again.
-    async fn tick(&mut self) {
+    async fn handle_timers(&mut self) {
         let now = Instant::now();
 
         if let Some(fetch) = &mut self.fetching
@@ -455,7 +456,7 @@ impl Updates<'_, '_> {
                 defmt::warn!("update: no answer; waiting for the next offer");
                 fetch.retry_at = None;
             } else {
-                self.ask_for_next_chunk().await;
+                self.request_next_chunk().await;
             }
         }
 
@@ -473,18 +474,18 @@ impl Updates<'_, '_> {
         }
     }
 
-    async fn heard(&mut self, received: thread::Received) {
+    async fn handle_datagram(&mut self, received: thread::Received) {
         let thread::Received { from, datagram } = received;
         match UpdateMessage::decode(&datagram) {
-            Some(UpdateMessage::Offer(image)) => self.offered(image, from).await,
+            Some(UpdateMessage::Offer(image)) => self.handle_offer(image, from).await,
             Some(UpdateMessage::ChunkRequest { build, offset }) => {
-                self.asked_for_chunk(build, offset, from).await
+                self.handle_chunk_request(build, offset, from).await
             }
             Some(UpdateMessage::Chunk {
                 build,
                 offset,
                 data,
-            }) => self.got_chunk(build, offset, &data).await,
+            }) => self.handle_chunk(build, offset, &data).await,
             Some(UpdateMessage::Fetching { board }) => {
                 if self.offering.is_some() {
                     self.fetcher(from).board = Some(board);
@@ -500,14 +501,16 @@ impl Updates<'_, '_> {
     /// Handle an offer of `image` from another board. Fetch the image,
     /// unless this board already runs it, has it staged, or has rolled it
     /// back.
-    async fn offered(&mut self, image: UpdateImage, from: thread::Peer) {
+    async fn handle_offer(&mut self, image: UpdateImage, from: thread::Peer) {
         // A board also receives its own offers.
-        if image.build == build() || self.staged == Some(image) || self.refused == Some(image.build)
+        if image.build == build()
+            || self.staged == Some(image)
+            || self.rolled_back == Some(image.build)
         {
             return;
         }
 
-        match (&self.arriving, &mut self.fetching) {
+        match (&self.incoming, &mut self.fetching) {
             (None, _) => {
                 if self.begin(image).is_err() {
                     return;
@@ -517,21 +520,21 @@ impl Updates<'_, '_> {
                     attempts: 0,
                     retry_at: None,
                 });
-                self.introduce_to(from).await;
-                self.ask_for_next_chunk().await;
+                self.send_board_id(from).await;
+                self.request_next_chunk().await;
             }
             // This is the image being fetched, or the one whose fetch
             // stalled when its source stopped answering: resume it.
-            (Some(arriving), Some(fetch)) if arriving.image == image => {
+            (Some(incoming), Some(fetch)) if incoming.image == image => {
                 fetch.from = from;
                 let given_up = fetch.retry_at.is_none();
                 if given_up {
                     fetch.attempts = 0;
                 }
                 // Sent again at every offer, in case the first one was lost.
-                self.introduce_to(from).await;
+                self.send_board_id(from).await;
                 if given_up {
-                    self.ask_for_next_chunk().await;
+                    self.request_next_chunk().await;
                 }
             }
             // Another image is being received, from the host or from a board.
@@ -541,37 +544,37 @@ impl Updates<'_, '_> {
 
     /// Send this board's ID to the board that offers the image, so that it
     /// can report whose progress it is tracking.
-    async fn introduce_to(&mut self, offering: thread::Peer) {
-        let introduction = UpdateMessage::Fetching { board: self.board };
-        self.send(Some(offering), &introduction).await;
+    async fn send_board_id(&mut self, peer: thread::Peer) {
+        let message = UpdateMessage::Fetching { board: self.board };
+        self.send(Some(peer), &message).await;
     }
 
-    async fn ask_for_next_chunk(&mut self) {
-        let (Some(arriving), Some(fetch)) = (&self.arriving, &mut self.fetching) else {
+    async fn request_next_chunk(&mut self) {
+        let (Some(incoming), Some(fetch)) = (&self.incoming, &mut self.fetching) else {
             return;
         };
         let request = UpdateMessage::ChunkRequest {
-            build: arriving.image.build,
-            offset: arriving.received,
+            build: incoming.image.build,
+            offset: incoming.received,
         };
         let from = fetch.from;
         fetch.retry_at = Some(Instant::now() + CHUNK_TIMEOUT);
         self.send(Some(from), &request).await;
     }
 
-    async fn got_chunk(&mut self, build: BuildId, offset: u32, data: &[u8]) {
-        let (Some(arriving), Some(_)) = (&self.arriving, &self.fetching) else {
+    async fn handle_chunk(&mut self, build: BuildId, offset: u32, data: &[u8]) {
+        let (Some(incoming), Some(_)) = (&self.incoming, &self.fetching) else {
             return;
         };
         // Ignore a late or duplicate chunk: it is not the one that was last
         // requested.
-        if build != arriving.image.build || offset != arriving.received {
+        if build != incoming.image.build || offset != incoming.received {
             return;
         }
-        let size = arriving.image.size.0;
+        let size = incoming.image.size.0;
 
         if self.write(offset, data).await.is_err() {
-            self.arriving = None;
+            self.incoming = None;
             self.fetching = None;
             self.status.publish(UpdateStatus::Settled);
             return;
@@ -580,7 +583,7 @@ impl Updates<'_, '_> {
             if let Some(fetch) = &mut self.fetching {
                 fetch.attempts = 0;
             }
-            self.ask_for_next_chunk().await;
+            self.request_next_chunk().await;
             return;
         }
 
@@ -592,7 +595,7 @@ impl Updates<'_, '_> {
     }
 
     /// Handle a chunk request from a board that is fetching the staged image.
-    async fn asked_for_chunk(&mut self, build: BuildId, offset: u32, from: thread::Peer) {
+    async fn handle_chunk_request(&mut self, build: BuildId, offset: u32, from: thread::Peer) {
         let Some(image) = self.staged else {
             return;
         };
@@ -624,35 +627,35 @@ impl Updates<'_, '_> {
 
     /// The record of the board at `peer` as a fetcher of the staged image.
     /// Creates the record if there is none.
-    fn fetcher(&mut self, peer: thread::Peer) -> &mut FetcherHeard {
+    fn fetcher(&mut self, peer: thread::Peer) -> &mut TrackedFetcher {
         let now = Instant::now();
         let known = self.fetchers.iter().position(|f| f.peer == peer);
         let index = known.unwrap_or_else(|| {
-            let new = FetcherHeard {
+            let new = TrackedFetcher {
                 peer,
                 board: None,
                 received: 0,
-                heard_at: now,
+                last_seen: now,
             };
             match self.fetchers.push(new) {
                 Ok(()) => self.fetchers.len() - 1,
                 // The list is full: replace the fetcher that has been quiet
                 // the longest.
                 Err(new) => {
-                    let quietest = (0..self.fetchers.len())
-                        .min_by_key(|&i| self.fetchers[i].heard_at)
+                    let oldest = (0..self.fetchers.len())
+                        .min_by_key(|&i| self.fetchers[i].last_seen)
                         .unwrap_or(0);
-                    self.fetchers[quietest] = new;
-                    quietest
+                    self.fetchers[oldest] = new;
+                    oldest
                 }
             }
         });
         let fetcher = &mut self.fetchers[index];
-        fetcher.heard_at = now;
+        fetcher.last_seen = now;
         fetcher
     }
 
-    fn forget_fetchers(&mut self) {
+    fn clear_fetchers(&mut self) {
         self.fetchers.clear();
         self.publish_progress();
     }
@@ -662,7 +665,7 @@ impl Updates<'_, '_> {
     fn publish_progress(&mut self) {
         let now = Instant::now();
         self.fetchers
-            .retain(|fetcher| now - fetcher.heard_at < FETCHER_QUIET);
+            .retain(|fetcher| now - fetcher.last_seen < FETCHER_TIMEOUT);
         let fetchers = self.fetchers.iter().map(|fetcher| Fetcher {
             board: fetcher.board,
             received: fetcher.received,
@@ -718,10 +721,10 @@ impl Updates<'_, '_> {
     }
 
     fn begin(&mut self, image: UpdateImage) -> UpdateResult {
-        self.arriving = None;
+        self.incoming = None;
         self.staged = None;
         self.offering = None;
-        self.forget_fetchers();
+        self.clear_fetchers();
         // The bootloader swaps the staging area with a region that is one
         // page shorter, so an image can only be as long as that region.
         let room = self.staging_area.capacity() as u32 - PAGE;
@@ -731,7 +734,7 @@ impl Updates<'_, '_> {
         }
 
         defmt::info!("update: build {} is arriving", image.build);
-        self.arriving = Some(Arriving {
+        self.incoming = Some(Incoming {
             image,
             received: 0,
             erased_to: 0,
@@ -746,16 +749,16 @@ impl Updates<'_, '_> {
     async fn write(&mut self, offset: u32, data: &[u8]) -> UpdateResult {
         const WORD: usize = <RadioFlash as NorFlash>::WRITE_SIZE;
 
-        let Some(arriving) = &mut self.arriving else {
+        let Some(incoming) = &mut self.incoming else {
             return Err(UpdateError::OutOfSequence);
         };
         let len = data.len();
         let end = offset.saturating_add(len as u32);
-        let is_last = end == arriving.image.size.0;
-        if offset != arriving.received
+        let is_last = end == incoming.image.size.0;
+        if offset != incoming.received
             || len == 0
             || len > ImageChunk::MAX_LEN
-            || end > arriving.image.size.0
+            || end > incoming.image.size.0
             || (len % WORD != 0 && !is_last)
         {
             return Err(UpdateError::OutOfSequence);
@@ -769,26 +772,26 @@ impl Updates<'_, '_> {
         let words = &words[..len.next_multiple_of(WORD)];
 
         let written_to = offset + words.len() as u32;
-        while arriving.erased_to < written_to {
-            let page = arriving.erased_to;
+        while incoming.erased_to < written_to {
+            let page = incoming.erased_to;
             let erased = self.staging_area.erase(page, page + PAGE).await;
             erased.map_err(flash_error)?;
-            arriving.erased_to += PAGE;
+            incoming.erased_to += PAGE;
         }
         let written = self.staging_area.write(offset, words).await;
         written.map_err(flash_error)?;
 
-        arriving.received = end;
+        incoming.received = end;
         self.status.publish(UpdateStatus::Receiving {
-            image: arriving.image,
+            image: incoming.image,
             received: end,
         });
         Ok(())
     }
 
     async fn finish(&mut self) -> UpdateResult {
-        let image = match self.arriving.take() {
-            Some(arriving) if arriving.received == arriving.image.size.0 => arriving.image,
+        let image = match self.incoming.take() {
+            Some(incoming) if incoming.received == incoming.image.size.0 => incoming.image,
             _ => {
                 self.status.publish(UpdateStatus::Settled);
                 return Err(UpdateError::OutOfSequence);

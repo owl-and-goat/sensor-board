@@ -289,10 +289,10 @@ pub enum Notification {
 /// A TCP callback from CPU2.
 #[derive(Clone, Copy)]
 pub enum TcpEvent {
-    /// The listener has an incoming connection. `taken` is the answer CPU2
+    /// The listener has an incoming connection. `accepted` is the answer CPU2
     /// was given: accept it into the endpoint, or refuse it.
     Incoming {
-        taken: bool,
+        accepted: bool,
     },
     /// The connection is established. This covers both a connection opened
     /// from here and an accepted one.
@@ -317,7 +317,7 @@ pub enum TcpDisconnected {
     /// Both sides closed the connection, and the endpoint is now in
     /// TIME-WAIT. It cannot accept or open another connection until that
     /// state expires or the endpoint is aborted.
-    Lingering,
+    TimeWait,
 }
 
 fn disconnected_from_raw(reason: u32) -> TcpDisconnected {
@@ -325,7 +325,7 @@ fn disconnected_from_raw(reason: u32) -> TcpDisconnected {
     match Reason(reason as _) {
         Reason::OT_TCP_DISCONNECTED_REASON_NORMAL => TcpDisconnected::Normal,
         Reason::OT_TCP_DISCONNECTED_REASON_REFUSED => TcpDisconnected::Refused,
-        Reason::OT_TCP_DISCONNECTED_REASON_TIME_WAIT => TcpDisconnected::Lingering,
+        Reason::OT_TCP_DISCONNECTED_REASON_TIME_WAIT => TcpDisconnected::TimeWait,
         Reason::OT_TCP_DISCONNECTED_REASON_TIMED_OUT => TcpDisconnected::TimedOut,
         _ => TcpDisconnected::Reset,
     }
@@ -337,7 +337,7 @@ fn disconnected_from_raw(reason: u32) -> TcpDisconnected {
 ///
 /// SAFETY: call this only while handling a notification, before it is
 /// acknowledged. Until then CPU1 may write to the notification buffer.
-unsafe fn answer_callback(value: u32) {
+unsafe fn set_callback_result(value: u32) {
     use embassy_stm32_wpan::consts::{TL_EVT_HEADER_SIZE, TL_PACKET_HEADER_SIZE};
     use embassy_stm32_wpan::tables::THREAD_NOTIF_RSP_EVT_BUFFER;
 
@@ -355,7 +355,7 @@ unsafe fn answer_callback(value: u32) {
 
 /// Wait for the stack's next callback. `sockets` are the buffers of the UDP
 /// sockets, indexed by the context each was opened with. `tcp` is the buffer
-/// of the TCP endpoint. `take_tcp` says whether to accept an incoming TCP
+/// of the TCP endpoint. `accept_tcp` says whether to accept an incoming TCP
 /// connection, which has to be decided inside the callback.
 ///
 /// CPU2 stays inside the callback until its notification is acknowledged,
@@ -368,7 +368,7 @@ pub async fn notification(
     ot: &mut ThreadOt<'_>,
     sockets: &'static [UdpBuffer],
     tcp: &'static TcpBuffer,
-    take_tcp: bool,
+    accept_tcp: bool,
 ) -> Notification {
     const STATE_CHANGE: u32 = ffi_notification::MSG_M0TOM4_NOTIFY_STATE_CHANGE as u32;
     const UDP_RECEIVE: u32 = ffi_notification::MSG_M0TOM4_UDP_RECEIVE as u32;
@@ -380,7 +380,7 @@ pub async fn notification(
         ffi_notification::MSG_M0TOM4_TCP_RECEIVE_AVAILABLE_CALLBACK as u32;
     const TCP_DISCONNECTED: u32 = ffi_notification::MSG_M0TOM4_TCP_DISCONNECTED_CALLBACK as u32;
 
-    let acknowledged_after = |raw: OtNotification| match raw.id {
+    let handle = |raw: OtNotification| match raw.id {
         STATE_CHANGE => Notification::StateChanged,
         UDP_RECEIVE => {
             // The arguments of a socket's receive callback: its context, the
@@ -420,8 +420,8 @@ pub async fn notification(
             // peer's address, and an out pointer for the endpoint that
             // accepts the connection.
             let [_, _, endpoint_out, _] = raw.data;
-            let taken = take_tcp && raw.size >= 3 && endpoint_out != 0;
-            let action = if taken {
+            let accepted = accept_tcp && raw.size >= 3 && endpoint_out != 0;
+            let action = if accepted {
                 Action::OT_TCP_INCOMING_CONNECTION_ACTION_ACCEPT
             } else {
                 Action::OT_TCP_INCOMING_CONNECTION_ACTION_REFUSE
@@ -430,14 +430,14 @@ pub async fn notification(
                 // SAFETY: `endpoint_out` stays valid until the notification
                 // is acknowledged, and CPU1 can write to it: ST's handler
                 // passes it to the application for exactly that.
-                if taken {
+                if accepted {
                     write_volatile(endpoint_out as *mut u32, tcp.endpoint());
                 }
                 // SAFETY: the notification is not acknowledged before this
                 // closure returns.
-                answer_callback(action.0 as u32);
+                set_callback_result(action.0 as u32);
             }
-            Notification::Tcp(TcpEvent::Incoming { taken })
+            Notification::Tcp(TcpEvent::Incoming { accepted })
         }
         TCP_ACCEPT_DONE | TCP_ESTABLISHED => Notification::Tcp(TcpEvent::Established),
         TCP_SEND_DONE => Notification::Tcp(TcpEvent::SendDone),
@@ -456,7 +456,7 @@ pub async fn notification(
         }
         other => Notification::Other(other),
     };
-    notif_rx.receive_with(acknowledged_after).await
+    notif_rx.receive_with(handle).await
 }
 
 /// Whether an otNetifAddress at `pointer` would be aligned and entirely in

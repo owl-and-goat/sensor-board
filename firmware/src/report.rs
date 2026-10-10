@@ -62,7 +62,7 @@ impl Handle {
     /// Start or stop forwarding received reports to the host.
     pub async fn collect(&mut self, on: bool) -> NetworkResult {
         self.requests
-            .ask(Collect(on), REQUEST_TIMEOUT)
+            .call(Collect(on), REQUEST_TIMEOUT)
             .await
             .unwrap_or(Err(NetworkError::Unresponsive))
     }
@@ -89,7 +89,7 @@ impl Task {
                 Either3::First(()) => self.report().await,
                 Either3::Second((pending, Collect(on))) => {
                     let outcome = self.socket.listen(on).await;
-                    self.requests.answer(pending, outcome);
+                    self.requests.respond(pending, outcome);
                 }
                 Either3::Third(received) => match Report::decode(&received.datagram) {
                     Some(report) => publisher.report_received(&report).await,

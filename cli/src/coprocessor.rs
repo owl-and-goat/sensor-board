@@ -144,7 +144,7 @@ pub async fn install(serial: Option<&str>, image: &[u8]) -> Result<()> {
     drop(board);
 
     println!("FUS is installing it. The board resets a few times.");
-    let after = settled(&serial).await?;
+    let after = wait_for_fus(&serial).await?;
     if installed(&after) == installed(&before) {
         bail!("board {serial}: FUS finished without installing anything");
     }
@@ -167,7 +167,7 @@ pub async fn uninstall(board: Board) -> Result<()> {
     drop(board);
 
     println!("FUS is removing the stack. The board resets a few times.");
-    let after = settled(&serial).await?;
+    let after = wait_for_fus(&serial).await?;
     if matches!(installed(&after), Some(firmware) if firmware.stack.is_some()) {
         bail!("board {serial}: FUS did not remove the stack");
     }
@@ -257,7 +257,7 @@ fn installed(status: &CoprocessorStatus) -> Option<CoprocessorFirmware> {
 
 /// Wait for FUS on the board with this serial number to finish, whether it
 /// succeeds or fails.
-async fn settled(serial: &str) -> Result<CoprocessorStatus> {
+async fn wait_for_fus(serial: &str) -> Result<CoprocessorStatus> {
     let deadline = Instant::now() + INSTALL_TIMEOUT;
     loop {
         tokio::time::sleep(POLL_INTERVAL).await;
@@ -327,7 +327,7 @@ mod tests {
     }
 
     #[test]
-    fn reads_what_an_image_is() {
+    fn reads_image_kind_and_version() {
         let fus = ImageInfo::read(&image(0x3227_9221, 0x0202_0000)).unwrap();
         assert_eq!(fus.to_string(), "FUS 2.2.0");
         let stack = ImageInfo::read(&image(0x2337_2991, 0x0118_0002)).unwrap();
@@ -335,7 +335,7 @@ mod tests {
     }
 
     #[test]
-    fn does_not_guess_at_other_files() {
+    fn rejects_files_without_footer() {
         assert_eq!(ImageInfo::read(&[]), None);
         assert_eq!(ImageInfo::read(&[0xab; 1000]), None);
         assert_eq!(ImageInfo::read(&image(0x1234_5678, 0x0202_0000)), None);

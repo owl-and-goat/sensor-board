@@ -96,7 +96,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn a_report_is_one_line() {
+    fn report_is_described_on_one_line() {
         let report = Report {
             board: "4B0041000350475532303120".parse().unwrap(),
             firmware: BuildId(1_791_145_757),

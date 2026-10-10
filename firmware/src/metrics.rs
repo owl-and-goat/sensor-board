@@ -54,9 +54,9 @@ const CAPACITANCE: [(Sensor, Channel); 4] = [
 
 /// Labels of a per-board metric.
 #[derive(PartialEq)]
-struct OfBoard(BoardId);
+struct BoardLabels(BoardId);
 
-impl FmtLabels for OfBoard {
+impl FmtLabels for BoardLabels {
     fn fmt_labels(&self, writer: &mut impl fmt::Write) -> fmt::Result {
         write!(writer, "board=\"{}\"", self.0)
     }
@@ -64,14 +64,14 @@ impl FmtLabels for OfBoard {
 
 /// Labels of a per-channel capacitance metric.
 #[derive(PartialEq)]
-struct OfChannel {
+struct ChannelLabels {
     board: BoardId,
     channel: usize,
 }
 
-impl FmtLabels for OfChannel {
+impl FmtLabels for ChannelLabels {
     fn fmt_labels(&self, writer: &mut impl fmt::Write) -> fmt::Result {
-        let OfChannel { board, channel } = self;
+        let ChannelLabels { board, channel } = self;
         write!(writer, "board=\"{board}\",channel=\"{channel}\"")
     }
 }
@@ -79,17 +79,17 @@ impl FmtLabels for OfChannel {
 /// Buffer for the metrics in Prometheus's text format.
 type Text = heapless::String<4096>;
 
-type OfBoardFamily<M> = MetricFamily<'static, M, 1, OfBoard>;
-type OfChannelFamily<M> = MetricFamily<'static, M, { CAPACITANCE.len() }, OfChannel>;
+type BoardFamily<M> = MetricFamily<'static, M, 1, BoardLabels>;
+type ChannelFamily<M> = MetricFamily<'static, M, { CAPACITANCE.len() }, ChannelLabels>;
 
 struct Metrics {
-    firmware_build: OfBoardFamily<IntGauge>,
-    capacitance: OfChannelFamily<IntGauge>,
-    capacitance_errors: OfChannelFamily<Counter>,
-    scrapes: OfBoardFamily<Counter>,
-    pushes: OfBoardFamily<Counter>,
-    push_failures: OfBoardFamily<Counter>,
-    push_status: OfBoardFamily<IntGauge>,
+    firmware_build: BoardFamily<IntGauge>,
+    capacitance: ChannelFamily<IntGauge>,
+    capacitance_errors: ChannelFamily<Counter>,
+    scrapes: BoardFamily<Counter>,
+    pushes: BoardFamily<Counter>,
+    push_failures: BoardFamily<Counter>,
+    push_status: BoardFamily<IntGauge>,
 }
 
 impl Metrics {
@@ -135,17 +135,17 @@ impl Metrics {
 
 /// The metrics, shared by the [`Task`] and the [`Handle`]. Recording a value
 /// only needs `&Metrics`. The `RefCell` allows replacing them all in
-/// [`Recorded::start_afresh`]. Each access runs to completion inside the
+/// [`SharedMetrics::reset`]. Each access runs to completion inside the
 /// lock, so the text is always rendered from one consistent state.
-struct Recorded(Mutex<ThreadModeRawMutex, RefCell<Metrics>>);
+struct SharedMetrics(Mutex<ThreadModeRawMutex, RefCell<Metrics>>);
 
-impl Recorded {
+impl SharedMetrics {
     fn with<R>(&self, f: impl FnOnce(&Metrics) -> R) -> R {
         self.0.lock(|metrics| f(&metrics.borrow()))
     }
 
     /// Reset every metric.
-    fn start_afresh(&self) {
+    fn reset(&self) {
         self.0.lock(|metrics| metrics.replace(Metrics::new()));
     }
 }
@@ -160,10 +160,10 @@ pub struct Builder {
 impl Builder {
     /// Panics if called a second time: the firmware has one metrics task.
     pub fn init(self) -> (Task, Handle) {
-        static RECORDED: StaticCell<Recorded> = StaticCell::new();
+        static METRICS: StaticCell<SharedMetrics> = StaticCell::new();
         static TEXT: StaticCell<Text> = StaticCell::new();
-        let recorded: &'static Recorded =
-            RECORDED.init(Recorded(Mutex::new(RefCell::new(Metrics::new()))));
+        let shared: &'static SharedMetrics =
+            METRICS.init(SharedMetrics(Mutex::new(RefCell::new(Metrics::new()))));
 
         let task = Task {
             config: self.config,
@@ -171,25 +171,25 @@ impl Builder {
                 tcp: self.tcp,
                 capacitance: self.capacitance,
                 board: BoardId(embassy_stm32::uid::uid()),
-                metrics: recorded,
+                metrics: shared,
                 text: TEXT.init(Text::new()),
                 polls: [None; CAPACITANCE.len()],
             },
         };
-        (task, Handle { metrics: recorded })
+        (task, Handle { metrics: shared })
     }
 }
 
 /// Gives the rest of the firmware read access to the metrics.
 pub struct Handle {
-    metrics: &'static Recorded,
+    metrics: &'static SharedMetrics,
 }
 
 impl Handle {
     /// The chunk of the current metrics text that starts at byte `offset`.
     pub fn text(&self, offset: u32) -> MetricsChunk {
         let mut window = Window {
-            before: offset as usize,
+            skip: offset as usize,
             chunk: MetricsChunk {
                 text: heapless::String::new(),
                 more: false,
@@ -201,19 +201,19 @@ impl Handle {
     }
 }
 
-/// A `fmt::Write` sink that skips the first `before` bytes written to it and
+/// A `fmt::Write` sink that skips the first `skip` bytes written to it and
 /// keeps as much of the rest as fits in one chunk.
 struct Window {
     /// Bytes still to skip.
-    before: usize,
+    skip: usize,
     chunk: MetricsChunk,
 }
 
 impl fmt::Write for Window {
     fn write_str(&mut self, text: &str) -> fmt::Result {
         for character in text.chars() {
-            if self.before > 0 {
-                self.before = self.before.saturating_sub(character.len_utf8());
+            if self.skip > 0 {
+                self.skip = self.skip.saturating_sub(character.len_utf8());
             } else if self.chunk.more || self.chunk.text.push(character).is_err() {
                 self.chunk.more = true;
             }
@@ -247,7 +247,7 @@ impl Task {
 #[derive(Clone, Copy)]
 struct Poll {
     due: Instant,
-    every: Duration,
+    interval: Duration,
 }
 
 struct Exporter {
@@ -255,7 +255,7 @@ struct Exporter {
     capacitance: &'static sensor::Shared<CapacitanceSensor<'static>>,
     /// This board's ID.
     board: BoardId,
-    metrics: &'static Recorded,
+    metrics: &'static SharedMetrics,
     /// The rendered metrics text, for the response or push being sent.
     text: &'static mut Text,
     /// The schedule of each sensor in [`CAPACITANCE`], by index. `None` if
@@ -267,9 +267,9 @@ impl Exporter {
     /// Poll the sensors and export the metrics as `config` specifies.
     async fn export(&mut self, config: Option<&BoardConfig>) -> ! {
         // Drop the metrics recorded under the previous configuration.
-        self.metrics.start_afresh();
+        self.metrics.reset();
         self.metrics.with(|metrics| {
-            if let Some(build) = metrics.firmware_build.register(OfBoard(self.board)) {
+            if let Some(build) = metrics.firmware_build.register(BoardLabels(self.board)) {
                 build.set_value(update::build().0 as usize);
             }
         });
@@ -279,10 +279,10 @@ impl Exporter {
             let sensor = config.and_then(|config| config.sensor_config.0[sensor]);
             *poll = sensor.map(|sensor| {
                 let micros = sensor.poll_interval.as_micros().try_into();
-                let every = Duration::from_micros(micros.unwrap_or(u64::MAX));
+                let interval = Duration::from_micros(micros.unwrap_or(u64::MAX));
                 Poll {
                     due: now,
-                    every: every.max(MIN_INTERVAL),
+                    interval: interval.max(MIN_INTERVAL),
                 }
             });
         }
@@ -308,25 +308,28 @@ impl Exporter {
     async fn serve(&mut self) -> ! {
         self.count(|metrics| &metrics.scrapes, 0);
         loop {
-            let next = select(Self::poll_due(&self.polls), Self::scrape(&mut self.tcp));
+            let next = select(
+                Self::wait_until_due(&self.polls),
+                Self::accept_scrape(&mut self.tcp),
+            );
             match next.await {
                 Either::First(sensor) => self.read(sensor).await,
-                Either::Second(()) => self.scraped().await,
+                Either::Second(()) => self.handle_scrape().await,
             }
         }
     }
 
     /// Wait for an incoming connection on [`SCRAPE_PORT`].
-    async fn scrape(tcp: &mut thread::Tcp) {
+    async fn accept_scrape(tcp: &mut thread::Tcp) {
         loop {
-            let came_in = async {
+            let accepted = async {
                 // Listen on every attempt: the last one may have failed
                 // because Thread had not started. Listening on the same port
                 // again is a no-op.
                 tcp.listen(Some(SCRAPE_PORT)).await?;
                 tcp.accept().await
             };
-            match came_in.await {
+            match accepted.await {
                 Ok(()) => return,
                 Err(e) => {
                     defmt::debug!("metrics: cannot accept scrapes yet: {}", e);
@@ -337,24 +340,24 @@ impl Exporter {
     }
 
     /// Handle the HTTP request on the accepted connection.
-    async fn scraped(&mut self) {
-        let answered = async {
-            match http::request(&mut self.tcp).await? {
-                http::Asked::Metrics => {
+    async fn handle_scrape(&mut self) {
+        let handled = async {
+            match http::read_request(&mut self.tcp).await? {
+                http::Request::Metrics => {
                     self.count(|metrics| &metrics.scrapes, 1);
-                    let status = match self.write() {
+                    let status = match self.render() {
                         Ok(()) => http::Status::Ok,
                         Err(fmt::Error) => http::Status::InternalServerError,
                     };
                     http::respond(&mut self.tcp, status, self.text).await
                 }
-                http::Asked::Other => {
+                http::Request::Other => {
                     let body = "The metrics are at /metrics.\n";
                     http::respond(&mut self.tcp, http::Status::NotFound, body).await
                 }
             }
         };
-        if let Err(e) = answered.await {
+        if let Err(e) = handled.await {
             defmt::debug!("metrics: scrape failed: {}", e);
         }
         self.tcp.close().await;
@@ -366,7 +369,7 @@ impl Exporter {
         // No push before this time. Set after a failed push.
         let mut not_before = Instant::now();
         loop {
-            let sensor = Self::poll_due(&self.polls).await;
+            let sensor = Self::wait_until_due(&self.polls).await;
             self.read(sensor).await;
             // Also read every other sensor that is due, so that one push
             // covers them all.
@@ -391,7 +394,7 @@ impl Exporter {
         self.count(|metrics| &metrics.pushes, 1);
 
         let pushed = async {
-            self.write().map_err(|_| http::Error::Malformed)?;
+            self.render().map_err(|_| http::Error::Malformed)?;
             let mut path: heapless::String<64> = heapless::String::new();
             let written = write!(path, "/metrics/job/{JOB}/instance/{}", self.board);
             written.map_err(|_| http::Error::Malformed)?;
@@ -400,21 +403,21 @@ impl Exporter {
         let status = pushed.await;
         self.tcp.close().await;
 
-        let taken = matches!(status, Ok(200..300));
+        let accepted = matches!(status, Ok(200..300));
         if let Err(e) = status {
             defmt::debug!("metrics: push failed: {}", e);
         }
-        self.count(|metrics| &metrics.push_failures, usize::from(!taken));
+        self.count(|metrics| &metrics.push_failures, usize::from(!accepted));
         self.metrics.with(|metrics| {
-            if let Some(last) = metrics.push_status.register(OfBoard(self.board)) {
+            if let Some(last) = metrics.push_status.register(BoardLabels(self.board)) {
                 last.set_value(status.map_or(0, usize::from));
             }
         });
-        taken
+        accepted
     }
 
     /// Wait until a sensor is due. Returns its index in [`CAPACITANCE`].
-    async fn poll_due(polls: &[Option<Poll>]) -> usize {
+    async fn wait_until_due(polls: &[Option<Poll>]) -> usize {
         let dues = polls.iter().enumerate();
         let next = dues.filter_map(|(sensor, poll)| Some(((*poll)?.due, sensor)));
         match next.min() {
@@ -430,10 +433,10 @@ impl Exporter {
     /// result.
     async fn read(&mut self, sensor: usize) {
         if let Some(poll) = &mut self.polls[sensor] {
-            poll.due = Instant::now() + poll.every;
+            poll.due = Instant::now() + poll.interval;
         }
         let (_, channel) = CAPACITANCE[sensor];
-        let labels = || OfChannel {
+        let labels = || ChannelLabels {
             board: self.board,
             channel: sensor,
         };
@@ -453,9 +456,9 @@ impl Exporter {
     }
 
     /// Add `n` to a per-board counter.
-    fn count(&self, counter: impl FnOnce(&Metrics) -> &OfBoardFamily<Counter>, n: usize) {
+    fn count(&self, counter: impl FnOnce(&Metrics) -> &BoardFamily<Counter>, n: usize) {
         self.metrics.with(|metrics| {
-            if let Some(counter) = counter(metrics).register(OfBoard(self.board)) {
+            if let Some(counter) = counter(metrics).register(BoardLabels(self.board)) {
                 counter.fetch_add(n);
             }
         });
@@ -463,7 +466,7 @@ impl Exporter {
 
     /// Render the current metrics into `self.text`. Fails if they do not
     /// fit, and leaves the text empty.
-    fn write(&mut self) -> fmt::Result {
+    fn render(&mut self) -> fmt::Result {
         self.text.clear();
         let written = self.metrics.with(|metrics| metrics.write(self.text));
         if written.is_err() {

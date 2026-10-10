@@ -236,7 +236,7 @@ mod tests {
     }
 
     #[test]
-    fn intervals_are_read_as_they_are_typed() {
+    fn parses_intervals() {
         assert_eq!(parse_interval("500ms"), Ok(Duration::from_millis(500)));
         assert_eq!(parse_interval("30s"), Ok(Duration::from_secs(30)));
         assert_eq!(parse_interval("5m"), Ok(Duration::from_secs(300)));
@@ -248,7 +248,7 @@ mod tests {
     }
 
     #[test]
-    fn intervals_are_written_as_they_are_typed() {
+    fn formats_intervals() {
         for typed in ["500ms", "1500ms", "30s", "90s", "5m", "1h", "36h"] {
             let interval = parse_interval(typed).unwrap();
             assert_eq!(describe_interval(interval), typed);
@@ -259,7 +259,7 @@ mod tests {
     }
 
     #[test]
-    fn a_sensor_is_given_an_interval_or_turned_off() {
+    fn parses_sensor_changes() {
         assert_eq!(
             sensor_change("temperature=30s"),
             Ok(SensorChange {
@@ -281,7 +281,7 @@ mod tests {
     }
 
     #[test]
-    fn changes_leave_what_they_do_not_name() {
+    fn changes_keep_other_settings() {
         let changes = Changes {
             id: None,
             power_mode: Some(PowerMode::Battery),
@@ -307,7 +307,7 @@ mod tests {
     }
 
     #[test]
-    fn a_first_configuration_needs_an_id_and_a_power_mode() {
+    fn first_configuration_requires_id_and_power_mode() {
         let mut changes = Changes {
             id: Some(3),
             power_mode: None,
@@ -324,7 +324,7 @@ mod tests {
     }
 
     #[test]
-    fn a_configuration_is_described_a_line_for_each_thing_in_it() {
+    fn describes_one_setting_per_line() {
         let text = describe(&config());
         let lines: Vec<&str> = text.lines().collect();
         assert_eq!(
@@ -342,7 +342,7 @@ mod tests {
     }
 
     #[test]
-    fn a_pushgateway_is_an_ipv6_address_and_a_port_or_none() {
+    fn parses_pushgateway_changes() {
         let address = SocketAddrV6::new("fd12:3456::1".parse().unwrap(), 9091, 0, 0);
         assert_eq!(
             pushgateway_change("[fd12:3456::1]:9091"),

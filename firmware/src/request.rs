@@ -11,24 +11,24 @@ use embassy_time::{Duration, with_timeout};
 /// Matches a response to its request.
 type Id = u32;
 
-pub struct Channel<Request, Answer> {
+pub struct Channel<Request, Response> {
     request: Signal<ThreadModeRawMutex, (Id, Request)>,
-    answer: Signal<ThreadModeRawMutex, (Id, Answer)>,
+    response: Signal<ThreadModeRawMutex, (Id, Response)>,
 }
 
 /// A request that the server has received and not yet answered.
 pub struct Pending(Id);
 
-impl<Request: Send, Answer: Send> Channel<Request, Answer> {
+impl<Request: Send, Response: Send> Channel<Request, Response> {
     pub const fn new() -> Self {
         Self {
             request: Signal::new(),
-            answer: Signal::new(),
+            response: Signal::new(),
         }
     }
 
     /// The client end, for a handle, and the server end, for its task.
-    pub fn split(&'static self) -> (Client<Request, Answer>, Server<Request, Answer>) {
+    pub fn split(&'static self) -> (Client<Request, Response>, Server<Request, Response>) {
         let client = Client {
             channel: self,
             next: 0,
@@ -37,52 +37,52 @@ impl<Request: Send, Answer: Send> Channel<Request, Answer> {
     }
 }
 
-pub struct Server<Request: 'static, Answer: 'static> {
-    channel: &'static Channel<Request, Answer>,
+pub struct Server<Request: 'static, Response: 'static> {
+    channel: &'static Channel<Request, Response>,
 }
 
-impl<Request, Answer> Clone for Server<Request, Answer> {
+impl<Request, Response> Clone for Server<Request, Response> {
     fn clone(&self) -> Self {
         *self
     }
 }
 
-impl<Request, Answer> Copy for Server<Request, Answer> {}
+impl<Request, Response> Copy for Server<Request, Response> {}
 
-impl<Request: Send, Answer: Send> Server<Request, Answer> {
+impl<Request: Send, Response: Send> Server<Request, Response> {
     pub async fn receive(&self) -> (Pending, Request) {
         let (id, request) = self.channel.request.wait().await;
         (Pending(id), request)
     }
 
-    pub fn answer(&self, pending: Pending, answer: Answer) {
-        self.channel.answer.signal((pending.0, answer));
+    pub fn respond(&self, pending: Pending, response: Response) {
+        self.channel.response.signal((pending.0, response));
     }
 }
 
-pub struct Client<Request: 'static, Answer: 'static> {
-    channel: &'static Channel<Request, Answer>,
+pub struct Client<Request: 'static, Response: 'static> {
+    channel: &'static Channel<Request, Response>,
     next: Id,
 }
 
-impl<Request: Send, Answer: Send> Client<Request, Answer> {
+impl<Request: Send, Response: Send> Client<Request, Response> {
     /// Send `request` and wait for the response. `None` if none arrives
     /// within `timeout`.
-    pub async fn ask(&mut self, request: Request, timeout: Duration) -> Option<Answer> {
+    pub async fn call(&mut self, request: Request, timeout: Duration) -> Option<Response> {
         let id = self.next;
         self.next = id.wrapping_add(1);
         self.channel.request.signal((id, request));
 
-        let answer = async {
+        let response = async {
             loop {
-                let (answered, answer) = self.channel.answer.wait().await;
+                let (response_id, response) = self.channel.response.wait().await;
                 // A response with another ID is for an earlier request that
                 // timed out.
-                if answered == id {
-                    return answer;
+                if response_id == id {
+                    return response;
                 }
             }
         };
-        with_timeout(timeout, answer).await.ok()
+        with_timeout(timeout, response).await.ok()
     }
 }

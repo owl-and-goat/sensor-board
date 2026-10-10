@@ -29,7 +29,7 @@ impl From<TcpError> for Error {
 
 /// The request that was received.
 #[derive(Clone, Copy, PartialEq, Eq)]
-pub enum Asked {
+pub enum Request {
     /// `GET /metrics`
     Metrics,
     Other,
@@ -58,35 +58,35 @@ struct Head {
     first_line: heapless::String<64>,
     first_line_done: bool,
     /// How many bytes of the terminating `\r\n\r\n` have matched so far.
-    ending: usize,
+    matched: usize,
     len: usize,
 }
 
 impl Head {
-    const ENDING: &[u8] = b"\r\n\r\n";
+    const TERMINATOR: &[u8] = b"\r\n\r\n";
 
     fn new() -> Self {
         Head {
             first_line: heapless::String::new(),
             first_line_done: false,
-            ending: 0,
+            matched: 0,
             len: 0,
         }
     }
 
     fn is_complete(&self) -> bool {
-        self.ending == Self::ENDING.len()
+        self.matched == Self::TERMINATOR.len()
     }
 
     /// Feed received bytes to the parser.
-    fn take(&mut self, bytes: &[u8]) {
+    fn feed(&mut self, bytes: &[u8]) {
         for &byte in bytes {
             if self.is_complete() {
                 return;
             }
             self.len += 1;
-            self.ending = match byte {
-                _ if byte == Self::ENDING[self.ending] => self.ending + 1,
+            self.matched = match byte {
+                _ if byte == Self::TERMINATOR[self.matched] => self.matched + 1,
                 b'\r' => 1,
                 _ => 0,
             };
@@ -100,23 +100,23 @@ impl Head {
 }
 
 /// Read a request from an accepted connection.
-pub async fn request(tcp: &mut Tcp) -> Result<Asked, Error> {
+pub async fn read_request(tcp: &mut Tcp) -> Result<Request, Error> {
     let mut head = Head::new();
     while !head.is_complete() {
         let chunk = tcp.receive().await?;
         if chunk.is_empty() || head.len > MAX_HEAD {
             return Err(Error::Malformed);
         }
-        head.take(&chunk);
+        head.feed(&chunk);
     }
 
     let mut words = head.first_line.split(' ');
     let (method, target) = (words.next(), words.next().unwrap_or_default());
     let path = target.split('?').next().unwrap_or_default();
     if method == Some("GET") && path == "/metrics" {
-        Ok(Asked::Metrics)
+        Ok(Request::Metrics)
     } else {
-        Ok(Asked::Other)
+        Ok(Request::Other)
     }
 }
 
@@ -162,15 +162,15 @@ pub async fn put(tcp: &mut Tcp, to: SocketAddrV6, path: &str, body: &str) -> Res
     send(tcp, &head, body).await?;
 
     // "HTTP/1.1 200 OK": the status is the second word of the first line.
-    let mut answer = Head::new();
-    while !answer.first_line_done {
+    let mut response = Head::new();
+    while !response.first_line_done {
         let chunk = tcp.receive().await?;
-        if chunk.is_empty() || answer.len > MAX_HEAD {
+        if chunk.is_empty() || response.len > MAX_HEAD {
             return Err(Error::Malformed);
         }
-        answer.take(&chunk);
+        response.feed(&chunk);
     }
-    let status = answer.first_line.split(' ').nth(1);
+    let status = response.first_line.split(' ').nth(1);
     status
         .and_then(|status| status.parse().ok())
         .ok_or(Error::Malformed)

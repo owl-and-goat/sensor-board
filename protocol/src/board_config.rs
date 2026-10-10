@@ -74,14 +74,14 @@ impl BoardConfig {
     /// layout of this type, then the postcard encoding. `None` if `buf` is
     /// too short.
     pub fn encode<'a>(&self, buf: &'a mut [u8]) -> Option<&'a [u8]> {
-        crate::encode_behind(&Self::key(), self, buf)
+        crate::encode_with_prefix(&Self::key(), self, buf)
     }
 
     /// Decode a stored configuration. `None` if `bytes` was not encoded with
     /// this layout, so a configuration that a firmware with a different
     /// layout stored is rejected instead of misread.
     pub fn decode(bytes: &[u8]) -> Option<BoardConfig> {
-        crate::decode_behind(&Self::key(), bytes)
+        crate::decode_with_prefix(&Self::key(), bytes)
     }
 
     fn key() -> [u8; 8] {
@@ -110,14 +110,14 @@ mod tests {
     }
 
     #[test]
-    fn config_survives_being_kept() {
+    fn config_round_trips() {
         let mut buf = [0; BoardConfig::MAX_LEN];
         let encoded = config().encode(&mut buf).unwrap();
         assert_eq!(BoardConfig::decode(encoded), Some(config()));
     }
 
     #[test]
-    fn config_of_another_layout_is_not_understood() {
+    fn config_with_other_layout_is_rejected() {
         let mut buf = [0; BoardConfig::MAX_LEN];
         let encoded = config().encode(&mut buf).unwrap();
         let mut other = encoded.to_vec();
@@ -130,7 +130,7 @@ mod tests {
     }
 
     #[test]
-    fn longest_config_is_as_long_as_one_may_be() {
+    fn longest_config_has_max_len() {
         let mut longest = config();
         longest.board_id = u8::MAX;
         longest.pushgateway = Some(SocketAddrV6::new([0xffff; 8].into(), u16::MAX, 0, 0));
