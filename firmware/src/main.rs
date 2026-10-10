@@ -51,8 +51,8 @@ fn configure_clocks() -> rcc::Config {
     clocks.hsi = true;
     clocks.core2_ahb_pre = rcc::AHBPrescaler::DIV1;
 
-    // PLL stays on (not as sysclk) only to give USB its 48 MHz from PLL Q,
-    // out of reach of CPU2's HSI48 handling.
+    // The PLL stays on only to give USB its 48 MHz from PLL Q. It is not the
+    // system clock. USB cannot use HSI48, because CPU2 can switch that off.
     // TODO: disable this PLL and remove USB entirely so that we can go into
     // proper low-power sleep!
     clocks.hsi48 = None;

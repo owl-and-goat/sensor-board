@@ -6,6 +6,6 @@ use embassy_sync::{blocking_mutex::raw::ThreadModeRawMutex, mutex::Mutex};
 
 pub mod capacitance;
 
-/// A sensor that more than one task reads: the host's requests and the
-/// reports both do.
+/// A sensor that several tasks read: the RPC handlers, the reports and the
+/// metrics.
 pub type Shared<S> = Mutex<ThreadModeRawMutex, S>;

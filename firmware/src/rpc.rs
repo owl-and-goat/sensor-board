@@ -1,7 +1,7 @@
-//! Serves the endpoints in the `protocol` crate to the USB host. The handlers
-//! only translate: the work happens in the modules they call. Those that
-//! wait on something wait a bounded time, so one request cannot hold up the
-//! next for good.
+//! Serves the endpoints of the `protocol` crate to the USB host. The handlers
+//! only translate between the protocol and the modules that do the work.
+//! Every handler that waits has a timeout, so one request cannot block the
+//! next indefinitely.
 
 use embassy_executor::Spawner;
 use postcard_rpc::{
@@ -12,8 +12,8 @@ use postcard_rpc::{
         impls::embassy_usb_v0_6::dispatch_impl::{WireRxBuf, WireSpawnImpl},
     },
 };
-// `define_dispatch!` has to be told how to spawn, though no handler here is
-// the spawning kind: every task of this firmware is in main.rs.
+// `define_dispatch!` requires a spawn function, but no handler here spawns:
+// every task of this firmware is in main.rs.
 #[allow(unused_imports)]
 use postcard_rpc::server::impls::embassy_usb_v0_6::dispatch_impl::spawn_fn;
 use protocol::{
@@ -35,7 +35,7 @@ use crate::{
     thread, update, usb,
 };
 
-/// What the handlers act on.
+/// The handles that the RPC handlers use.
 pub struct Context {
     pub thread: thread::Handle,
     pub coprocessor: coprocessor::Handle,
@@ -102,8 +102,8 @@ define_dispatch! {
 
 pub type Server = server::Server<usb::Tx, usb::Rx, WireRxBuf, Dispatcher>;
 
-/// The server that answers the host, and the way to tell the host something
-/// it has not asked.
+/// Create the RPC server, and the [`Publisher`] for sending topics to the
+/// host.
 pub fn server(spawner: Spawner, link: usb::Link, context: Context) -> (Server, Publisher) {
     let dispatcher = Dispatcher::new(context, spawner.into());
     let key_len = dispatcher.min_key_len();
@@ -115,15 +115,15 @@ pub fn server(spawner: Spawner, link: usb::Link, context: Context) -> (Server, P
     (server, publisher)
 }
 
-/// Sends the host the topics in the `protocol` crate.
+/// Publishes the topics of the `protocol` crate to the host.
 pub struct Publisher {
     sender: server::Sender<usb::Tx>,
     sequence: u16,
 }
 
 impl Publisher {
-    /// Pass a report on to the host. Nothing tells whether a host is there
-    /// to take it: one that is not misses it.
+    /// Forward a report to the host. Delivery is not confirmed: if no host
+    /// is listening, the report is lost.
     pub async fn report_received(&mut self, report: &Report) {
         self.sequence = self.sequence.wrapping_add(1);
         let sequence = VarSeq::Seq2(self.sequence);
@@ -136,8 +136,8 @@ impl Publisher {
 
 fn board_info(_context: &mut Context, _header: VarHeader, (): ()) -> BoardInfo {
     BoardInfo {
-        // The build stamp is 19 characters; if that ever outgrows the field,
-        // report nothing rather than part of it.
+        // The build stamp is 19 characters. If it ever outgrows the field,
+        // report an empty string instead of a truncated one.
         firmware_built: env!("BUILD_STAMP").try_into().unwrap_or_default(),
     }
 }

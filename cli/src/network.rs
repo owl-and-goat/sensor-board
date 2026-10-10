@@ -1,4 +1,4 @@
-//! Putting boards on a Thread network.
+//! The `network` commands: put boards on a Thread network and inspect it.
 
 use std::{
     env,
@@ -19,12 +19,12 @@ use rand::RngExt;
 
 use crate::board::Board;
 
-/// How long a board gets to attach. Forming a network is the slow case: the
-/// first board looks for an existing one before it makes itself leader.
+/// Timeout for a board to attach. Forming a network is the slow case: the
+/// first board looks for an existing network before it becomes leader.
 const ATTACH_TIMEOUT: Duration = Duration::from_secs(120);
 const POLL_INTERVAL: Duration = Duration::from_millis(500);
 
-/// The parameters of a Thread network that does not exist yet.
+/// The parameters of a new Thread network.
 pub struct NewNetwork {
     /// At most 16 bytes.
     pub name: String,
@@ -32,15 +32,16 @@ pub struct NewNetwork {
     pub channel: u8,
     pub pan_id: u16,
     pub extended_pan_id: [u8; 8],
-    /// The /64 that every address inside the mesh shares.
+    /// The /64 prefix of every mesh-local address.
     pub mesh_local_prefix: [u8; 8],
     pub network_key: [u8; 16],
-    /// Key for commissioning sessions, normally derived from a passphrase.
-    /// Nothing here commissions that way, so it only has to be unguessable.
+    /// The key for commissioning sessions, normally derived from a
+    /// passphrase. Nothing here uses commissioning, so it only has to be
+    /// unguessable.
     pub pskc: [u8; 16],
 }
 
-/// The MeshCoP TLVs an operational dataset is made of.
+/// The MeshCoP TLV types used in an operational dataset.
 #[derive(Clone, Copy)]
 #[repr(u8)]
 enum Tlv {
@@ -57,8 +58,8 @@ enum Tlv {
 }
 
 impl NewNetwork {
-    /// Random identifiers and keys, the way OpenThread's `dataset init new`
-    /// picks them.
+    /// A network with random identifiers and keys, chosen the way
+    /// OpenThread's `dataset init new` does.
     pub fn random() -> NewNetwork {
         let mut rng = rand::rng();
         // 0xffff is the broadcast PAN ID.
@@ -78,7 +79,8 @@ impl NewNetwork {
         }
     }
 
-    /// The active operational dataset that makes a device a member.
+    /// The active operational dataset of this network, which a device needs
+    /// to join it.
     pub fn dataset(&self) -> Dataset {
         let mut tlvs = Vec::new();
         let mut push = |tlv: Tlv, value: &[u8]| {
@@ -107,9 +109,9 @@ impl NewNetwork {
     }
 }
 
-/// The dataset of the network that [`init`] puts boards on, kept in a file
-/// from one run to the next: a board that is plugged in later then joins the
-/// network the others are on, whether or not one of them is plugged in too.
+/// The dataset of the network that [`init`] puts boards on, saved in a file
+/// between runs. A board that is plugged in later then joins the same
+/// network as the others, even if none of them is attached.
 pub struct SavedDataset {
     path: PathBuf,
 }
@@ -119,8 +121,8 @@ impl SavedDataset {
         SavedDataset { path }
     }
 
-    /// The file used unless another is named: `sensor-board/dataset` under
-    /// `$XDG_STATE_HOME`, which is `~/.local/state` unless set.
+    /// The default file: `sensor-board/dataset` under `$XDG_STATE_HOME`,
+    /// which defaults to `~/.local/state`.
     pub fn default_path() -> Result<PathBuf> {
         state_dir(env::var_os("XDG_STATE_HOME"), env::var_os("HOME"))
             .map(|dir| dir.join("sensor-board").join("dataset"))
@@ -147,7 +149,8 @@ impl SavedDataset {
         Ok(Some(dataset))
     }
 
-    /// The file holds the network key, so only its owner gets to read it.
+    /// Save `dataset`. The file holds the network key, so it is readable
+    /// only by its owner.
     pub fn save(&self, dataset: &Dataset) -> Result<()> {
         let write = || -> std::io::Result<()> {
             if let Some(dir) = self.path.parent() {
@@ -159,7 +162,8 @@ impl SavedDataset {
                 .truncate(true)
                 .mode(0o600)
                 .open(&self.path)?;
-            // A file that was already there keeps the mode it had.
+            // An existing file keeps its old mode when it is opened, so set
+            // the mode explicitly.
             file.set_permissions(Permissions::from_mode(0o600))?;
             writeln!(file, "{dataset}")
         };
@@ -175,14 +179,14 @@ fn state_dir(xdg_state_home: Option<OsString>, home: Option<OsString>) -> Option
     }
 }
 
-/// Where [`init`] gets the dataset of the network to put boards on.
+/// The source of the dataset that [`init`] puts boards on.
 #[derive(Debug, PartialEq, Eq)]
 enum Source {
-    /// The file from an earlier run.
+    /// The file saved by an earlier run.
     Saved(Dataset),
     /// The board at this index, which is on a network already.
     Board(usize, Dataset),
-    /// Nowhere: a new network is to be made.
+    /// No existing dataset: create a new network.
     New,
 }
 
@@ -206,10 +210,10 @@ impl Source {
     }
 }
 
-/// Put every one of `boards` on the same network. That is the saved one; or,
-/// with nothing saved, the one the first configured board is on; or else a
-/// new one. `force_reinit` makes it a new one regardless. Whichever it is, it
-/// is the saved one from here on.
+/// Put all of `boards` on the same network: the saved one, or with nothing
+/// saved the network of the first configured board, or otherwise a new one.
+/// `force_reinit` always creates a new network. The network that is used is
+/// saved for later runs.
 pub async fn init(boards: &[Board], saved: &SavedDataset, force_reinit: bool) -> Result<()> {
     let mut on_boards = Vec::new();
     for board in boards {
@@ -236,17 +240,18 @@ pub async fn init(boards: &[Board], saved: &SavedDataset, force_reinit: bool) ->
             network.dataset()
         }
     };
-    // Before any board is told to join: a network whose dataset is only on
-    // the boards is one a later board cannot be added to without them.
+    // Save the dataset before any board is told to join. If the dataset only
+    // existed on the boards, a later board could not be added without one of
+    // them attached.
     if !from_file {
         saved.save(&dataset)?;
         println!("Saved its dataset in {}.", saved.path().display());
     }
 
-    // Boards that are on the network already go first, and each board is
+    // Boards that are already on the network go first, and each board is
     // attached before the next is told to join. That way one board forms the
-    // network and the others find it, rather than each starting a partition
-    // of its own that then has to merge.
+    // network and the others find it, instead of each starting its own
+    // partition that then has to merge.
     let mut members: Vec<_> = boards.iter().zip(on_boards).collect();
     members.sort_by_key(|(_, current)| current.as_ref() != Some(&dataset));
     for (board, current) in members {
@@ -307,7 +312,7 @@ pub fn describe_link(link: &Link) -> String {
     }
 }
 
-/// The table as text: a heading, then a line for each neighbor.
+/// Format the table as text: a heading, then one line per neighbor.
 pub fn describe_neighbors(table: &NeighborTable) -> String {
     let mut text = format!(
         "{:<6}  {:<6}  {:<16}  {:>7}  {:>7}  {:>8}  {:>9}  {:>6}\n",
@@ -341,7 +346,7 @@ pub fn describe_neighbors(table: &NeighborTable) -> String {
     text
 }
 
-/// The table as text: a heading, then a line for each router.
+/// Format the table as text: a heading, then one line per router.
 pub fn describe_routers(table: &RouterTable) -> String {
     let mut text = format!("{:<6}  {:<10}  {:>9}\n", "RLOC16", "Reached", "Path cost");
     for Router { id, route } in &table.routers {
@@ -507,9 +512,9 @@ mod tests {
         assert_eq!(state_dir(None, None), None);
     }
 
-    /// The TLVs, their order and their fixed values are those of a dataset
-    /// that the boards' own OpenThread stack generated, less its wake-up
-    /// channel TLV (type 74).
+    /// The TLVs, their order and their fixed values match a dataset that the
+    /// boards' own OpenThread stack generated, except that its wake-up
+    /// channel TLV (type 74) is left out.
     #[test]
     fn dataset_is_laid_out_like_openthreads() {
         let network = NewNetwork {

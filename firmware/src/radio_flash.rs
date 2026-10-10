@@ -1,17 +1,18 @@
-//! CPU1's flash, written the way it has to be while a radio stack runs on
-//! CPU2. Per AN5289 and ST's flash_driver.c: hold hardware semaphore 2 for
-//! the whole operation, tell CPU2 about erase activity, and hold semaphore 7
-//! around each erase or program step (CPU2 takes 7 to keep CPU1 out during
-//! its own flash use).
+//! Flash access for CPU1 while a radio stack runs on CPU2. The procedure
+//! follows AN5289 and ST's flash_driver.c: hold hardware semaphore 2 for the
+//! whole operation, notify CPU2 of erase activity, and hold semaphore 7
+//! around each erase or program step (CPU2 takes semaphore 7 to keep CPU1
+//! out while it uses flash itself).
 //!
-//! Telling CPU2 goes over the system channel, so that is owned here as well.
+//! The notifications to CPU2 go over the system channel, so this module owns
+//! that channel too.
 
 use embassy_stm32::flash::{Blocking, Error, FLASH_SIZE, Flash, WRITE_SIZE};
 use embassy_stm32::pac::{FLASH, HSEM};
 use embassy_stm32_wpan::sub::sys::Sys;
 use embedded_storage_async::nor_flash::{ErrorType, NorFlash, ReadNorFlash};
 
-/// The size of a flash page, which is what is erased at a time.
+/// The size of a flash page, the unit of erasure.
 pub const PAGE: u32 = 4096;
 
 const SEM_FLASH: usize = 2;
@@ -28,8 +29,7 @@ impl<'d> RadioFlash<'d> {
         RadioFlash { flash, sys }
     }
 
-    /// The system channel to CPU2, for the commands that are not about
-    /// flash.
+    /// The system channel to CPU2, for commands other than the flash ones.
     pub fn sys(&mut self) -> &mut Sys<'d> {
         &mut self.sys
     }
@@ -52,8 +52,8 @@ impl<'d> RadioFlash<'d> {
         .await
     }
 
-    /// Run `steps`, each of which is to be [`guarded`], with CPU2 told that
-    /// flash is being written.
+    /// Run `steps` while CPU2 is notified of flash activity. Each step has
+    /// to be [`guarded`].
     async fn coordinated<T>(
         &mut self,
         steps: impl FnOnce(&mut Flash<'d, Blocking>) -> Result<T, Error>,
@@ -87,7 +87,7 @@ fn sem_release(i: usize) {
     });
 }
 
-/// One erase or program step, with CPU2 kept from using flash meanwhile.
+/// Run one erase or program step, keeping CPU2 off the flash during it.
 fn guarded<T>(step: impl FnOnce() -> Result<T, Error>) -> Result<T, Error> {
     if !sem_lock(SEM_BLOCK_BY_CPU2) {
         return Err(Error::Unaligned); // no better variant; means "CPU2 holds the flash"
@@ -102,7 +102,7 @@ impl ErrorType for RadioFlash<'_> {
     type Error = Error;
 }
 
-/// Offsets are into flash, from 0x08000000.
+/// Offsets are relative to the start of flash (0x08000000).
 impl ReadNorFlash for RadioFlash<'_> {
     const READ_SIZE: usize = 1;
 
@@ -119,7 +119,8 @@ impl NorFlash for RadioFlash<'_> {
     const WRITE_SIZE: usize = WRITE_SIZE;
     const ERASE_SIZE: usize = PAGE as usize;
 
-    /// Each page takes some 20 ms, in which nothing else on CPU1 runs.
+    /// Erasing a page takes about 20 ms, during which nothing else runs on
+    /// CPU1.
     async fn erase(&mut self, from: u32, to: u32) -> Result<(), Error> {
         self.coordinated(|flash| {
             for page in (from..to).step_by(PAGE as usize) {
@@ -136,6 +137,6 @@ impl NorFlash for RadioFlash<'_> {
     }
 }
 
-/// The flash as the services inside the coprocessor task share it.
+/// The flash, shared by the services inside the coprocessor task.
 pub type Shared<'d> =
     embassy_sync::mutex::Mutex<embassy_sync::blocking_mutex::raw::NoopRawMutex, RadioFlash<'d>>;

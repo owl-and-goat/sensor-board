@@ -10,16 +10,16 @@ use protocol::{CoprocessorFirmware, CoprocessorStatus, FusState, ImageChunk, Ima
 
 use crate::board::{self, Board};
 
-/// How long FUS gets to install or remove an image, resets and all. A
-/// wireless stack, the largest, takes it well under a minute.
+/// Timeout for FUS to install or remove an image, including its resets. A
+/// wireless stack, the largest image, takes well under a minute.
 const INSTALL_TIMEOUT: Duration = Duration::from_secs(180);
 const POLL_INTERVAL: Duration = Duration::from_secs(1);
 
-/// How long a board that has just been flashed or reset gets to show up on
+/// How long to wait for a board that was just flashed or reset to appear on
 /// USB with its coprocessor started.
 const READY_TIMEOUT: Duration = Duration::from_secs(20);
 
-/// What one of ST's coprocessor images is, going by the footer they end in.
+/// The kind and version of an ST coprocessor image, read from its footer.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ImageInfo {
     pub kind: ImageKind,
@@ -33,11 +33,12 @@ pub enum ImageKind {
 }
 
 impl ImageInfo {
-    /// `None` for a file that does not end the way the images of STM32CubeWB
-    /// V1.24.0 do, which is not to say that FUS would not take it.
+    /// `None` if the file does not end with the footer of the images in
+    /// STM32CubeWB V1.24.0. FUS might still accept such a file.
     pub fn read(image: &[u8]) -> Option<ImageInfo> {
-        // The image ends in this word. 92 and 88 bytes from the end are its
-        // version, and a word that tells an image of FUS from a stack's.
+        // The image ends in this word. Its version is 92 bytes from the end,
+        // and 88 bytes from the end is a word that distinguishes a FUS image
+        // from a stack image.
         const END: u32 = 0xD3A1_2C5E;
         const FUS: u32 = 0x3227_9221;
         const STACK: u32 = 0x2337_2991;
@@ -66,7 +67,7 @@ impl ImageInfo {
         })
     }
 
-    /// The version of this kind of firmware that `firmware` has, if any.
+    /// The installed version of this kind of firmware in `firmware`, if any.
     fn installed_in(&self, firmware: &CoprocessorFirmware) -> Option<Version> {
         match self.kind {
             ImageKind::Fus => Some(firmware.fus),
@@ -84,9 +85,9 @@ impl std::fmt::Display for ImageInfo {
     }
 }
 
-/// Install `image`, one of ST's coprocessor binaries, on the board `serial`
-/// picks, or else on the only attached board whose coprocessor is running
-/// FUS, as a new board's is.
+/// Install `image`, one of ST's coprocessor binaries. The target is the
+/// board that `serial` selects, or with `None` the only attached board whose
+/// coprocessor is running FUS, as on a new board.
 pub async fn install(serial: Option<&str>, image: &[u8]) -> Result<()> {
     let (board, before) = target(serial).await?;
     let serial = board.serial().to_owned();
@@ -135,8 +136,8 @@ pub async fn install(serial: Option<&str>, image: &[u8]) -> Result<()> {
     }
     println!();
 
-    // FUS resets the board when it sets to work, which can be before the
-    // answer is out. Only an answer that says no means anything.
+    // FUS resets the board when it starts the install, which can happen
+    // before the response is sent. So only an error response is conclusive.
     if let Ok(Err(e)) = board.finish_install().await {
         bail!("board {serial}: {e}");
     }
@@ -151,8 +152,8 @@ pub async fn install(serial: Option<&str>, image: &[u8]) -> Result<()> {
     Ok(())
 }
 
-/// Remove the wireless stack from `board`, leaving its coprocessor with FUS
-/// alone, as it is on a new board.
+/// Remove the wireless stack from `board`. This leaves only FUS on its
+/// coprocessor, as on a new board.
 pub async fn uninstall(board: Board) -> Result<()> {
     let serial = board.serial().to_owned();
     let before = board.coprocessor_status().await?;
@@ -174,8 +175,8 @@ pub async fn uninstall(board: Board) -> Result<()> {
     Ok(())
 }
 
-/// The board to install on, and what its coprocessor is doing. Gives a board
-/// that was flashed or reset a moment ago the time to turn up.
+/// The board to install on, and its coprocessor status. Waits up to
+/// [`READY_TIMEOUT`] for a board that was just flashed or reset to appear.
 async fn target(serial: Option<&str>) -> Result<(Board, CoprocessorStatus)> {
     let deadline = Instant::now() + READY_TIMEOUT;
     loop {
@@ -200,8 +201,8 @@ async fn target(serial: Option<&str>) -> Result<(Board, CoprocessorStatus)> {
     }
 }
 
-/// `None` if the board is not there yet, or not far enough into starting up
-/// to tell.
+/// `None` if the board is not attached yet, or has not started far enough to
+/// report its coprocessor status.
 async fn ready_target(serial: Option<&str>) -> Result<Option<(Board, CoprocessorStatus)>> {
     let mut devices = board::devices().await?;
     if let Some(serial) = serial {
@@ -222,7 +223,8 @@ async fn ready_target(serial: Option<&str>) -> Result<Option<(Board, Coprocessor
         match board.coprocessor_status().await {
             Ok(CoprocessorStatus::Starting) => return Ok(None),
             Ok(status) => boards.push((board, status)),
-            // Firmware from before it could say: not one to install on.
+            // The firmware predates the status endpoint: not a board to
+            // install on.
             Err(_) => {}
         }
     }
@@ -253,15 +255,15 @@ fn installed(status: &CoprocessorStatus) -> Option<CoprocessorFirmware> {
     }
 }
 
-/// Wait for FUS on the board with this serial number to be done, one way or
-/// the other.
+/// Wait for FUS on the board with this serial number to finish, whether it
+/// succeeds or fails.
 async fn settled(serial: &str) -> Result<CoprocessorStatus> {
     let deadline = Instant::now() + INSTALL_TIMEOUT;
     loop {
         tokio::time::sleep(POLL_INTERVAL).await;
 
-        // The board drops off USB with every reset: not finding it, and not
-        // getting an answer, are both part of the wait.
+        // The board drops off USB at every reset, so a missing board or a
+        // missing response just means the wait continues.
         let status = match Board::select(Some(serial)).await {
             Ok(board) => board.coprocessor_status().await.ok(),
             Err(_) => None,
@@ -313,8 +315,8 @@ pub fn describe(status: &CoprocessorStatus) -> String {
 mod tests {
     use super::*;
 
-    /// A file that ends the way ST's images do: the three words of the
-    /// footer that are read, where they are in it.
+    /// A file that ends like an ST image: it has the three footer words that
+    /// are read, at their offsets.
     fn image(kind: u32, version: u32) -> Vec<u8> {
         let mut image = vec![0xab; 1000];
         let end = image.len();

@@ -244,7 +244,7 @@ impl Configs<'_, '_> {
         }
     }
 
-    /// Keep `config` as this board's configuration.
+    /// Store `config` as this board's configuration.
     async fn keep(&mut self, config: &BoardConfig) -> ConfigResult {
         // A request is resent when the reply is slow or lost. Do not rewrite
         // flash with what it already holds.

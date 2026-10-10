@@ -1,21 +1,23 @@
-/* The flash below ST's radio stack (which starts at 0x0808C000), shared out
-   between this bootloader, the firmware, and the slot a firmware update is
-   staged in. firmware/memory.x names the same regions: keep the two in step. */
+/* The flash below ST's radio stack (which starts at 0x0808C000) is divided
+   between this bootloader, the firmware, and the staging area for a firmware
+   update. firmware/memory.x defines the same regions: keep the two files in
+   sync. */
 MEMORY
 {
   FLASH            : ORIGIN = 0x08000000, LENGTH = 24K
-  /* What the bootloader is to do at the next reset, and how far it got. */
+  /* The bootloader's instruction for the next reset, and its swap progress. */
   BOOTLOADER_STATE : ORIGIN = 0x08006000, LENGTH = 4K
-  /* The firmware that runs. It is linked to start here. */
+  /* The running firmware. It is linked to start here. */
   ACTIVE           : ORIGIN = 0x08007000, LENGTH = 224K
-  /* 0x0803F000, 4K: the firmware's stored configuration, which no update
-     moves or touches. */
-  /* The staged update, and after a swap the firmware it replaced. One page
-     longer than ACTIVE: the swap needs the room. */
+  /* 0x0803F000, 4K: the firmware's stored configuration. An update never
+     moves or changes it. */
+  /* The staging area: a staged update, and after a swap the firmware that
+     was replaced. One page longer than ACTIVE, because the swap needs a
+     spare page. */
   DFU              : ORIGIN = 0x08040000, LENGTH = 228K
 
-  /* The top of what the firmware has for RAM: its stack is there, and none
-     of the words that it keeps across a reset. */
+  /* The top of the firmware's RAM. Only the firmware's stack is there, and
+     none of the words that it keeps across a reset. */
   RAM        (rwx) : ORIGIN = 0x20020000, LENGTH = 16K
 }
 

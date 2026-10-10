@@ -1,7 +1,6 @@
-//! Sensor reports. Every board sends its readings to all the boards on its
-//! network at intervals. A board that the host has told to collect also
-//! takes in the reports that arrive, its own among them, and passes them on
-//! over USB.
+//! Sensor reports. Every board periodically multicasts its readings to its
+//! network. A board that the host has told to collect also receives the
+//! reports, including its own, and forwards them over USB.
 
 use defmt::debug;
 use embassy_futures::select::{Either3, select3};
@@ -18,21 +17,21 @@ use crate::{
     thread, update,
 };
 
-/// How often a board reports.
+/// The interval between reports.
 const INTERVAL: Duration = Duration::from_secs(10);
 
-/// How long the task gets to start or stop collecting: one request of
-/// [`thread::Socket`], which keeps to a limit of its own, after whatever
-/// report it is in the middle of. Less than the host waits for an answer.
+/// Timeout for a request to start or stop collecting. It covers one
+/// [`thread::Socket`] request, which has its own timeout, and the report
+/// that may be in progress. Shorter than the host's own timeout.
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(8);
 
 const _: () = assert!(Report::MAX_LEN <= thread::MAX_DATAGRAM_LEN);
 
-/// The handle asking the task to start collecting, or to stop.
+/// A request from the handle to start or stop collecting.
 struct Collect(bool);
 
 pub struct Builder {
-    /// The socket boards send each other reports on.
+    /// The UDP socket for reports.
     pub socket: thread::Socket,
     pub capacitance: &'static sensor::Shared<CapacitanceSensor<'static>>,
 }
@@ -54,13 +53,13 @@ impl Builder {
     }
 }
 
-/// How the rest of the firmware reaches the reporting task.
+/// Controls the reporting task from the rest of the firmware.
 pub struct Handle {
     requests: request::Client<Collect, NetworkResult>,
 }
 
 impl Handle {
-    /// Start passing the reports that arrive on to the host, or stop.
+    /// Start or stop forwarding received reports to the host.
     pub async fn collect(&mut self, on: bool) -> NetworkResult {
         self.requests
             .ask(Collect(on), REQUEST_TIMEOUT)
@@ -100,7 +99,7 @@ impl Task {
         }
     }
 
-    /// Read the sensors and tell every board.
+    /// Read the sensors and send a report to every board.
     async fn report(&mut self) {
         let report = Report {
             board: self.board,
@@ -119,8 +118,8 @@ impl Task {
         };
         datagram.truncate(len);
 
-        // A board that is on no network yet cannot send. The next report
-        // may find it on one.
+        // Sending fails while the board is not on a network. The next report
+        // may succeed.
         if let Err(e) = self.socket.broadcast(datagram).await {
             debug!("report: not sent: {}", e);
         }

@@ -77,13 +77,14 @@ fn neighbor_from_raw(info: &ffi::otNeighborInfo) -> Neighbor {
     }
 }
 
-/// What `otThreadGetNextHopAndPathCost` answered about `destination`, an
-/// RLOC16.
+/// Convert what `otThreadGetNextHopAndPathCost` returned for `destination`,
+/// an RLOC16, to a [`Route`].
 fn route_from_raw(destination: u16, next_hop: u16, cost: u8) -> Route {
-    /// The stack's "no next hop".
+    /// The stack's value for "no next hop".
     const INVALID_RLOC16: u16 = 0xfffe;
-    /// The path cost it gives to what it has no way to. A child still names
-    /// its parent as the next hop then, as it does for everything.
+    /// The path cost that the stack reports for an unreachable destination.
+    /// A child still reports its parent as the next hop in that case, as it
+    /// does for every destination.
     const MAX_ROUTE_COST: u8 = 16;
 
     if next_hop == INVALID_RLOC16 || cost >= MAX_ROUTE_COST {
@@ -94,18 +95,18 @@ fn route_from_raw(destination: u16, next_hop: u16, cost: u8) -> Route {
             cost,
         }
     } else if cost == 0 {
-        // No link costs nothing: this is the stack's answer about the device
-        // it runs on.
+        // No link has a cost of zero, so this is the stack's answer for the
+        // device it runs on.
         Route::ThisBoard
     } else {
         Route::Direct { cost }
     }
 }
 
-/// CPU1 memory that CPU2 is given a pointer to, and only reads: the dataset
-/// argument of `otDatasetSetActiveTlvs`. It has to be handed over as
-/// `&'static`, because CPU2 keeps reading until it has answered the call,
-/// whatever has become of the future that made it.
+/// CPU1 memory that CPU2 reads through a pointer: the dataset argument of
+/// `otDatasetSetActiveTlvs`. It has to be `&'static`, because CPU2 keeps
+/// reading it until it has answered the call, even if the future that made
+/// the call has been dropped.
 pub struct DatasetBuffer(UnsafeCell<MaybeUninit<ffi::otOperationalDatasetTlvs>>);
 
 impl DatasetBuffer {
@@ -114,9 +115,9 @@ impl DatasetBuffer {
     }
 }
 
-/// CPU1 memory that CPU2 is given pointers to, and writes: the two out
-/// arguments of `otThreadGetNextNeighborInfo`. `&'static` for the same reason
-/// as [`DatasetBuffer`], and more so: CPU2 writes here until it has answered.
+/// CPU1 memory that CPU2 writes through pointers: the two out arguments of
+/// `otThreadGetNextNeighborInfo`. It has to be `&'static` for the same
+/// reason as [`DatasetBuffer`], and here CPU2 writes until it has answered.
 pub struct NeighborBuffer {
     iterator: UnsafeCell<ffi::otNeighborInfoIterator>,
     info: UnsafeCell<MaybeUninit<ffi::otNeighborInfo>>,
@@ -131,9 +132,9 @@ impl NeighborBuffer {
     }
 }
 
-/// CPU1 memory that CPU2 is given pointers to, and writes: the two out
-/// arguments of `otThreadGetNextHopAndPathCost`. `&'static` for the same
-/// reason as [`NeighborBuffer`].
+/// CPU1 memory that CPU2 writes through pointers: the two out arguments of
+/// `otThreadGetNextHopAndPathCost`. `&'static` for the same reason as
+/// [`NeighborBuffer`].
 pub struct NextHopBuffer {
     next_hop_rloc16: UnsafeCell<u16>,
     path_cost: UnsafeCell<u8>,
@@ -148,11 +149,11 @@ impl NextHopBuffer {
     }
 }
 
-/// CPU1 memory for the UDP socket: what the `otUdp` and `otMessage` calls
-/// point CPU2 at. The socket itself CPU2 links into its list of sockets and
-/// goes on using, from `otUdpOpen` until `otUdpClose`, so this buffer more
-/// than any has to be `&'static`. The rest CPU2 reads or writes within one
-/// call.
+/// CPU1 memory for a UDP socket: the arguments that the `otUdp` and
+/// `otMessage` calls pass by pointer. CPU2 links the socket itself into its
+/// list of sockets and keeps using it from `otUdpOpen` until `otUdpClose`,
+/// so this buffer in particular has to be `&'static`. CPU2 accesses the
+/// other fields only during a call.
 pub struct UdpBuffer {
     socket: UnsafeCell<MaybeUninit<ffi::otUdpSocket>>,
     name: UnsafeCell<MaybeUninit<ffi::otSockAddr>>,
@@ -171,7 +172,7 @@ impl UdpBuffer {
     }
 }
 
-/// The longest payload the UDP socket sends or takes in.
+/// The longest payload a UDP socket sends or receives.
 pub const MAX_DATAGRAM_LEN: usize = 256;
 
 /// The payload of a UDP datagram.
@@ -266,20 +267,22 @@ fn ip6_address(address: Ipv6Addr) -> ffi::otIp6Address {
     }
 }
 
-/// A callback from the stack, as far as the firmware has a use for it.
+/// A callback from the stack, reduced to what the firmware uses.
 pub enum Notification {
-    /// The device's role, one of its addresses or the like has changed.
+    /// Some state of the stack has changed, such as the device's role or one
+    /// of its addresses.
     StateChanged,
     /// A datagram has arrived on one of the UDP sockets.
     UdpReceived {
-        /// Which socket: the context it was opened with.
+        /// The socket that received it: the context it was opened with.
         socket: usize,
         from: Ipv6Addr,
         payload: Datagram,
     },
     /// A TCP callback.
     Tcp(TcpEvent),
-    /// Anything else, by its ID, and a datagram that could not be taken.
+    /// Any other notification, by its ID. Also a received datagram that
+    /// could not be read.
     Other(u32),
 }
 
@@ -355,11 +358,11 @@ unsafe fn answer_callback(value: u32) {
 /// of the TCP endpoint. `take_tcp` says whether to accept an incoming TCP
 /// connection, which has to be decided inside the callback.
 ///
-/// CPU2 is inside that callback until its notification is acknowledged, and
-/// the message a datagram arrives in is only there that long. So the payload
-/// is read out before the acknowledgement, which is why this takes `ot`, and
-/// with calls that are blocked on, as nothing can be awaited at that point.
-/// CPU2 answers them in well under a millisecond.
+/// CPU2 stays inside the callback until its notification is acknowledged,
+/// and the message that holds a received datagram is only valid until then.
+/// So the payload is read before the acknowledgement, which is why this
+/// takes `ot`. Those calls block, because nothing can be awaited at that
+/// point. CPU2 answers them in well under a millisecond.
 pub async fn notification(
     notif_rx: &mut ThreadNotifRx<'_>,
     ot: &mut ThreadOt<'_>,
@@ -393,11 +396,11 @@ pub async fn notification(
             }
 
             let (from, payload) = unsafe {
-                // SAFETY: CPU2 keeps the otMessageInfo, as it does the
-                // message, until the notification is acknowledged, which is
-                // not before this closure returns. It is in memory that CPU1
-                // can read: ST's own receive callbacks read it where it is.
-                // Its fields are numbers, the address a union of them.
+                // SAFETY: CPU2 keeps the otMessageInfo and the message valid
+                // until the notification is acknowledged, which happens
+                // after this closure returns. CPU1 can read that memory:
+                // ST's receive callbacks read it in place. Every field is an
+                // integer, and the address is a union of integers.
                 let from = read_volatile(info).mPeerAddr.mFields.m8;
                 (from, block_on(udp_read(ot, buffer, message)))
             };
@@ -521,11 +524,11 @@ pub async fn tcp_abort(
     }
 }
 
-/// The payload of the datagram in `message`, a `const otMessage *`. `None`
-/// if it is longer than a [`Datagram`].
+/// Read the payload of the datagram in `message`, a `const otMessage *`.
+/// `None` if it is longer than a [`Datagram`].
 ///
-/// SAFETY: `message` has to be one that CPU2 still holds: the argument of a
-/// receive callback whose notification has not been acknowledged yet.
+/// SAFETY: `message` must still be valid on CPU2: it has to be the argument
+/// of a receive callback whose notification has not been acknowledged yet.
 async unsafe fn udp_read(
     ot: &mut impl OpenThread,
     buffer: &'static UdpBuffer,
@@ -547,10 +550,10 @@ async unsafe fn udp_read(
         }
 
         // SAFETY: expects the message, an offset into it, a pointer to write
-        // to and the number of bytes to write there at most, and answers
-        // with the number it wrote. The payload buffer has room for `len`,
-        // and CPU1 touches it only here and in `udp_send`, never through a
-        // reference and never while CPU2 has a call to answer.
+        // to and the maximum number of bytes to write. Returns the number
+        // written. The payload buffer has room for `len` bytes. CPU1
+        // accesses it only here and in `udp_send`, never through a
+        // reference, and never while a call to CPU2 is in progress.
         let read = ot
             .ffi_call(
                 ffi_command::MSG_M4TOM0_OT_MESSAGE_READ,
@@ -565,7 +568,7 @@ async unsafe fn udp_read(
     }
 }
 
-/// A place in the stack's neighbor table (`otNeighborInfoIterator`).
+/// A position in the stack's neighbor table (`otNeighborInfoIterator`).
 #[derive(Clone, Copy)]
 pub struct NeighborIterator(ffi::otNeighborInfoIterator);
 
@@ -597,9 +600,9 @@ pub unsafe trait OpenThread {
     /// Initialize the Thread stack.
     async fn instance_init_single(&mut self) {
         unsafe {
-            // SAFETY: expects no arguments. What comes back is the
-            // `otInstance` pointer, not an error; every other call leaves the
-            // instance implicit, so there is no use for it.
+            // SAFETY: expects no arguments. The return value is the
+            // `otInstance` pointer, not an error. It is not needed, because
+            // every other call uses the instance implicitly.
             self.ffi_call(ffi_command::MSG_M4TOM0_OT_INSTANCE_INIT_SINGLE, &[])
                 .await;
         }
@@ -691,12 +694,12 @@ pub unsafe trait OpenThread {
 
         let buffer = buffer.0.get().cast::<ffi::otOperationalDatasetTlvs>();
         unsafe {
-            // SAFETY: this is the only place CPU1 touches what is in the
-            // buffer, never through a reference, and CPU2 only reads it. If an
-            // earlier call was dropped while CPU2 was still reading, that
-            // abandoned call may see a mix of the two datasets (each with a
-            // length that is in bounds); the call below queues up behind it
-            // and installs the dataset that was asked for.
+            // SAFETY: CPU1 accesses the buffer only here, and never through
+            // a reference. CPU2 only reads it. If an earlier call was
+            // dropped while CPU2 was still reading, that call may see a mix
+            // of the two datasets (each with a length that is in bounds).
+            // The call below queues behind it and installs the requested
+            // dataset.
             write_volatile(buffer, arg);
             // SAFETY: expects one pointer to an otOperationalDatasetTlvs,
             // which stays valid for as long as CPU2 could read it.
@@ -708,8 +711,8 @@ pub unsafe trait OpenThread {
         }
     }
 
-    /// The entry of the neighbor table that comes after `iterator`, which is
-    /// moved on past it. `None` once the table has been gone through.
+    /// The entry of the neighbor table that follows `iterator`. Advances
+    /// `iterator` past it. `None` at the end of the table.
     async fn thread_get_next_neighbor_info(
         &mut self,
         buffer: &'static NeighborBuffer,
@@ -719,12 +722,12 @@ pub unsafe trait OpenThread {
         let info_out = buffer.info.get().cast::<ffi::otNeighborInfo>();
 
         let found = unsafe {
-            // SAFETY: this function is the only place CPU1 touches what is in
-            // the buffer, never through a reference. If an earlier call was
-            // dropped while CPU2 was still working on it, that abandoned call
-            // may overwrite the iterator written here before the call below,
-            // queued up behind it, is looked at: an entry of the table is
-            // then skipped or repeated, and nothing worse.
+            // SAFETY: CPU1 accesses the buffer only in this function, and
+            // never through a reference. If an earlier call was dropped
+            // while CPU2 was still working on it, that call may overwrite
+            // the iterator written here before CPU2 handles the call below,
+            // which queues behind it. The worst result is that a table
+            // entry is skipped or repeated.
             write_volatile(iterator_out, iterator.0);
             // SAFETY: expects a pointer to an otNeighborInfoIterator, which
             // it reads and writes, and one to an otNeighborInfo, which it
@@ -742,9 +745,9 @@ pub unsafe trait OpenThread {
         }
 
         let info = unsafe {
-            // SAFETY: CPU2 has answered, so it has done its writing. Both are
-            // plain numbers, valid whatever they hold, and the buffer started
-            // out zeroed.
+            // SAFETY: CPU2 has answered, so it has finished writing. Both
+            // are plain data, valid for any bit pattern, and the buffer
+            // started out zeroed.
             iterator.0 = read_volatile(iterator_out);
             read_volatile(info_out)
         };
@@ -764,7 +767,7 @@ pub unsafe trait OpenThread {
         allocated != 0
     }
 
-    /// What the stack does with a message for the router that has this ID.
+    /// The stack's route to the router with this ID.
     async fn thread_get_next_hop_and_path_cost(
         &mut self,
         buffer: &'static NextHopBuffer,
@@ -788,25 +791,25 @@ pub unsafe trait OpenThread {
                 ],
             )
             .await;
-            // SAFETY: CPU2 has answered, so it has done its writing, and this
-            // function is the only place CPU1 touches what is in the buffer,
-            // never through a reference. An earlier call that was dropped
-            // has been answered before this one, so what is here now is this
-            // one's.
+            // SAFETY: CPU2 has answered, so it has finished writing. CPU1
+            // accesses the buffer only in this function, and never through
+            // a reference. CPU2 answers an earlier, dropped call before
+            // this one, so the buffer now holds this call's results.
             (read_volatile(next_hop_out), read_volatile(path_cost_out))
         };
         route_from_raw(destination, next_hop, cost)
     }
 
-    /// Open a UDP socket. It can send from then on. What it receives comes
-    /// with `context`, which tells it from the other sockets (see
+    /// Open a UDP socket. It can send from then on. Datagrams it receives
+    /// are reported with `context`, which identifies the socket (see
     /// [`notification`]).
     async fn udp_open(&mut self, buffer: &'static UdpBuffer, context: usize) -> Result<()> {
         unsafe {
-            // SAFETY: expects a pointer to an otUdpSocket, which CPU2 fills
-            // in and keeps until the socket is closed, and the context of
-            // its receive callback, which is any word. The callback is no
-            // argument: its calls arrive as notifications.
+            // SAFETY: expects a pointer to an otUdpSocket, which CPU2
+            // initializes and keeps until the socket is closed, and the
+            // context for its receive callback, which can be any word. The
+            // callback itself is not an argument: its calls arrive as
+            // notifications.
             self.ffi_try(
                 ffi_command::MSG_M4TOM0_OT_UDP_OPEN,
                 &[buffer.socket.get() as u32, context as u32],
@@ -826,8 +829,8 @@ pub unsafe trait OpenThread {
         }
     }
 
-    /// Have the open socket receive what is sent to `port`, on any address
-    /// of the device.
+    /// Bind the open socket to `port`, on every address of the device, so
+    /// that it receives the datagrams sent there.
     async fn udp_bind(&mut self, buffer: &'static UdpBuffer, port: u16) -> Result<()> {
         let name = ffi::otSockAddr {
             mAddress: ip6_address(Ipv6Addr::UNSPECIFIED),
@@ -835,8 +838,8 @@ pub unsafe trait OpenThread {
         };
         let name_in = buffer.name.get().cast::<ffi::otSockAddr>();
         unsafe {
-            // SAFETY: this is the only place CPU1 touches the name in the
-            // buffer, never through a reference, and CPU2 only reads it.
+            // SAFETY: CPU1 accesses the name in the buffer only here, and
+            // never through a reference. CPU2 only reads it.
             write_volatile(name_in, name);
             // SAFETY: expects pointers to an open otUdpSocket and to an
             // otSockAddr, which it copies, and an otNetifIdentifier.
@@ -852,8 +855,9 @@ pub unsafe trait OpenThread {
         }
     }
 
-    /// Send `payload` from the open socket to `port` at `address`. Of what
-    /// goes to a multicast address, a copy comes back to the device itself.
+    /// Send `payload` from the open socket to `port` at `address`. A
+    /// datagram sent to a multicast address is also delivered to this
+    /// device.
     async fn udp_send(
         &mut self,
         buffer: &'static UdpBuffer,
@@ -861,8 +865,9 @@ pub unsafe trait OpenThread {
         port: u16,
         payload: &Datagram,
     ) -> Result<()> {
-        // SAFETY: the fields of an otMessageInfo are numbers, all of them
-        // valid as zero: the default source address, port and hop limit.
+        // SAFETY: every field of an otMessageInfo is an integer for which
+        // zero is valid. Zero selects the default source address, port and
+        // hop limit.
         let mut peer: ffi::otMessageInfo = unsafe { MaybeUninit::zeroed().assume_init() };
         peer.mPeerAddr = ip6_address(address);
         peer.mPeerPort = port;
@@ -872,8 +877,8 @@ pub unsafe trait OpenThread {
 
         let message = unsafe {
             // SAFETY: expects a pointer to an otMessageSettings, or null for
-            // the default ones. It answers with a pointer to a new
-            // otMessage, null if the stack has no buffer left for one.
+            // the defaults. Returns a pointer to a new otMessage, or null if
+            // the stack has no buffer left.
             self.ffi_call(ffi_command::MSG_M4TOM0_OT_UDP_NEW_MESSAGE, &[0])
                 .await
         };
@@ -882,9 +887,9 @@ pub unsafe trait OpenThread {
         }
 
         let sent = unsafe {
-            // SAFETY: CPU1 touches the payload and the peer in the buffer
-            // only here and in `udp_read`, never through a reference and
-            // never while CPU2 has a call to answer. A `Datagram` is no
+            // SAFETY: CPU1 accesses the payload and the peer in the buffer
+            // only here and in `udp_read`, never through a reference, and
+            // never while a call to CPU2 is in progress. A `Datagram` is no
             // longer than the payload buffer.
             copy_nonoverlapping(payload.as_ptr(), payload_in, payload.len());
             write_volatile(peer_in, peer);
@@ -910,11 +915,11 @@ pub unsafe trait OpenThread {
             }
         };
         if sent.is_err() {
-            // The stack takes over a message that it accepts for sending.
-            // This one it did not.
+            // The stack takes ownership of a message only when it accepts
+            // it for sending. It did not accept this one, so free it.
             unsafe {
-                // SAFETY: expects a pointer to an otMessage that is still
-                // the caller's.
+                // SAFETY: expects a pointer to an otMessage that the caller
+                // still owns.
                 self.ffi_call(ffi_command::MSG_M4TOM0_OT_MESSAGE_FREE, &[message])
                     .await;
             }

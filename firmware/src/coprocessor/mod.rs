@@ -1,11 +1,11 @@
 //! The radio coprocessor, CPU2. It runs ST's firmware: either a wireless
 //! stack, or FUS, the firmware upgrade service that installs one.
 //!
-//! [`Task`] boots CPU2, keeps its mailbox serviced, and then runs the side of
-//! this firmware that goes with what it finds there: [`crate::thread`] on a
-//! Thread stack, the installer in [`fus`] on FUS. Getting from one to the
-//! other always takes a reset, so that choice holds for as long as the task
-//! lives, and the side that is not running only turns requests down.
+//! [`Task`] boots CPU2, services its mailbox, and then runs the code that
+//! matches the firmware it finds there: [`crate::thread`] for a Thread
+//! stack, or the installer in [`fus`] for FUS. CPU2 only switches between
+//! the two through a reset, so the choice is made once per boot. The code
+//! for the firmware that is not running only rejects requests.
 
 use core::cell::Cell;
 
@@ -48,7 +48,7 @@ bind_interrupts!(struct Irqs {
     IPCC_C1_TX => TransmitInterruptHandler;
 });
 
-/// What CPU2 is running, as last published.
+/// The last published status of CPU2.
 struct Status(Mutex<ThreadModeRawMutex, Cell<CoprocessorStatus>>);
 
 impl Status {
@@ -71,15 +71,15 @@ struct Shared {
     status: Status,
 }
 
-/// How long an install request gets: at most a flash page erased and a chunk
-/// written, or one command to FUS.
+/// Timeout for an install request. A request erases at most one flash page
+/// and writes one chunk, or sends one command to FUS.
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(5);
 
 pub struct Builder<'d> {
     pub ipcc: Peri<'d, IPCC>,
     pub flash: Peri<'d, FLASH>,
-    /// The firmware-update service, which this task runs: it writes flash in
-    /// step with CPU2.
+    /// The firmware-update service. This task runs it because flash writes
+    /// have to be coordinated with CPU2.
     pub update: update::Service,
     /// The board-configuration service. This task runs it for the same
     /// reason.
@@ -127,8 +127,8 @@ impl<'d> Builder<'d> {
     }
 }
 
-/// How the rest of the firmware reaches the coprocessor's own firmware. Its
-/// Thread networking has a handle of its own, [`thread::Handle`].
+/// Manages the firmware on the coprocessor: its status, installs and
+/// uninstalls. Thread networking has its own handle, [`thread::Handle`].
 pub struct Handle {
     requests: request::Client<fus::Request, CoprocessorResult>,
     status: &'static Status,
@@ -139,24 +139,24 @@ impl Handle {
         self.status.get()
     }
 
-    /// Get ready to take an image of `size` for FUS to install.
+    /// Start receiving an image of `size` for FUS to install.
     pub async fn begin_install(&mut self, size: ImageSize) -> CoprocessorResult {
         self.request(fus::Request::Begin(size)).await
     }
 
-    /// Take the next piece of the image.
+    /// Write the next chunk of the image.
     pub async fn write_install(&mut self, chunk: ImageChunk) -> CoprocessorResult {
         self.request(fus::Request::Write(chunk)).await
     }
 
-    /// Hand the complete image to FUS. [`Handle::status`] tells how the
-    /// install goes from there.
+    /// Hand the complete image to FUS. [`Handle::status`] reports how the
+    /// install progresses.
     pub async fn finish_install(&mut self) -> CoprocessorResult {
         self.request(fus::Request::Finish).await
     }
 
-    /// Start removing the wireless stack, which leaves the coprocessor with
-    /// FUS alone. [`Handle::status`] tells how that goes.
+    /// Start removing the wireless stack, which leaves only FUS on the
+    /// coprocessor. [`Handle::status`] reports the progress.
     pub async fn uninstall_stack(&mut self) -> CoprocessorResult {
         self.request(fus::Request::Uninstall).await
     }
@@ -193,20 +193,22 @@ impl<'d> Task<'d> {
             match Running::read(&sys) {
                 Running::Stack(firmware) => {
                     if fus::pending() == Some(Pending::Uninstall(UninstallStep::EnterFus)) {
-                        // The stack is to go, and that starts with putting
-                        // FUS in its place: this resets the chip.
+                        // An uninstall is pending. Its first step is to
+                        // switch CPU2 to FUS, which resets the chip.
                         fus::set_pending(Some(Pending::Uninstall(UninstallStep::Delete)));
                         fus::enter(&mut sys).await;
                     }
-                    // Whatever else was pending, it is over: an install has
-                    // put a stack here, or a stack has outlived its removal.
+                    // Any other pending operation has ended: either an
+                    // install put this stack here, or a removal failed and
+                    // the stack is still present.
                     fus::set_pending(None);
                     self.status.publish(CoprocessorStatus::Stack(firmware));
 
                     let installer = fus::serve_beside_stack(self.requests, self.status);
-                    // From here on flash is only written in step with the
-                    // stack: by Thread for its dataset, by the updates, and
-                    // for the board's configuration.
+                    // From here on every flash write is coordinated with
+                    // the stack. Thread writes its dataset, the update
+                    // service the staged image, and the configuration
+                    // service the board's configuration.
                     let flash = radio_flash::Shared::new(RadioFlash::new(flash, sys));
                     let network = self.thread.monitor();
                     let update = self.update.run(&flash, network, self.update_socket);
@@ -246,8 +248,8 @@ impl<'d> Task<'d> {
             }
         };
 
-        // Whatever CPU2 runs, it stalls unless its event buffers are returned
-        // and its traces read.
+        // Whichever firmware CPU2 runs, it stalls unless its event buffers
+        // are returned and its traces are read.
         join(
             join(mm.run_queue(), drain_traces(mbox.traces_subsystem)),
             sides,
@@ -264,7 +266,7 @@ async fn drain_traces(mut traces: Traces<'_>) -> ! {
     }
 }
 
-/// CPU2's ready event, absent when it never sent one.
+/// CPU2's ready event. `None` if it did not send one.
 type Ready = Option<Result<SchiSysEventReady, ()>>;
 
 /// Hardware semaphore 5 guards the 48 MHz clock (CLK48/HSI48). When a wireless stack starts,
@@ -310,8 +312,8 @@ async fn ensure_booted<'d>(ipcc: Peri<'d, IPCC>) -> TlMbox<'d> {
     mbox
 }
 
-/// What CPU2 says about itself, in the device info table it fills in when it
-/// boots.
+/// The firmware that CPU2 is running, read from the device info table that
+/// it fills in at boot.
 enum Running {
     Fus(CoprocessorFirmware),
     Stack(CoprocessorFirmware),

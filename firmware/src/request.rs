@@ -1,13 +1,14 @@
-//! Requests from a handle to the task that serves them, one at a time.
+//! A request channel between a handle and the task that serves it. It
+//! carries one request at a time.
 //!
-//! The asking side waits a bounded time for its answer. What it cannot do is
-//! make the serving task drop what it is in the middle of: a request that was
-//! given up on is still carried out to the end, and its answer thrown away.
+//! The client waits for the response with a timeout. A timeout does not
+//! cancel the request: the server still runs it to completion, and the
+//! response is discarded.
 
 use embassy_sync::{blocking_mutex::raw::ThreadModeRawMutex, signal::Signal};
 use embassy_time::{Duration, with_timeout};
 
-/// Tells one request, and its answer, from the next.
+/// Matches a response to its request.
 type Id = u32;
 
 pub struct Channel<Request, Answer> {
@@ -15,7 +16,7 @@ pub struct Channel<Request, Answer> {
     answer: Signal<ThreadModeRawMutex, (Id, Answer)>,
 }
 
-/// A request the serving task has taken, and owes an answer.
+/// A request that the server has received and not yet answered.
 pub struct Pending(Id);
 
 impl<Request: Send, Answer: Send> Channel<Request, Answer> {
@@ -26,7 +27,7 @@ impl<Request: Send, Answer: Send> Channel<Request, Answer> {
         }
     }
 
-    /// The asking end, for a handle, and the serving end, for its task.
+    /// The client end, for a handle, and the server end, for its task.
     pub fn split(&'static self) -> (Client<Request, Answer>, Server<Request, Answer>) {
         let client = Client {
             channel: self,
@@ -65,7 +66,8 @@ pub struct Client<Request: 'static, Answer: 'static> {
 }
 
 impl<Request: Send, Answer: Send> Client<Request, Answer> {
-    /// `None` if the task has not answered within `timeout`.
+    /// Send `request` and wait for the response. `None` if none arrives
+    /// within `timeout`.
     pub async fn ask(&mut self, request: Request, timeout: Duration) -> Option<Answer> {
         let id = self.next;
         self.next = id.wrapping_add(1);
@@ -74,7 +76,8 @@ impl<Request: Send, Answer: Send> Client<Request, Answer> {
         let answer = async {
             loop {
                 let (answered, answer) = self.channel.answer.wait().await;
-                // Under another ID it answers a request that was given up on.
+                // A response with another ID is for an earlier request that
+                // timed out.
                 if answered == id {
                     return answer;
                 }

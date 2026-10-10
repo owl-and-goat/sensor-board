@@ -1,16 +1,15 @@
 //! Installing and removing coprocessor firmware through FUS.
 //!
-//! FUS installs an image that it finds in flash right below its own secure
-//! area: a newer FUS, or a wireless stack. The image arrives here in chunks
-//! and is written to that place, and FUS is then told to take it from there.
-//! Removing a stack is one command to FUS, once CPU2 has been restarted into
-//! FUS in place of the stack.
+//! FUS installs an image that it finds in flash just below its own secure
+//! area: a newer FUS, or a wireless stack. This module receives the image in
+//! chunks, writes it there, and then tells FUS to install it. Removing a
+//! stack takes one FUS command, after CPU2 has been restarted into FUS.
 //!
-//! FUS resets the whole chip whenever it sees fit, and between resets it can
-//! claim to be idle with the work still ahead of it. So what it was set to do
-//! is written down where it survives a reset ([`Pending`]), and each boot of
-//! this firmware takes it from there until the result shows in what CPU2
-//! reports having.
+//! FUS resets the whole chip at times of its own choosing, and between
+//! resets it can report itself idle while the work is still ahead of it. So
+//! the operation in progress is stored where it survives a reset
+//! ([`Pending`]). Each boot of this firmware resumes it, until the firmware
+//! versions that CPU2 reports show the result.
 
 use core::{mem::MaybeUninit, ptr};
 
@@ -38,11 +37,12 @@ pub enum Request {
 
 type Requests = request::Server<Request, CoprocessorResult>;
 
-/// What FUS has been set to do and is not known to be done with.
+/// An operation that FUS was told to do, and is not yet known to have
+/// finished.
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum Pending {
-    /// Installing an image. Carries what was installed beforehand, since the
-    /// install is over when that has changed.
+    /// Installing an image. `from` is what was installed before: the install
+    /// is over once the installed versions differ from it.
     Install {
         from: Installed,
     },
@@ -65,21 +65,21 @@ impl From<CoprocessorFirmware> for Installed {
     }
 }
 
-/// Removing the stack takes a reset between each of these.
+/// The steps of removing the stack. A reset separates each from the next.
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum UninstallStep {
     /// Restart CPU2 into FUS.
     EnterFus,
     /// Tell FUS to delete the stack.
     Delete,
-    /// See whether the stack is gone.
+    /// Check whether the stack is gone.
     Check,
 }
 
-/// [`Pending`] as it is kept: in RAM that is neither initialised at boot nor
-/// lost in a reset. The words are a magic number, to tell this from what a
-/// power-up leaves there, then what is pending, then for an install the
-/// versions of FUS and of the stack it started from.
+/// [`Pending`] as stored: in RAM that is not initialised at boot and that
+/// survives a reset. The four words are a magic number (to distinguish
+/// stored state from the contents of RAM after power-up), the operation,
+/// and for an install the FUS and stack versions it started from.
 #[unsafe(link_section = ".uninit.FUS_PENDING")]
 static mut PENDING: MaybeUninit<[u32; 4]> = MaybeUninit::uninit();
 const PENDING_MAGIC: u32 = 0xF05B_0512;
@@ -90,7 +90,7 @@ const UNINSTALL_ENTER_FUS: u32 = 2;
 const UNINSTALL_DELETE: u32 = 3;
 const UNINSTALL_CHECK: u32 = 4;
 
-/// No version is 0.0.0, which leaves a word of zero for "no stack".
+/// No real version is 0.0.0, so a zero word can stand for "no stack".
 fn version_word(version: Version) -> u32 {
     u32::from_be_bytes([version.major, version.minor, version.patch, 0])
 }
@@ -105,8 +105,8 @@ fn word_version(word: u32) -> Version {
 }
 
 pub fn pending() -> Option<Pending> {
-    // SAFETY: nothing else touches this RAM, and any four words are a valid
-    // value of what is read.
+    // SAFETY: nothing else accesses this RAM, and every bit pattern is a
+    // valid `[u32; 4]`.
     let words = unsafe { ptr::read_volatile((&raw const PENDING).cast::<[u32; 4]>()) };
     match words {
         [PENDING_MAGIC, INSTALL, fus, stack] => Some(Pending::Install {
@@ -144,13 +144,13 @@ pub fn set_pending(pending: Option<Pending>) {
     };
     // SAFETY: nothing else touches this RAM.
     unsafe { ptr::write_volatile((&raw mut PENDING).cast::<[u32; 4]>(), words) };
-    // While FUS is at work it resets the chip as it sees fit, and a watchdog
-    // reset is no crash.
+    // FUS resets the chip while it works, so a watchdog reset during that
+    // time must not count as a crash.
     dfu::fus_busy(pending.is_some());
 }
 
-/// Serve requests on a board whose wireless stack is running: FUS is not
-/// there to install anything, but the stack can be removed.
+/// Serve requests while the wireless stack is running. Installing needs
+/// FUS, so only an uninstall is accepted.
 pub async fn serve_beside_stack(requests: Requests, status: &Status) -> ! {
     loop {
         let (pending, request) = requests.receive().await;
@@ -159,8 +159,9 @@ pub async fn serve_beside_stack(requests: Requests, status: &Status) -> ! {
                 set_pending(Some(Pending::Uninstall(UninstallStep::EnterFus)));
                 status.publish(CoprocessorStatus::Starting);
                 requests.answer(pending, Ok(()));
-                // Time for that answer to get out. The next boot does the
-                // rest: at boot, nothing else is using CPU2 yet.
+                // Give the response time to reach the host. The next boot
+                // does the rest, because at boot nothing else is using CPU2
+                // yet.
                 Timer::after_millis(100).await;
                 cortex_m::peripheral::SCB::sys_reset();
             }
@@ -171,8 +172,8 @@ pub async fn serve_beside_stack(requests: Requests, status: &Status) -> ! {
 
 /// Restart CPU2 into FUS, from its wireless stack.
 pub async fn enter(sys: &mut Sys<'_>) {
-    // Asked for the state of FUS, a stack says that FUS is not running. Asked
-    // again, it resets the chip into FUS.
+    // The first FUS get-state command makes the stack answer that FUS is
+    // not running. The second makes it reset the chip into FUS.
     sys.shci_c2_fus_get_state().await;
     sys.shci_c2_fus_get_state().await;
     Timer::after_secs(5).await;
@@ -184,8 +185,8 @@ const PAGE: u32 = 4096;
 /// Flash is written in words of this many bytes.
 const WORD: u32 = 8;
 
-/// Where the application's part of flash ends, as an offset into flash: the
-/// last of it is where a firmware update is staged.
+/// The end of the application's part of flash, as an offset into flash. The
+/// update staging area is the last thing in it.
 fn application_end() -> u32 {
     update::staging_end()
 }
@@ -197,12 +198,13 @@ const FUS_STATE_ERROR: u8 = 0xFF;
 
 const POLL_INTERVAL: Duration = Duration::from_millis(500);
 
-/// How long FUS may say it is idle, with nothing to show for an install,
-/// before that is taken as its last word. It said so for 14 s while it
-/// installed a 420 KB stack.
+/// How long FUS has to report idle, with no change in what is installed,
+/// before an install counts as having done nothing. FUS reported idle for
+/// 14 s in the middle of installing a 420 KB stack.
 const INSTALL_SETTLE: Duration = Duration::from_secs(60);
 
-/// How long FUS has to stay idle after deleting a stack for that to count.
+/// How long FUS has to stay idle after a delete command before the delete
+/// counts as finished.
 const DELETE_SETTLE: Duration = Duration::from_secs(5);
 
 pub struct Installer<'d> {
@@ -213,7 +215,7 @@ pub struct Installer<'d> {
     pub status: &'static Status,
 }
 
-/// An image on its way into flash. All offsets are into flash.
+/// An image being written to flash. All offsets are flash offsets.
 struct Staging {
     start: u32,
     len: u32,
@@ -236,8 +238,8 @@ impl Installer<'_> {
         set_pending(None);
 
         if state == FusState::Idle && self.firmware.stack.is_some() {
-            // FUS has a stack and nothing left to do: this board is meant to
-            // run its stack.
+            // FUS is idle and a stack is installed. The board is meant to
+            // run its stack, so start it.
             while_busy(requests, self.start_stack()).await;
         }
 
@@ -256,13 +258,13 @@ impl Installer<'_> {
                     Some(staging) if staging.written == staging.len => {
                         match self.install().await {
                             Ok(from) => {
-                                // Published before the answer, so that
-                                // whoever asked never reads a status older
-                                // than it.
+                                // Publish the status before responding, so
+                                // that the caller never reads a status that
+                                // is older than the response.
                                 self.publish(FusState::Busy);
                                 requests.answer(pending, Ok(()));
-                                // If FUS takes the image, it resets the chip
-                                // and this never gets to its end.
+                                // If FUS accepts the image, it resets the
+                                // chip and this call never returns.
                                 state = while_busy(requests, self.installed(from)).await;
                                 set_pending(None);
                                 continue;
@@ -272,7 +274,8 @@ impl Installer<'_> {
                     }
                     _ => Err(CoprocessorError::OutOfSequence),
                 },
-                // There is a stack here only if FUS would not start it.
+                // A stack is still installed here only if FUS failed to
+                // start it.
                 Request::Uninstall if self.firmware.stack.is_some() => {
                     set_pending(Some(Pending::Uninstall(UninstallStep::Delete)));
                     self.status.publish(CoprocessorStatus::Starting);
@@ -313,25 +316,27 @@ impl Installer<'_> {
         }
     }
 
-    /// See an install through, in the boot it was begun in or a later one.
+    /// Wait for an install to finish. This runs in the boot that started
+    /// the install, and again in each later boot until it is over.
     async fn installed(&mut self, from: Installed) -> FusState {
         if Installed::from(self.firmware) != from {
-            // The image is in. What FUS does after that is go idle.
+            // The installed versions have changed: the image is installed.
+            // FUS goes idle after that.
             return self.idle(Duration::MIN).await;
         }
-        // Nothing has changed yet. FUS resets the chip when something does,
-        // so to get to the end of this wait is to learn that nothing will.
+        // Nothing has changed yet. FUS resets the chip when it installs
+        // something, so if this wait completes, nothing was installed.
         self.idle(INSTALL_SETTLE).await
     }
 
-    /// Take the next step of removing the stack. Returns once there is
-    /// nothing more to do about it.
+    /// Run the next step of removing the stack. Returns when there is
+    /// nothing left to do.
     async fn uninstall(&mut self, step: UninstallStep) -> FusState {
         if self.firmware.stack.is_none() {
             return self.idle(Duration::MIN).await;
         }
         if step == UninstallStep::Check {
-            // The stack has outlived the delete: leave it be.
+            // The stack is still installed after the delete. Do not retry.
             defmt::warn!("fus: the wireless stack is still there");
             return self.idle(Duration::MIN).await;
         }
@@ -348,7 +353,7 @@ impl Installer<'_> {
         if state != FusState::Idle {
             return state;
         }
-        // CPU2 says what it has only when it boots.
+        // CPU2 only reports what is installed when it boots, so reset.
         cortex_m::peripheral::SCB::sys_reset()
     }
 
@@ -356,18 +361,18 @@ impl Installer<'_> {
         self.publish(FusState::Busy);
         dfu::fus_busy(true);
         let status = self.sys.shci_c2_fus_startws().await;
-        // FUS answers, and then resets the chip into the stack. To still be
-        // here a while later means that it did not.
+        // FUS responds, and then resets the chip into the stack. If this
+        // code is still running ten seconds later, the stack did not start.
         Timer::after_secs(10).await;
         dfu::fus_busy(false);
         defmt::warn!("fus: the wireless stack did not start ({})", status);
     }
 
-    /// Find the place in flash for an image of `size`.
+    /// Compute the flash location for an image of the given size.
     fn begin(&mut self, ImageSize(len): ImageSize) -> Result<Staging, CoprocessorError> {
-        // Where FUS looks, and where ST's release notes put each image: on
-        // the page boundary that leaves the image ending just below the
-        // secure flash area.
+        // FUS looks for the image on the page boundary that makes it end
+        // just below the secure flash area. ST's release notes give the
+        // same address for each image.
         let secure_start = FLASH.sfr().read().sfsa() as u32 * PAGE;
         let start = secure_start
             .checked_sub(len)
@@ -387,7 +392,7 @@ impl Installer<'_> {
     fn write(&mut self, staging: &mut Staging, chunk: &ImageChunk) -> CoprocessorResult {
         let len = chunk.data.len() as u32;
         let end = chunk.offset + len;
-        // Only the image's last chunk may stop short of a flash word.
+        // Only the image's last chunk may end partway through a flash word.
         if chunk.offset != staging.written
             || len == 0
             || end > staging.len
@@ -402,8 +407,8 @@ impl Installer<'_> {
         let data = &data[..chunk.data.len().next_multiple_of(WORD as usize)];
 
         let at = staging.start + chunk.offset;
-        // One page at a time, as the image gets there, so that no request
-        // holds everything else up for longer than one erase.
+        // Erase one page at a time, as the image reaches it, so that no
+        // request blocks everything else for longer than one erase.
         while staging.erased_to < at + data.len() as u32 {
             self.flash
                 .blocking_erase(staging.erased_to, staging.erased_to + PAGE)
@@ -418,8 +423,8 @@ impl Installer<'_> {
         Ok(())
     }
 
-    /// Tell FUS to install the image it finds. Returns what the install
-    /// starts from.
+    /// Tell FUS to install the image in flash. Returns the versions that
+    /// were installed before.
     async fn install(&mut self) -> Result<Installed, CoprocessorError> {
         let from = self.firmware.into();
         set_pending(Some(Pending::Install { from }));
@@ -434,8 +439,8 @@ impl Installer<'_> {
     }
 }
 
-/// Do `work`, which keeps CPU2 to itself, and tell whoever asks for anything
-/// in the meantime that FUS is busy.
+/// Run `work`, which needs exclusive use of CPU2. Requests that arrive in
+/// the meantime are answered with [`CoprocessorError::Busy`].
 async fn while_busy<T>(requests: Requests, work: impl Future<Output = T>) -> T {
     let turn_down = async {
         loop {

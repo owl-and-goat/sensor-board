@@ -1,13 +1,13 @@
-//! Firmware updates. A new image is staged in the flash region next to the
-//! one that runs (`DFU` in memory.x) and checked against its digest. At the
-//! next reset the bootloader (`bootloader/`) swaps the two. The update then
-//! runs on trial: it is kept once the board is back on its network, and if
-//! the board resets first, or does not get there in time, the bootloader
-//! swaps the old firmware back.
+//! Firmware updates. A new image is written to the staging area, the flash
+//! region after the running firmware (`DFU` in memory.x), and checked
+//! against its digest. At the next reset the bootloader (`bootloader/`)
+//! swaps the two. The update then runs on trial. It is confirmed once the
+//! board is back on its network. If the board resets before that, or does
+//! not rejoin in time, the bootloader swaps the old firmware back.
 //!
-//! [`init`] makes the two ends: the [`Handle`] for the rest of the firmware,
-//! and the [`Service`], which runs inside the coprocessor task, because
-//! flash is written in step with CPU2.
+//! [`init`] returns the [`Handle`] for the rest of the firmware and the
+//! [`Service`]. The service runs inside the coprocessor task, because flash
+//! writes have to be coordinated with CPU2.
 
 use core::cell::{Cell, RefCell};
 use core::ptr::read_volatile;
@@ -35,11 +35,10 @@ use crate::{
 
 static MARKER: BuildMarker = BuildMarker::new(BuildId(decimal(env!("BUILD_ID"))));
 
-/// Which build of the firmware this is.
+/// The build ID of this firmware.
 pub fn build() -> BuildId {
-    // Read out of the marker, and in a way the compiler does not see
-    // through: that keeps the marker in the image, where the host tool looks
-    // for it.
+    // The volatile read stops the compiler from optimizing the marker away.
+    // The host tool looks for the marker in the image.
     unsafe { read_volatile(&MARKER) }.build()
 }
 
@@ -57,41 +56,41 @@ unsafe extern "C" {
     static __bootloader_dfu_end: u32;
 }
 
-/// Where the region an update is staged in ends, as an offset into flash.
-/// Nothing else of CPU1's may be put below this.
+/// The end of the update staging area, as an offset into flash. Flash below
+/// this offset is in use by CPU1, so a coprocessor image must not go there.
 pub fn staging_end() -> u32 {
     // The linker gives the offset as the address of the symbol.
     (&raw const __bootloader_dfu_end) as u32
 }
 
-/// How long a request gets. The longest is the check of a whole image.
+/// Timeout for a request. The longest one checks the digest of a whole image.
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(5);
 
-/// How long an update on trial has to get the board back on its network.
-/// A board that finds no network makes one of its own in about two minutes.
+/// How long an update on trial has to get the board back on its network. A
+/// board that finds no network forms its own after about two minutes.
 const TRIAL_TIMEOUT: Duration = Duration::from_secs(300);
 
-/// How often a board on trial looks at where it stands with its network.
+/// How often a board on trial checks its network status.
 const TRIAL_POLL: Duration = Duration::from_secs(1);
 
-/// How long the answer to an apply gets to reach whoever asked, before the
-/// reset.
+/// Delay between an apply and the reset, to let the response reach the
+/// caller.
 const RESET_DELAY: Duration = Duration::from_millis(200);
 
-/// How often a board that offers its staged image says so.
+/// The interval between offers of the staged image.
 const OFFER_INTERVAL: Duration = Duration::from_secs(10);
 
-/// How long a board that fetches an image waits for the chunk it asked for
-/// before it asks again, and how many times in a row it does. After that it
-/// leaves it until the next offer.
+/// How long a fetching board waits for a requested chunk before it asks
+/// again, and how many times in a row it asks. After that it stops until
+/// the next offer.
 const CHUNK_TIMEOUT: Duration = Duration::from_millis(1500);
 const MAX_ATTEMPTS: u8 = 8;
 
-/// A board that has asked for nothing for this long is no longer taken for
-/// one that is fetching.
+/// A board that has requested no chunk for this long no longer counts as
+/// fetching.
 const FETCHER_QUIET: Duration = Duration::from_secs(30);
 
-/// Wait for the earlier of two moments, each of which may never come.
+/// Wait until the earlier of two instants. `None` means never.
 async fn until_earlier(a: Option<Instant>, b: Option<Instant>) {
     let at = match (a, b) {
         (Some(a), Some(b)) => Some(a.min(b)),
@@ -108,11 +107,11 @@ enum Request {
     Write(ImageChunk),
     Finish,
     Apply,
-    /// Start offering the staged image to the boards on the network, or stop.
+    /// Start or stop offering the staged image to the boards on the network.
     Offer(bool),
 }
 
-/// Where the board stands with updates, as last published.
+/// The last published update status.
 struct Status(Mutex<ThreadModeRawMutex, Cell<UpdateStatus>>);
 
 impl Status {
@@ -125,8 +124,8 @@ impl Status {
     }
 }
 
-/// How far the boards that fetch the image this one offers have got, as last
-/// published.
+/// The last published progress of the boards that are fetching the image
+/// this board offers.
 struct Progress(Mutex<ThreadModeRawMutex, RefCell<OfferProgress>>);
 
 struct Shared {
@@ -135,7 +134,7 @@ struct Shared {
     progress: Progress,
 }
 
-/// Make the two ends of firmware updates. Panics if called a second time.
+/// Create the [`Handle`] and the [`Service`]. Panics if called a second time.
 pub fn init() -> (Handle, Service) {
     static SHARED: StaticCell<Shared> = StaticCell::new();
     let shared: &'static Shared = SHARED.init(Shared {
@@ -158,7 +157,7 @@ pub fn init() -> (Handle, Service) {
     (handle, service)
 }
 
-/// How the rest of the firmware gets an update in.
+/// Stages, applies and offers updates for the rest of the firmware.
 pub struct Handle {
     requests: request::Client<Request, UpdateResult>,
     status: &'static Status,
@@ -170,35 +169,37 @@ impl Handle {
         self.status.get()
     }
 
-    /// How far the boards that fetch the image this one offers have got.
+    /// The progress of the boards that are fetching the image this board
+    /// offers.
     pub fn offer_progress(&self) -> OfferProgress {
         self.progress.0.lock(|progress| progress.borrow().clone())
     }
 
-    /// Start taking in `image`, in place of whatever was staged or arriving.
+    /// Start receiving `image`. This discards any image that was staged or
+    /// being received.
     pub async fn begin(&mut self, image: UpdateImage) -> UpdateResult {
         self.request(Request::Begin(image)).await
     }
 
-    /// The next piece of the image. Pieces come in order, and every one but
-    /// the last is a whole number of flash words.
+    /// Write the next chunk of the image. Chunks have to arrive in order,
+    /// and every chunk but the last has to be a whole number of flash words.
     pub async fn write(&mut self, chunk: ImageChunk) -> UpdateResult {
         self.request(Request::Write(chunk)).await
     }
 
-    /// Check the image that has arrived against its digest. From here on it
-    /// is staged.
+    /// Check the received image against its digest. On success the image is
+    /// staged.
     pub async fn finish(&mut self) -> UpdateResult {
         self.request(Request::Finish).await
     }
 
-    /// Restart into the staged image. The answer comes first.
+    /// Restart into the staged image. The response is sent before the reset.
     pub async fn apply(&mut self) -> UpdateResult {
         self.request(Request::Apply).await
     }
 
-    /// Start offering the staged image to the boards on the network, which
-    /// fetch it and restart into it, or stop.
+    /// Start or stop offering the staged image to the boards on the network.
+    /// A board that takes the offer fetches the image and restarts into it.
     pub async fn offer(&mut self, on: bool) -> UpdateResult {
         self.request(Request::Offer(on)).await
     }
@@ -211,7 +212,8 @@ impl Handle {
     }
 }
 
-/// The end of firmware updates that answers the [`Handle`].
+/// Serves requests from the [`Handle`] and update messages from other
+/// boards.
 pub struct Service {
     requests: request::Server<Request, UpdateResult>,
     status: &'static Status,
@@ -219,8 +221,8 @@ pub struct Service {
 }
 
 impl Service {
-    /// Serve updates on a board whose CPU2 runs a wireless stack. `network`
-    /// is what an update on trial is judged by.
+    /// Run the service on a board whose CPU2 runs a wireless stack. An
+    /// update on trial is confirmed based on the status from `network`.
     pub async fn run(
         self,
         flash: &radio_flash::Shared<'_>,
@@ -265,7 +267,8 @@ impl Service {
         updates.serve().await
     }
 
-    /// Stand in for updates on a board that cannot take one.
+    /// Run in place of [`Service::run`] on a board that cannot take an
+    /// update. Every request fails.
     pub async fn unavailable(self) -> ! {
         self.status.publish(UpdateStatus::Unavailable);
         loop {
@@ -277,40 +280,41 @@ impl Service {
 
 type Region<'a, 'd> = Partition<'a, NoopRawMutex, RadioFlash<'d>>;
 
-/// An image on its way in.
+/// An image that is being received.
 struct Arriving {
     image: UpdateImage,
     received: u32,
-    /// Up to where the staging area has been erased for it.
+    /// The staging area has been erased up to this offset.
     erased_to: u32,
 }
 
-/// A board that fetches the staged image from this one, as its requests show
-/// it.
+/// A board that is fetching the staged image from this one, as far as its
+/// requests show.
 struct FetcherHeard {
     peer: thread::Peer,
-    /// Which board, once it has said.
+    /// The board's ID, once it has sent it.
     board: Option<BoardId>,
-    /// How much of the image it has, going by the chunk it last asked for.
+    /// How much of the image it has, judging by the last chunk it requested.
     received: u32,
     heard_at: Instant,
 }
 
-/// The fetching of an image from a board that offers it, a chunk at a time.
+/// The state of fetching an image, chunk by chunk, from a board that offers
+/// it.
 struct Fetch {
     from: thread::Peer,
-    /// How many times in a row the chunk that is due has been asked for.
+    /// How many times in a row the next chunk has been requested.
     attempts: u8,
-    /// When to ask for it again. `None` once that has been given up: the
-    /// next offer of the image takes it up again where it stopped.
+    /// When to request it again. `None` after giving up: the next offer of
+    /// the image resumes the fetch where it stopped.
     retry_at: Option<Instant>,
 }
 
 struct Updates<'a, 'd> {
     /// Offsets into it are offsets into the image.
     staging_area: Region<'a, 'd>,
-    /// What the bootloader is to do at the next reset, and the page that is
-    /// kept in.
+    /// The bootloader's instruction for the next reset, and the page that
+    /// stores it.
     state: FirmwareState<'a, Region<'a, 'd>>,
     state_page: Region<'a, 'd>,
     requests: request::Server<Request, UpdateResult>,
@@ -318,26 +322,27 @@ struct Updates<'a, 'd> {
     progress: &'static Progress,
     arriving: Option<Arriving>,
     staged: Option<UpdateImage>,
-    /// What boards say to each other about updates.
+    /// The UDP socket for [`UpdateMessage`]s.
     socket: thread::Socket,
-    /// Set while what is arriving comes from a board on the network.
+    /// Set while the image being received comes from a board on the network.
     fetching: Option<Fetch>,
-    /// When the staged image is next offered to the network, if it is being
+    /// When to offer the staged image next. `None` if it is not being
     /// offered.
     offering: Option<Instant>,
-    /// The build that an update on trial was, if it was put back. It is not
-    /// fetched a second time.
+    /// The build of an update that was rolled back after its trial. It is
+    /// not fetched again.
     refused: Option<BuildId>,
-    /// This board.
+    /// This board's ID.
     board: BoardId,
     /// The boards that are fetching the staged image from this one.
     fetchers: heapless::Vec<FetcherHeard, { OfferProgress::MAX_FETCHERS }>,
 }
 
 impl Updates<'_, '_> {
-    /// See the running firmware, an update that has just been swapped in,
-    /// through its trial. Returns once it is kept. If it is not to be, this
-    /// resets the board, and the bootloader puts back what was there.
+    /// Run the trial of the running firmware, which is an update that was
+    /// just swapped in. Returns once the update is confirmed. If the trial
+    /// fails, this resets the board, and the bootloader restores the old
+    /// firmware.
     async fn trial(&mut self, network: thread::Monitor) {
         defmt::info!("update: on trial as build {}", build());
         self.status.publish(UpdateStatus::OnTrial);
@@ -346,8 +351,8 @@ impl Updates<'_, '_> {
         loop {
             match network.status() {
                 NetworkStatus::Configured(link) if link.role.is_attached() => break,
-                // Nothing to get back on: having started is all there is to
-                // show.
+                // There is no network to rejoin, so starting up is the only
+                // test.
                 NetworkStatus::Unconfigured
                 | NetworkStatus::Unavailable(NetworkError::NoThreadStack) => break,
                 _ if Instant::now() > deadline => {
@@ -368,8 +373,8 @@ impl Updates<'_, '_> {
                 defmt::info!("update: kept");
                 self.status.publish(UpdateStatus::Settled);
             }
-            // Still on trial as far as the bootloader knows, so the next
-            // reset undoes the update. Nothing more can be taken until then.
+            // The bootloader still considers the update on trial, so the
+            // next reset rolls it back. Refuse every request until then.
             Err(_) => loop {
                 defmt::error!("update: could not be marked as kept");
                 let (pending, _) = self.requests.receive().await;
@@ -379,7 +384,7 @@ impl Updates<'_, '_> {
     }
 
     async fn serve(&mut self) -> ! {
-        // An offer goes to every board, so every board listens for one.
+        // Offers are multicast, so every board has to listen for them.
         if let Err(e) = self.socket.listen(true).await {
             defmt::warn!("update: no updates over the network: {}", e);
         }
@@ -403,8 +408,8 @@ impl Updates<'_, '_> {
         let apply = matches!(request, Request::Apply);
         let outcome = match request {
             Request::Begin(image) => {
-                // What the host sends takes the place of what a board on
-                // the network was sending.
+                // An image from the host replaces one that is being fetched
+                // from a board on the network.
                 self.fetching = None;
                 self.begin(image)
             }
@@ -437,8 +442,8 @@ impl Updates<'_, '_> {
         }
     }
 
-    /// What is due: the chunk that did not come is asked for again, and the
-    /// staged image is offered again.
+    /// Handle the timers that are due: request the missing chunk again, and
+    /// offer the staged image again.
     async fn tick(&mut self) {
         let now = Instant::now();
 
@@ -462,7 +467,8 @@ impl Updates<'_, '_> {
                 }
                 None => None,
             };
-            // Nothing else drops a board that has stopped asking.
+            // Publishing here removes fetchers that have gone quiet. Nothing
+            // else would, because the other calls follow a request.
             self.publish_progress();
         }
     }
@@ -485,15 +491,17 @@ impl Updates<'_, '_> {
                     self.publish_progress();
                 }
             }
-            // From a firmware that says things this one does not know.
+            // Not a message this firmware understands. A newer firmware may
+            // have sent it.
             None => {}
         }
     }
 
-    /// Another board offers `image`. Fetch it, unless it is what this board
-    /// has or runs already, or what it has tried and put back.
+    /// Handle an offer of `image` from another board. Fetch the image,
+    /// unless this board already runs it, has it staged, or has rolled it
+    /// back.
     async fn offered(&mut self, image: UpdateImage, from: thread::Peer) {
-        // A board hears its own offers too.
+        // A board also receives its own offers.
         if image.build == build() || self.staged == Some(image) || self.refused == Some(image.build)
         {
             return;
@@ -512,27 +520,27 @@ impl Updates<'_, '_> {
                 self.introduce_to(from).await;
                 self.ask_for_next_chunk().await;
             }
-            // The image that is being fetched, or was until its board stopped
-            // answering: go on from where that got to.
+            // This is the image being fetched, or the one whose fetch
+            // stalled when its source stopped answering: resume it.
             (Some(arriving), Some(fetch)) if arriving.image == image => {
                 fetch.from = from;
                 let given_up = fetch.retry_at.is_none();
                 if given_up {
                     fetch.attempts = 0;
                 }
-                // Said again at every offer: the first may not have arrived.
+                // Sent again at every offer, in case the first one was lost.
                 self.introduce_to(from).await;
                 if given_up {
                     self.ask_for_next_chunk().await;
                 }
             }
-            // Another image is arriving, from the host or from a board.
+            // Another image is being received, from the host or from a board.
             (Some(_), _) => {}
         }
     }
 
-    /// Tell the board that offers the image which board this is, so that it
-    /// can say whose progress it sees.
+    /// Send this board's ID to the board that offers the image, so that it
+    /// can report whose progress it is tracking.
     async fn introduce_to(&mut self, offering: thread::Peer) {
         let introduction = UpdateMessage::Fetching { board: self.board };
         self.send(Some(offering), &introduction).await;
@@ -555,8 +563,8 @@ impl Updates<'_, '_> {
         let (Some(arriving), Some(_)) = (&self.arriving, &self.fetching) else {
             return;
         };
-        // An answer that comes late, or twice, is to a question that is no
-        // longer open.
+        // Ignore a late or duplicate chunk: it is not the one that was last
+        // requested.
         if build != arriving.image.build || offset != arriving.received {
             return;
         }
@@ -583,7 +591,7 @@ impl Updates<'_, '_> {
         }
     }
 
-    /// A board that fetches the staged image asks for a chunk of it.
+    /// Handle a chunk request from a board that is fetching the staged image.
     async fn asked_for_chunk(&mut self, build: BuildId, offset: u32, from: thread::Peer) {
         let Some(image) = self.staged else {
             return;
@@ -592,8 +600,9 @@ impl Updates<'_, '_> {
             return;
         }
         let len = UpdateMessage::CHUNK_LEN.min((image.size.0 - offset) as usize);
-        // A board asks for what comes after what it has. No request follows
-        // the last chunk, which is taken to arrive.
+        // A board requests the chunk after the data it has, so `offset` is
+        // how much it has received. No request follows the last chunk, so
+        // that one is assumed to arrive.
         let end = offset + len as u32;
         self.fetcher(from).received = if end == image.size.0 { end } else { offset };
         self.publish_progress();
@@ -613,8 +622,8 @@ impl Updates<'_, '_> {
         self.send(Some(from), &chunk).await;
     }
 
-    /// What is known of the board at `peer` as one that fetches the staged
-    /// image, which it is taken for from now on.
+    /// The record of the board at `peer` as a fetcher of the staged image.
+    /// Creates the record if there is none.
     fn fetcher(&mut self, peer: thread::Peer) -> &mut FetcherHeard {
         let now = Instant::now();
         let known = self.fetchers.iter().position(|f| f.peer == peer);
@@ -627,7 +636,7 @@ impl Updates<'_, '_> {
             };
             match self.fetchers.push(new) {
                 Ok(()) => self.fetchers.len() - 1,
-                // No room: it takes the place of the one that has been quiet
+                // The list is full: replace the fetcher that has been quiet
                 // the longest.
                 Err(new) => {
                     let quietest = (0..self.fetchers.len())
@@ -648,8 +657,8 @@ impl Updates<'_, '_> {
         self.publish_progress();
     }
 
-    /// Publish how far the fetchers have got, less those that have gone
-    /// quiet: done, or gone.
+    /// Publish the fetchers' progress, after dropping those that have gone
+    /// quiet because they finished or left.
     fn publish_progress(&mut self) {
         let now = Instant::now();
         self.fetchers
@@ -666,8 +675,8 @@ impl Updates<'_, '_> {
             .lock(|published| published.replace(progress));
     }
 
-    /// Send to one board, or to all of them. Nothing tells whether it
-    /// arrives, and what does not is asked for or said again.
+    /// Send `message` to one board, or with `None` to every board. Delivery
+    /// is not confirmed: chunk requests are retried and offers are repeated.
     async fn send(&mut self, to: Option<thread::Peer>, message: &UpdateMessage) {
         let mut datagram = thread::Datagram::new();
         // Cannot fail: a datagram has room for the longest message.
@@ -686,11 +695,12 @@ impl Updates<'_, '_> {
         }
     }
 
-    /// The build of the firmware image in the first `len` bytes of the
-    /// staging area, if that is what they are.
+    /// The build ID of the firmware image in the first `len` bytes of the
+    /// staging area. `None` if those bytes hold no build marker.
     async fn build_in_staging_area(&mut self, len: u32) -> Option<BuildId> {
-        // Read in pieces that overlap by more than a marker is long, so that
-        // one that lies across the end of a piece is whole in the next.
+        // Read in pieces that overlap by more than the length of a marker,
+        // so that a marker split across the end of one piece is complete in
+        // the next.
         const OVERLAP: u32 = 32;
         const _: () = assert!(BuildMarker::LEN <= OVERLAP as usize);
 
@@ -712,8 +722,8 @@ impl Updates<'_, '_> {
         self.staged = None;
         self.offering = None;
         self.forget_fetchers();
-        // The bootloader swaps the staging area with a region one page
-        // shorter, which is all an image may fill.
+        // The bootloader swaps the staging area with a region that is one
+        // page shorter, so an image can only be as long as that region.
         let room = self.staging_area.capacity() as u32 - PAGE;
         if image.size.0 == 0 || image.size.0 > room {
             self.status.publish(UpdateStatus::Settled);
@@ -731,8 +741,8 @@ impl Updates<'_, '_> {
         Ok(())
     }
 
-    /// Put the piece of the arriving image that starts at `offset` in the
-    /// staging area.
+    /// Write the chunk of the image that starts at `offset` to the staging
+    /// area.
     async fn write(&mut self, offset: u32, data: &[u8]) -> UpdateResult {
         const WORD: usize = <RadioFlash as NorFlash>::WRITE_SIZE;
 
@@ -751,8 +761,9 @@ impl Updates<'_, '_> {
             return Err(UpdateError::OutOfSequence);
         }
 
-        // Flash is written in whole words. Only the last piece can end short
-        // of one, and is filled up with what erased flash holds.
+        // Flash is written in whole words. Only the last chunk can end
+        // partway through a word, and it is padded with 0xff, like erased
+        // flash.
         let mut words = [0xff; ImageChunk::MAX_LEN.next_multiple_of(WORD)];
         words[..len].copy_from_slice(data);
         let words = &words[..len.next_multiple_of(WORD)];
@@ -797,8 +808,8 @@ impl Updates<'_, '_> {
             self.status.publish(UpdateStatus::Settled);
             return Err(UpdateError::DigestMismatch);
         }
-        // Boards go by the build they are told when another offers them an
-        // image, so the image has to bear out what was said of it.
+        // Boards decide whether to fetch an offered image by the build ID in
+        // the offer, so the image has to contain that same build ID.
         if self.build_in_staging_area(image.size.0).await != Some(image.build) {
             defmt::warn!("update: what arrived is not build {}", image.build);
             self.status.publish(UpdateStatus::Settled);
@@ -818,12 +829,12 @@ impl Updates<'_, '_> {
         };
         defmt::info!("update: restarting into build {}", image.build);
 
-        // A page that a flash loader has put its 0xff filler in reads as
-        // erased and cannot be programmed: every write to it ends in a
-        // programming error until it is erased again. The state page is in
-        // that condition after the whole flash image has been written by a
-        // probe or the ROM bootloader, so erase it here. It holds nothing
-        // then: no swap is under way while this firmware takes requests.
+        // A page that a flash loader filled with 0xff reads as erased but
+        // cannot be programmed: every write fails with a programming error
+        // until the page is erased again. The state page is in that state
+        // after a probe or the ROM bootloader has written the whole flash
+        // image, so erase it here. Nothing is lost by that, because no swap
+        // is in progress while this firmware serves requests.
         let size = self.state_page.capacity() as u32;
         let erased = self.state_page.erase(0, size).await;
         erased.map_err(flash_error)?;
@@ -833,8 +844,7 @@ impl Updates<'_, '_> {
     }
 }
 
-/// What a failed flash operation comes to for whoever asked, with what it
-/// was in the log.
+/// Log a flash error and convert it to the error returned to the caller.
 fn flash_error(error: impl defmt::Format) -> UpdateError {
     defmt::error!("update: flash: {}", error);
     UpdateError::Flash

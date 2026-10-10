@@ -19,9 +19,9 @@ thiserror = { version = "2.0", default-features = false }
 enum-map = { version = "3.1", features = ["serde", "derive"] }
 strum = { version = "0.28", default-features = false, features = ["derive"] }
 
-# Unreleased main: the released 0.12.1 only serves embassy-usb 0.5 on
-# embassy-executor 0.9, and two executor versions do not link into one
-# firmware. The firmware and the CLI must name this same revision.
+# A revision of unreleased main. The released 0.12.1 only supports embassy-usb
+# 0.5 on embassy-executor 0.9, and two executor versions cannot be linked into
+# one firmware. The firmware and the CLI have to use this same revision.
 [dependencies.postcard-rpc]
 git = "https://github.com/jamesmunns/postcard-rpc.git"
 rev = "d30141f7b2594050d5805f7c7d5be41f73bc7d82"

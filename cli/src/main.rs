@@ -37,8 +37,8 @@ enum Command {
     Bootloader(Target),
     #[command(subcommand)]
     Sensor(SensorCommand),
-    /// Take in the sensor reports that boards send over their network, through a board that stays
-    /// attached
+    /// Receive the sensor reports that boards send over their network, through a board that
+    /// stays attached
     #[command(subcommand)]
     Reports(ReportsCommand),
     /// Inspect a board's Prometheus metrics
@@ -69,21 +69,21 @@ enum ConfigCommand {
 
 #[derive(Subcommand)]
 enum FirmwareCommand {
-    /// Show which build of the firmware a board runs, and where it stands with updates
+    /// Show which firmware build a board runs, and its update status
     Status(Target),
-    /// Send a board a firmware image and have it restart into it. The firmware it replaces comes
-    /// back if the new one does not get the board back on its network
+    /// Send a board a firmware image and restart it into the image. The board rolls back to
+    /// its previous firmware if the new one does not get it back on its network
     Update {
-        /// The image, as `just firmware-image` makes it
+        /// The image, as built by `just firmware-image`
         image: PathBuf,
 
         #[command(flatten)]
         target: Target,
     },
-    /// Update every board on the network: the attached board takes the image and offers it to
-    /// the others, which fetch it over the network. The attached board is updated last
+    /// Update every board on the network. The attached board receives the image and offers
+    /// it to the others, which fetch it over the network. The attached board is updated last
     Push {
-        /// The image, as `just firmware-image` makes it
+        /// The image, as built by `just firmware-image`
         image: PathBuf,
 
         #[command(flatten)]
@@ -112,8 +112,8 @@ enum NetworkCommand {
     /// boards on the same network. To override this behavior and create a new network, pass
     /// `--force-reinit`
     Init {
-        /// Make a new network, and move every attached board to it, whatever network was saved or
-        /// the boards are on
+        /// Create a new network and move every attached board to it, regardless of the saved
+        /// network and the networks the boards are on
         #[arg(long)]
         force_reinit: bool,
 
@@ -123,7 +123,7 @@ enum NetworkCommand {
         dataset_path: Option<PathBuf>,
     },
 
-    /// Leave the network and forget its dataset
+    /// Leave the network and erase its dataset from the board
     Leave(Target),
     /// Print the dataset of a board's network. It contains the network key
     Dataset(Target),
@@ -153,7 +153,7 @@ enum CoprocessorCommand {
         target: Target,
     },
 
-    /// Remove the wireless stack, to install another in its place
+    /// Remove the wireless stack, so that another can be installed
     Uninstall(Target),
 }
 
@@ -204,7 +204,7 @@ async fn list() -> Result<()> {
         bail!("no sensor board found on USB");
     }
     for device in &devices {
-        // A board that cannot be talked to still belongs in the list.
+        // List a board even if it does not respond.
         match summary(device).await {
             Ok(summary) => println!("{}  {summary}", board::serial_of(device)),
             Err(e) => println!("{}  {e}", board::serial_of(device)),

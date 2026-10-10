@@ -68,20 +68,19 @@ topics! {
     | ReportReceived | Report    | "reports/received" |     |
 }
 
-/// The dataset of the network a board is configured for, which it rejoins at
-/// every power-up. `None` when it has none.
+/// The dataset a board has stored: the network it is configured for and
+/// rejoins at every power-up. `None` if it has none.
 pub type StoredDataset = Option<Dataset>;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Schema)]
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]
 pub struct BoardInfo {
     /// When the running firmware was built, in the build machine's local
-    /// time: tells images apart after a reflash.
+    /// time. It shows which image is running after a reflash.
     pub firmware_built: heapless::String<24>,
 }
 
-/// Which build of the firmware an image is: when it was built, in seconds
-/// since 1970.
+/// Identifies a build of the firmware: its build time as a Unix timestamp.
 #[derive(
     Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize, Schema,
 )]
@@ -94,23 +93,24 @@ impl fmt::Display for BuildId {
     }
 }
 
-/// What tells an image file to be this firmware, and which build of it: the
-/// firmware has one of these somewhere in it.
+/// A marker embedded in every firmware image. It identifies an image file
+/// as this firmware, and gives its build.
 #[repr(C)]
 pub struct BuildMarker {
     magic: [u8; 16],
     /// The [`BuildId`], least significant byte first.
     build: [u8; 4],
-    /// The same with every bit turned over. The sixteen bytes of `magic` turn
-    /// up in an image a second time, where the firmware has them to look for
-    /// markers with: what follows them there is not a build and this.
+    /// The bitwise complement of `build`. An image contains the sixteen
+    /// bytes of `magic` a second time, as the constant that the firmware
+    /// searches for markers with. This check rejects that copy, because the
+    /// bytes after it are not a build and its complement.
     check: [u8; 4],
 }
 
 impl BuildMarker {
     const MAGIC: [u8; 16] = *b"sensor-board-fw\0";
 
-    /// How many bytes a marker is.
+    /// The length of a marker in bytes.
     pub const LEN: usize = size_of::<BuildMarker>();
 
     pub const fn new(build: BuildId) -> BuildMarker {
@@ -125,7 +125,8 @@ impl BuildMarker {
         BuildId(u32::from_le_bytes(self.build))
     }
 
-    /// The build of the firmware that `image` is, if it is the firmware.
+    /// The build of the firmware in `image`. `None` if `image` holds no
+    /// marker.
     pub fn find(image: &[u8]) -> Option<BuildId> {
         image.windows(Self::LEN).find_map(|candidate| {
             let after_magic = candidate.strip_prefix(&Self::MAGIC)?;
@@ -205,12 +206,12 @@ impl fmt::Display for Role {
 pub enum NetworkError {
     /// The radio coprocessor has no Thread stack to run.
     NoThreadStack,
-    /// The radio coprocessor would not start its Thread stack.
+    /// The radio coprocessor failed to start its Thread stack.
     StartFailed,
-    /// The radio coprocessor did not get the request done in time.
+    /// The radio coprocessor did not complete the request in time.
     Unresponsive,
-    /// The OpenThread stack refused. After a refused join the board is back
-    /// on the network it had before.
+    /// The OpenThread stack returned an error. After a failed join, the
+    /// board is back on its previous network.
     Stack(OtError),
     /// The dataset could not be written to, or erased from, the board's
     /// flash.
@@ -350,18 +351,18 @@ impl FromStr for Dataset {
 pub type NeighborsResult = Result<NeighborTable, NetworkError>;
 
 /// A board's neighbor table: its children, and the routers it has a direct
-/// radio link with. While the board is a child, its parent is not among
-/// them: the stack keeps that link somewhere else.
+/// radio link with. While the board is a child, the table does not include
+/// its parent, because the stack tracks that link separately.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, Schema)]
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]
 pub struct NeighborTable {
     pub neighbors: heapless::Vec<Neighbor, { NeighborTable::MAX_LEN }>,
-    /// The board has more neighbors than these.
+    /// Whether the board has more neighbors than fit here.
     pub truncated: bool,
 }
 
 impl NeighborTable {
-    /// As many neighbors as one message is sure to have room for: the
+    /// The most neighbors that are certain to fit in one message. The
     /// firmware sends from a buffer of 1024 bytes.
     pub const MAX_LEN: usize = 32;
 }
@@ -379,15 +380,16 @@ pub struct Neighbor {
     pub age_secs: u32,
     /// How well the board receives it, from 0 (not at all) to 3 (best).
     pub link_quality_in: u8,
-    /// The strength the board receives it at, in dBm, averaged.
+    /// The average received signal strength, in dBm.
     pub average_rssi: i8,
-    /// The same, of the last frame alone.
+    /// The received signal strength of the last frame, in dBm.
     pub last_rssi: i8,
-    /// How far above its noise floor the board receives it, in dB.
+    /// The link margin: the received signal strength above the noise floor,
+    /// in dB.
     pub link_margin: u8,
 }
 
-/// What a neighbor is to the board.
+/// A neighbor's relationship to the board.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Schema)]
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]
 pub enum NeighborKind {
@@ -399,7 +401,7 @@ pub enum NeighborKind {
 
 impl fmt::Display for NeighborKind {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        // `pad`, so that it can be lined up in a table.
+        // Use `pad` so that the name can be aligned in a table.
         f.pad(match self {
             NeighborKind::Child => "child",
             NeighborKind::Router => "router",
@@ -422,9 +424,9 @@ impl fmt::Display for ExtAddress {
 /// The result of [`GetNetworkRouters`].
 pub type RoutersResult = Result<RouterTable, NetworkError>;
 
-/// A board's router table: every router on its network, in order of ID, with
-/// what the board does to get a message to it. Empty while the board is not
-/// attached to a network.
+/// A board's router table: every router on its network, in order of ID,
+/// with the board's route to it. Empty while the board is not attached to a
+/// network.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, Schema)]
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]
 pub struct RouterTable {
@@ -447,38 +449,38 @@ pub struct RouterId(pub u8);
 impl RouterId {
     /// `OT_NETWORK_MAX_ROUTER_ID`
     pub const MAX: u8 = 62;
-    /// How many IDs there are, and so the most routers there can be to list.
+    /// The number of IDs, and so the most routers a table can list.
     pub const COUNT: usize = Self::MAX as usize + 1;
 
-    /// Every ID there is, in order.
+    /// Every ID, in order.
     pub fn all() -> impl Iterator<Item = RouterId> {
         (0..=Self::MAX).map(RouterId)
     }
 
-    /// The RLOC16 of the router that has this ID.
+    /// The RLOC16 of the router with this ID.
     pub fn rloc16(self) -> u16 {
         (self.0 as u16) << 10
     }
 
-    /// The ID of the router that has this RLOC16, or whose child has it.
+    /// The ID of the router that an RLOC16 belongs to. The RLOC16 can be the
+    /// router's own or one of its children's.
     pub fn of_rloc16(rloc16: u16) -> RouterId {
         RouterId((rloc16 >> 10) as u8)
     }
 }
 
-/// What a board's Thread stack does with a message for a router. A `cost` is
-/// that of the whole path: each link on it adds 1 if it is good, 2 if it is
-/// middling and 4 if it is poor.
+/// A board's route to a router. A `cost` covers the whole path: each link on
+/// it adds 1 if it is good, 2 if it is medium and 4 if it is poor.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Schema)]
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]
 pub enum Route {
-    /// Nothing: the router is the board itself.
+    /// The router is the board itself.
     ThisBoard,
-    /// Sends it straight over the radio link the two have.
+    /// The board sends directly to the router over their radio link.
     Direct { cost: u8 },
-    /// Sends it to another router to pass on: the mesh at work.
+    /// The board sends to another router, which forwards the message.
     Relayed { next_hop: RouterId, cost: u8 },
-    /// The board knows of no way there.
+    /// The board has no route to the router.
     Unreachable,
 }
 
@@ -486,12 +488,12 @@ pub enum Route {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Schema)]
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]
 pub enum CoprocessorStatus {
-    /// It is coming up, or being restarted to run its other firmware.
+    /// It is starting, or restarting into its other firmware.
     Starting,
     /// Its wireless stack: the normal state of a board that is set up.
     Stack(CoprocessorFirmware),
-    /// FUS, ST's firmware upgrade service, which is what installs an image.
-    /// A coprocessor with no wireless stack runs nothing else.
+    /// It runs FUS, ST's firmware upgrade service, which installs images. A
+    /// coprocessor with no wireless stack always runs FUS.
     Fus {
         firmware: CoprocessorFirmware,
         state: FusState,
@@ -516,7 +518,7 @@ pub struct WirelessStack {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Schema)]
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]
 pub enum StackKind {
-    /// Thread, full Thread device: the one this firmware can drive.
+    /// Thread FTD (full Thread device), the only stack this firmware can use.
     ThreadFtd,
     /// Any other stack, by ST's `INFO_STACK_TYPE` code.
     Other(u8),
@@ -531,8 +533,8 @@ impl fmt::Display for WirelessStack {
     }
 }
 
-/// A version of coprocessor firmware, numbered the way ST's release notes
-/// number them.
+/// A version of coprocessor firmware, in the numbering of ST's release
+/// notes.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Schema)]
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]
 pub struct Version {
@@ -552,13 +554,13 @@ impl fmt::Display for Version {
 pub enum FusState {
     /// Ready for an image.
     Idle,
-    /// Installing an image, or about to start the wireless stack it has.
+    /// Installing an image, or about to start the installed wireless stack.
     Busy,
     /// The last install failed. FUS is ready for another.
     Failed(FusError),
 }
 
-/// Why FUS gave up on an image (`FUS_STATE_ERROR` codes, AN5185).
+/// Why an install failed (`FUS_STATE_ERROR` codes, AN5185).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Schema)]
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]
 pub enum FusError {
@@ -680,25 +682,24 @@ impl FromStr for BoardId {
     }
 }
 
-/// What a board says about itself. Every board sends one to all the others on
+/// A board's periodic report of its readings. Every board multicasts one to
 /// its network at intervals. A board that has been told to collect
-/// ([`StartCollecting`]) passes those that reach it, its own among them, on to
-/// the host ([`ReportReceived`]).
+/// ([`StartCollecting`]) forwards the reports it receives, including its
+/// own, to the host ([`ReportReceived`]).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Schema)]
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]
 pub struct Report {
     pub board: BoardId,
     /// The firmware the board runs.
     pub firmware: BuildId,
-    /// Counts up by one with each report, from 0 when the board starts:
-    /// whoever collects them can tell that one was lost, or that the board
-    /// has restarted.
+    /// Starts at 0 when the board starts, and increases by one with each
+    /// report. A gap shows the collector that a report was lost, and a reset
+    /// to 0 that the board restarted.
     pub sequence: u32,
     pub readings: Readings,
 }
 
-/// The readings in a [`Report`]: one of every sensor that the firmware has a
-/// driver for.
+/// The readings in a [`Report`]: one for every sensor that has a driver.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Schema)]
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]
 pub struct Readings {
@@ -707,18 +708,19 @@ pub struct Readings {
 }
 
 impl Report {
-    /// The most bytes a report may take up on its way between boards.
+    /// The longest encoded report that boards send each other.
     pub const MAX_LEN: usize = 256;
 
-    /// The report as boards send it to each other: the key of
-    /// [`ReportReceived`], which stands for the layout of this type, and then
-    /// the report in postcard's encoding. `None` if `buf` is too short.
+    /// Encode the report as boards send it to each other: the key of
+    /// [`ReportReceived`], which is derived from the layout of this type,
+    /// then the postcard encoding. `None` if `buf` is too short.
     pub fn encode<'a>(&self, buf: &'a mut [u8]) -> Option<&'a [u8]> {
         encode_behind(&Self::key(), self, buf)
     }
 
-    /// `None` for anything but a report of this very layout. A board whose
-    /// firmware has another one is not understood, rather than misread.
+    /// Decode a report. `None` if `bytes` was not encoded with this layout,
+    /// so a report from a firmware with a different layout is rejected
+    /// instead of misread.
     pub fn decode(bytes: &[u8]) -> Option<Report> {
         decode_behind(&Self::key(), bytes)
     }
@@ -745,17 +747,18 @@ fn decode_behind<T: serde::de::DeserializeOwned>(prefix: &[u8], bytes: &[u8]) ->
     postcard_rpc::postcard::from_bytes(body).ok()
 }
 
-/// How a request went. `Ok` from [`FinishInstall`] or [`UninstallStack`]
-/// means that the work has begun, not that it is done.
+/// The result of a coprocessor request. `Ok` from [`FinishInstall`] or
+/// [`UninstallStack`] means that the operation has started, not that it has
+/// finished.
 pub type CoprocessorResult = Result<(), CoprocessorError>;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Schema)]
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]
 pub enum CoprocessorError {
-    /// The coprocessor has not come up yet.
+    /// The coprocessor has not started yet.
     NotReady,
-    /// Only FUS installs images, and the coprocessor is running its wireless
-    /// stack.
+    /// The coprocessor is running its wireless stack, and only FUS can
+    /// install images.
     StackRunning,
     /// FUS is in the middle of an install.
     Busy,
@@ -767,9 +770,9 @@ pub enum CoprocessorError {
     OutOfSequence,
     /// The image could not be written to flash.
     Flash,
-    /// FUS turned the upgrade command down.
+    /// FUS rejected the upgrade command.
     Rejected,
-    /// The coprocessor did not get the request done in time.
+    /// The coprocessor did not complete the request in time.
     Unresponsive,
 }
 
@@ -794,7 +797,7 @@ impl fmt::Display for CoprocessorError {
 /// means that the board is about to restart into the update.
 pub type UpdateResult = Result<(), UpdateError>;
 
-/// A firmware image that a board is to update to.
+/// A firmware image to update a board to.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Schema)]
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]
 pub struct UpdateImage {
@@ -803,13 +806,13 @@ pub struct UpdateImage {
     pub digest: ImageDigest,
 }
 
-/// The SHA-256 of an image, which a board checks what it has received
-/// against.
+/// The SHA-256 digest of an image. A board checks a received image against
+/// it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Schema)]
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]
 pub struct ImageDigest(pub [u8; 32]);
 
-/// The firmware a board runs, and where the board stands with updates of it.
+/// The firmware a board runs, and its update status.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Schema)]
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]
 pub struct FirmwareStatus {
@@ -817,29 +820,29 @@ pub struct FirmwareStatus {
     pub update: UpdateStatus,
 }
 
-/// Where a board stands with updates of its firmware.
+/// The state of firmware updates on a board.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Schema)]
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]
 pub enum UpdateStatus {
     /// The board is still starting its radio coprocessor.
     Starting,
-    /// The board cannot take an update: its radio coprocessor runs no
-    /// wireless stack, and it is in step with one that flash is written.
+    /// The board cannot take an update. Its radio coprocessor runs no
+    /// wireless stack, and flash writes depend on one.
     Unavailable,
-    /// The firmware that runs has shown that it works, and the board can take
-    /// an update.
+    /// The running firmware is confirmed, and the board can take an update.
     Settled,
-    /// An update is arriving, and so many bytes of it are here.
+    /// An update is being received. `received` bytes of it have arrived.
     Receiving { image: UpdateImage, received: u32 },
-    /// An update is here, whole and checked. [`ApplyUpdate`] switches to it.
+    /// An update has been received in full and verified. [`ApplyUpdate`]
+    /// switches to it.
     Staged(UpdateImage),
-    /// The firmware that runs is an update that has yet to show that it
-    /// works. Once the board is back on its network it is kept. If the board
-    /// restarts first, or takes too long, the firmware it replaced comes
-    /// back.
+    /// The running firmware is an update that is not confirmed yet. It is
+    /// confirmed once the board is back on its network. If the board
+    /// restarts before that, or takes too long, the previous firmware is
+    /// restored.
     OnTrial,
-    /// The last update did not show that it works, and the firmware it
-    /// replaced is back. The board can take another.
+    /// The last update failed its trial, and the previous firmware has been
+    /// restored. The board can take another update.
     RolledBack,
 }
 
@@ -848,9 +851,9 @@ pub enum UpdateStatus {
 pub enum UpdateError {
     /// See [`UpdateStatus::Unavailable`], or the board is still starting.
     Unavailable,
-    /// The board takes no update while it is trying one out.
+    /// The board takes no update while one is on trial.
     OnTrial,
-    /// The image is longer than the room there is for one.
+    /// The image is larger than the staging area allows.
     DoesNotFit,
     /// A chunk that does not continue the image where the last one stopped,
     /// a finish before the image is complete, or an apply with nothing
@@ -858,9 +861,9 @@ pub enum UpdateError {
     OutOfSequence,
     /// The image could not be written to flash.
     Flash,
-    /// What arrived is not the image that was announced.
+    /// The received image does not match the announced digest or build.
     DigestMismatch,
-    /// The board did not get the request done in time.
+    /// The board did not complete the request in time.
     Unresponsive,
 }
 
@@ -878,12 +881,12 @@ impl fmt::Display for UpdateError {
     }
 }
 
-/// How far the boards that are fetching the image a board offers have got,
-/// going by what they have asked that board for.
+/// The progress of the boards that are fetching the image a board offers,
+/// judging by the chunks they have requested.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, Schema)]
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]
 pub struct OfferProgress {
-    /// The boards that have asked for a chunk in the last half minute.
+    /// The boards that have requested a chunk in the last 30 seconds.
     pub fetchers: heapless::Vec<Fetcher, { OfferProgress::MAX_FETCHERS }>,
 }
 
@@ -894,58 +897,58 @@ impl OfferProgress {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Schema)]
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]
 pub struct Fetcher {
-    /// Which board it is, if it has said. A board whose firmware predates
-    /// [`UpdateMessage::Fetching`] does not.
+    /// The board's ID, if it has sent it. A board whose firmware predates
+    /// [`UpdateMessage::Fetching`] does not send it.
     pub board: Option<BoardId>,
     /// How many bytes of the image it has.
     pub received: u32,
 }
 
-/// What boards say to each other about firmware updates, over their network.
-/// A board that has an image staged and has been told to offer it
-/// ([`StartOffering`]) says so to all of them at intervals. A board that runs
-/// another build asks for the image a chunk at a time, stages it, and
-/// restarts into it.
+/// The messages boards exchange over the network for firmware updates. A
+/// board that has an image staged and has been told to offer it
+/// ([`StartOffering`]) multicasts an offer at intervals. A board that runs
+/// another build requests the image chunk by chunk, stages it, and restarts
+/// into it.
 ///
-/// The encoding of this must never change: a board on an old firmware has to
-/// understand the offer of the firmware that replaces it. So no variant may
-/// be changed or moved, and none of the types in them. A new variant can be
-/// added at the end: a board that does not know it does not understand the
-/// message, and lets it pass.
+/// The encoding of this type must never change: a board on an old firmware
+/// has to understand the offer of the firmware that replaces it. So do not
+/// change or reorder the variants or the types in them. A new variant can be
+/// added at the end. A board that does not know it fails to decode the
+/// message and ignores it.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum UpdateMessage {
     Offer(UpdateImage),
-    /// Asks whoever offers `build` for the chunk of it that starts at
+    /// Asks the board that offers `build` for the chunk that starts at
     /// `offset`.
     ChunkRequest {
         build: BuildId,
         offset: u32,
     },
-    /// The answer. Every chunk but the last is [`UpdateMessage::CHUNK_LEN`]
-    /// bytes.
+    /// The reply to a `ChunkRequest`. Every chunk but the last is
+    /// [`UpdateMessage::CHUNK_LEN`] bytes.
     Chunk {
         build: BuildId,
         offset: u32,
         data: heapless::Vec<u8, { UpdateMessage::CHUNK_LEN }>,
     },
-    /// A board that starts to fetch an image tells the board it fetches it
-    /// from which board it is. Added after the first three, so a board whose
-    /// firmware has only those does not say it, and does not understand it.
+    /// Sent by a board that starts to fetch an image, to tell the offering
+    /// board its ID. This variant was added after the first three, so a
+    /// board whose firmware only has those neither sends nor decodes it.
     Fetching {
         board: BoardId,
     },
 }
 
 impl UpdateMessage {
-    /// A whole number of flash words, in a message that is not much more
-    /// than two radio frames.
+    /// A whole number of flash words, chosen so that a message is not much
+    /// longer than two radio frames.
     pub const CHUNK_LEN: usize = 192;
 
-    /// The most bytes a message takes up.
+    /// The longest encoded message.
     pub const MAX_LEN: usize = 256;
 
-    /// What every message starts with: tells them from anything else that
-    /// turns up on their port, and this encoding from any that follows it.
+    /// The prefix of every message. It distinguishes update messages from
+    /// other data on their port, and this encoding from any later one.
     const MAGIC: [u8; 4] = *b"SBU1";
 
     /// `None` if `buf` is too short.
@@ -963,7 +966,7 @@ impl UpdateMessage {
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]
 pub struct ImageSize(pub u32);
 
-/// A piece of an image. Every chunk but the last is [`ImageChunk::MAX_LEN`]
+/// A chunk of an image. Every chunk but the last is [`ImageChunk::MAX_LEN`]
 /// bytes.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Schema)]
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]
@@ -1177,9 +1180,9 @@ mod tests {
         assert_eq!(Dataset::from_tlvs(&[0; 255]), None);
     }
 
-    /// With every field at its longest encoding, behind the longest header
-    /// postcard-rpc writes: a 1-byte discriminant, an 8-byte key and a
-    /// 4-byte sequence number.
+    /// Every field has its longest encoding, and the table follows the
+    /// longest header postcard-rpc writes: a 1-byte discriminant, an 8-byte
+    /// key and a 4-byte sequence number.
     #[test]
     fn full_neighbor_table_fits_the_firmwares_send_buffer() {
         let neighbor = Neighbor {
@@ -1271,7 +1274,7 @@ mod tests {
         assert_eq!(UpdateMessage::decode(&[]), None);
     }
 
-    /// The bytes themselves, which boards on older firmware go by.
+    /// Pins the exact bytes, which boards on older firmware depend on.
     #[test]
     fn update_message_encoding_has_not_changed() {
         let mut buf = [0; UpdateMessage::MAX_LEN];
@@ -1306,8 +1309,8 @@ mod tests {
         assert_eq!(fetching.encode(&mut buf).unwrap(), b"SBU1\x030123456789ab");
     }
 
-    /// A board whose firmware has one variant fewer gets such a message as
-    /// bytes that it cannot decode.
+    /// A board whose firmware lacks a variant cannot decode a message of
+    /// that variant.
     #[test]
     fn update_message_of_an_unknown_kind_is_not_understood() {
         assert_eq!(UpdateMessage::decode(b"SBU1\x040123456789ab"), None);
@@ -1319,8 +1322,8 @@ mod tests {
         assert_eq!(marker.build(), BuildId(1_791_145_757));
 
         let mut image = std::vec![0xa5; 1000];
-        // What the firmware looks for markers with, and what happens to
-        // follow it.
+        // The copy of the magic that the firmware searches with, followed by
+        // unrelated bytes.
         image.extend_from_slice(&marker.magic);
         image.extend_from_slice(b"src/update.rs");
         image.extend_from_slice(&marker.magic);
@@ -1329,7 +1332,7 @@ mod tests {
         image.extend_from_slice(&[0x5a; 333]);
         assert_eq!(BuildMarker::find(&image), Some(BuildId(1_791_145_757)));
 
-        // No marker, and one that the end of the file cuts short.
+        // No marker, and a marker truncated by the end of the file.
         assert_eq!(BuildMarker::find(&[0xa5; 1000]), None);
         let cut_short = image.len() - 333 - 1;
         assert_eq!(BuildMarker::find(&image[..cut_short]), None);

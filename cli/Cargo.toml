@@ -16,7 +16,8 @@ sha2 = "0.10"
 serde = "1.0"
 tokio = { version = "1.53", features = ["macros", "rt", "rt-multi-thread", "signal", "time"] }
 
-# Same revision as the protocol crate, which says why it is not a release.
+# The same revision as in the protocol crate, which explains why it is not a
+# release.
 [dependencies.postcard-rpc]
 git = "https://github.com/jamesmunns/postcard-rpc.git"
 rev = "d30141f7b2594050d5805f7c7d5be41f73bc7d82"

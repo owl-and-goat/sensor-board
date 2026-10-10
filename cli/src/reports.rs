@@ -1,5 +1,5 @@
-//! The sensor reports that boards send over their network, taken in through
-//! one board that stays attached.
+//! The `reports` commands: receive the sensor reports that boards send over
+//! their network, through one board that stays attached.
 
 use std::time::Duration;
 
@@ -9,7 +9,7 @@ use protocol::{Report, SensorReadResult};
 
 use crate::board::Board;
 
-/// How long to wait before looking again for a board that has gone.
+/// Delay before looking again for a board that has disconnected.
 const RETRY: Duration = Duration::from_secs(2);
 
 /// Print the reports as they arrive, until interrupted.
@@ -17,12 +17,12 @@ pub async fn watch(serial: Option<&str>) -> Result<()> {
     collect(serial, |report| println!("{}", describe(&report))).await
 }
 
-/// Hand every report that arrives through the board `serial` picks to
-/// `on_report`, until interrupted. A board that goes away (unplugged,
-/// reflashed, the computer asleep) is waited for.
+/// Call `on_report` with every report received through the board that
+/// `serial` selects, until interrupted. If the board disconnects (unplugged,
+/// reflashed, the computer asleep), wait for it to come back.
 async fn collect(serial: Option<&str>, mut on_report: impl FnMut(Report)) -> Result<()> {
-    // The first time, a board that is not there is an error: a mistyped
-    // serial should not be waited for.
+    // A missing board is an error the first time, so that a mistyped serial
+    // fails instead of waiting forever.
     let mut board = Board::select(serial).await?;
     let serial = board.serial().to_owned();
     loop {
@@ -42,10 +42,10 @@ async fn collect(serial: Option<&str>, mut on_report: impl FnMut(Report)) -> Res
     }
 }
 
-/// `Ok` when interrupted, an error when the board is lost.
+/// Returns `Ok` when interrupted, and an error when the board disconnects.
 async fn collect_through(board: &Board, on_report: &mut impl FnMut(Report)) -> Result<()> {
-    // Subscribed before the board is told to collect, so that nothing it
-    // passes on is missed.
+    // Subscribe before telling the board to collect, so that no forwarded
+    // report is missed.
     let mut reports = board.reports().await?;
     board.start_collecting().await?;
     eprintln!("Collecting reports through board {}.", board.serial());
@@ -53,8 +53,8 @@ async fn collect_through(board: &Board, on_report: &mut impl FnMut(Report)) -> R
     loop {
         tokio::select! {
             _ = tokio::signal::ctrl_c() => {
-                // Best effort: a board left collecting only does work that
-                // nobody looks at.
+                // Best effort: a board that keeps collecting only does
+                // unneeded work.
                 let _ = board.stop_collecting().await;
                 return Ok(());
             }
@@ -67,7 +67,7 @@ async fn collect_through(board: &Board, on_report: &mut impl FnMut(Report)) -> R
     }
 }
 
-/// A report as a line of text.
+/// Format a report as one line of text.
 pub fn describe(report: &Report) -> String {
     let Report {
         board,

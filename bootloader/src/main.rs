@@ -1,8 +1,8 @@
-//! The first thing to run after a reset. It puts a staged firmware update in
-//! the place of the firmware, or puts back the firmware that an update
-//! replaced if the update never said it was working, and then starts the
-//! firmware. How the firmware stages an update and vouches for itself is in
-//! `firmware/src/update.rs`.
+//! The first code to run after a reset. If a firmware update is staged, it
+//! swaps the update with the running firmware. If an update was swapped in
+//! but never confirmed itself, it swaps the old firmware back. Then it starts
+//! the firmware. `firmware/src/update.rs` describes how the firmware stages
+//! an update and confirms it.
 
 #![no_std]
 #![no_main]
@@ -16,13 +16,13 @@ use embassy_sync::blocking_mutex::Mutex;
 
 #[entry]
 fn main() -> ! {
-    // Not `embassy_stm32::init`: the firmware's first statements want the
-    // chip the way a reset leaves it (see `firmware/src/dfu.rs`), and all
-    // that is needed here is the flash controller.
+    // Not `embassy_stm32::init`: the firmware's first statements need the
+    // chip as a reset leaves it (see `firmware/src/dfu.rs`), and this code
+    // only needs the flash controller.
     let p = unsafe { embassy_stm32::Peripherals::steal() };
 
-    // The option-validity error is set after FUS or ROM bootloader activity,
-    // and would fail the first flash operation.
+    // FUS and ROM bootloader activity leaves the option-validity error flag
+    // set, which would make the first flash operation fail. Clear it.
     embassy_stm32::pac::FLASH
         .sr()
         .write(|w| w.set_optverr(true));
@@ -37,8 +37,8 @@ fn main() -> ! {
     unsafe { bootloader.load(BANK1_REGION.base() + active_offset) }
 }
 
-/// Anything that goes wrong here goes wrong again after a reset, or does
-/// not: a swap that was cut short is picked up where it stopped.
+/// Reset on any fault. The bootloader resumes an interrupted swap after the
+/// reset, so there is nothing else to recover here.
 #[unsafe(no_mangle)]
 #[cfg_attr(target_os = "none", unsafe(link_section = ".HardFault.user"))]
 unsafe extern "C" fn HardFault() {

@@ -33,8 +33,7 @@ static_cell = "2.1"
 heapless = "0.9"
 
 # Firmware updates: the state page that tells bootloader/ what to do at the
-# next reset, flash as the regions it is divided into, and the check of an
-# image that has arrived.
+# next reset, flash partitions, and the digest check of a received image.
 embassy-boot = { version = "0.7.0", features = ["defmt"] }
 embassy-embedded-hal = "0.6.0"
 embedded-storage = "0.3.1"
@@ -43,11 +42,12 @@ sha2 = { version = "0.10", default-features = false }
 
 bitvec = { version = "1.1", default-features = false }
 
-# The board's metrics, in Prometheus's text format. Not released on crates.io.
-# The default features add timestamps, which the board has no clock for.
+# Prometheus metrics in the text format. Not released on crates.io. The
+# default features add timestamps, which need a clock the board does not have.
 tinymetrics = { git = "https://github.com/hawkw/tinymetrics.git", rev = "58a73feea1c94b858313e40dce0248f669a1c4f0", default-features = false }
 
-# Same revision as the protocol crate, which says why it is not a release.
+# The same revision as in the protocol crate, which explains why it is not a
+# release.
 [dependencies.postcard-rpc]
 git = "https://github.com/jamesmunns/postcard-rpc.git"
 rev = "d30141f7b2594050d5805f7c7d5be41f73bc7d82"

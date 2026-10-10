@@ -14,9 +14,9 @@ fn main() {
     // defmt's string table, which probe-rs decodes the RTT log stream with.
     println!("cargo:rustc-link-arg-bins=-Tdefmt.x");
 
-    // When this build was made: as seconds since 1970, which is what an
-    // update is compared by, and as a time to read, so you can tell which
-    // image is running after a reflash.
+    // The build time, in two forms: as a Unix timestamp, which identifies
+    // the build when updates are compared, and as readable text, to show
+    // which image is running after a reflash.
     let date = |args: &[&str]| {
         let output = Command::new("date").args(args).output().ok()?;
         Some(String::from_utf8_lossy(&output.stdout).trim().to_string())

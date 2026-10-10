@@ -1,4 +1,4 @@
-//! Sensor boards on USB, and the calls they answer.
+//! Sensor boards on USB, and the RPC calls to them.
 
 use std::time::Duration;
 
@@ -21,9 +21,8 @@ use protocol::{
     USB_PID, USB_VID, UninstallStack, UpdateImage, UpdateResult, WriteInstall, WriteUpdate,
 };
 
-/// How long a board gets to answer. The slowest it can be is a join or leave
-/// that runs into the firmware's own five-second limit on its radio
-/// coprocessor.
+/// Timeout for a call to a board. The slowest call is a join or leave that
+/// hits the firmware's own five-second timeout on its radio coprocessor.
 const TIMEOUT: Duration = Duration::from_secs(10);
 
 pub struct Board {
@@ -44,8 +43,8 @@ impl Board {
         Ok(boards)
     }
 
-    /// The board whose serial number starts with `serial`, or the only board
-    /// attached when that is `None`.
+    /// The board whose serial number starts with `serial`, or with `None`
+    /// the only attached board.
     pub async fn select(serial: Option<&str>) -> Result<Board> {
         let prefix = serial.unwrap_or("").to_uppercase();
         let mut matching = devices().await?;
@@ -70,7 +69,7 @@ impl Board {
     pub async fn open(device: &nusb::DeviceInfo) -> Result<Board> {
         let serial = serial_of(device).to_owned();
 
-        // postcard-rpc's messages run over a vendor-class interface.
+        // postcard-rpc uses a vendor-class interface.
         let Some(interface) = device.interfaces().position(|i| i.class() == 0xFF) else {
             bail!("the firmware on board {serial} is too old to talk to; reflash it");
         };
@@ -123,14 +122,14 @@ impl Board {
         self.call::<GetNetworkDataset>(&()).await
     }
 
-    /// Have the board start joining a network. [`Board::network_status`]
-    /// tells when it has attached.
+    /// Tell the board to start joining a network. [`Board::network_status`]
+    /// shows when it has attached.
     pub async fn join(&self, dataset: &Dataset) -> Result<()> {
         let result = self.call::<JoinNetwork>(dataset).await?;
         self.network_result(result)
     }
 
-    /// Have the board leave its network and forget it.
+    /// Tell the board to leave its network and erase the stored dataset.
     pub async fn leave(&self) -> Result<()> {
         let result = self.call::<LeaveNetwork>(&()).await?;
         self.network_result(result)
@@ -143,22 +142,21 @@ impl Board {
         self.network_result(result)
     }
 
-    /// Every router on the board's network, and what the board does to get a
-    /// message to it.
+    /// Every router on the board's network, and the board's route to it.
     pub async fn routers(&self) -> Result<RouterTable> {
         let result = self.call::<GetNetworkRouters>(&()).await?;
         self.network_result(result)
     }
 
-    /// The reports the board passes on from now on. It passes on none until
-    /// it is told to collect them.
+    /// Subscribe to the reports that the board forwards. It forwards none
+    /// until it is told to collect.
     pub async fn reports(&self) -> Result<MultiSubscription<Report>> {
         let subscription = self.client.subscribe_multi::<ReportReceived>(64).await;
         subscription.map_err(|_| anyhow!("board {} is gone", self.serial))
     }
 
-    /// Have the board take in the reports that boards on its network send,
-    /// its own among them, and pass them on.
+    /// Tell the board to receive the reports that boards on its network
+    /// send, including its own, and forward them.
     pub async fn start_collecting(&self) -> Result<()> {
         let result = self.call::<StartCollecting>(&()).await?;
         self.network_result(result)
@@ -196,26 +194,26 @@ impl Board {
         self.call::<GetCoprocessorStatus>(&()).await
     }
 
-    /// Have the board get ready for a coprocessor image of this size.
+    /// Tell the board to prepare for a coprocessor image of this size.
     pub async fn begin_install(&self, size: ImageSize) -> Result<()> {
         let result = self.call::<BeginInstall>(&size).await?;
         self.coprocessor_result(result)
     }
 
-    /// Give the board the next piece of the image.
+    /// Send the board the next chunk of the image.
     pub async fn write_install(&self, chunk: &ImageChunk) -> Result<()> {
         let result = self.call::<WriteInstall>(chunk).await?;
         self.coprocessor_result(result)
     }
 
-    /// Have the board hand the image to FUS. The outer error is the board
-    /// not answering, which is what happens when FUS resets it before the
-    /// answer is out.
+    /// Tell the board to hand the image to FUS. The outer error means the
+    /// board did not respond, which happens when FUS resets it before the
+    /// response is sent.
     pub async fn finish_install(&self) -> Result<CoprocessorResult> {
         self.call::<FinishInstall>(&()).await
     }
 
-    /// Have the board start removing its wireless stack.
+    /// Tell the board to start removing its wireless stack.
     pub async fn uninstall_stack(&self) -> Result<()> {
         let result = self.call::<UninstallStack>(&()).await?;
         self.coprocessor_result(result)
@@ -230,34 +228,34 @@ impl Board {
         self.call::<GetFirmwareStatus>(&()).await
     }
 
-    /// Have the board take in a firmware image, in place of whatever it had
-    /// staged or arriving.
+    /// Tell the board to start receiving a firmware image. This discards
+    /// any image it had staged or was receiving.
     pub async fn begin_update(&self, image: &UpdateImage) -> Result<()> {
         let result = self.call::<BeginUpdate>(image).await?;
         self.update_result(result)
     }
 
-    /// The next piece of that image.
+    /// Send the board the next chunk of that image.
     pub async fn write_update(&self, chunk: &ImageChunk) -> Result<()> {
         let result = self.call::<WriteUpdate>(chunk).await?;
         self.update_result(result)
     }
 
-    /// Have the board check the image it has taken in. From then on it has
-    /// it staged.
+    /// Tell the board to verify the image it has received. On success the
+    /// image is staged.
     pub async fn finish_update(&self) -> Result<()> {
         let result = self.call::<FinishUpdate>(&()).await?;
         self.update_result(result)
     }
 
-    /// Have the board restart into the image it has staged. It drops off USB
-    /// for as long as its bootloader takes to swap the two.
+    /// Tell the board to restart into its staged image. It drops off USB
+    /// while its bootloader swaps the two images.
     pub async fn apply_update(&self) -> Result<()> {
         let result = self.call::<ApplyUpdate>(&()).await?;
         self.update_result(result)
     }
 
-    /// Have the board offer the image it has staged to the boards on its
+    /// Tell the board to offer its staged image to the boards on its
     /// network, which fetch it and restart into it.
     pub async fn start_offering(&self) -> Result<()> {
         let result = self.call::<StartOffering>(&()).await?;
@@ -269,8 +267,8 @@ impl Board {
         self.update_result(result)
     }
 
-    /// How far the boards that fetch the image the board offers have got.
-    /// `None` from a board whose firmware is from before it could tell.
+    /// The progress of the boards that are fetching the image this board
+    /// offers. `None` from a board whose firmware predates the endpoint.
     pub async fn offer_progress(&self) -> Result<Option<OfferProgress>> {
         let answer = self.client.send_resp::<GetOfferProgress>(&());
         match tokio::time::timeout(TIMEOUT, answer).await {
@@ -328,8 +326,8 @@ impl Board {
     {
         match tokio::time::timeout(TIMEOUT, self.client.send_resp::<E>(request)).await {
             Ok(Ok(response)) => Ok(response),
-            // An endpoint is known by its path and its types together, so
-            // this is a firmware built from another version of `protocol`.
+            // An endpoint's key covers its path and its types, so the
+            // firmware was built from another version of `protocol`.
             Ok(Err(HostErr::Wire(WireError::UnknownKey))) => bail!(
                 "board {}: its firmware does not know {} as this CLI does; flash a build that \
                  matches",
@@ -337,9 +335,9 @@ impl Board {
                 E::PATH
             ),
             Ok(Err(e)) => bail!("board {}: {} failed: {e:?}", self.serial, E::PATH),
-            // No answer at all, or one of another type than this CLI waits
-            // for, which is what a firmware built from another version of
-            // `protocol` sends when only the answer's type has changed.
+            // No response at all, or a response of a type this CLI does not
+            // expect. A firmware built from another version of `protocol`
+            // sends the latter when only the response type has changed.
             Err(_) => bail!(
                 "board {} did not answer {}; its firmware may not match this CLI",
                 self.serial,

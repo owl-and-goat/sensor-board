@@ -1,24 +1,26 @@
 //! Thread networking, on the OpenThread stack that runs on CPU2.
 //!
-//! [`init`] makes the ends of it. The [`Service`] is the only thing that
-//! talks to that stack, and it runs inside the coprocessor task. The rest of
-//! the firmware goes through the [`Handle`], for the network itself, and
-//! through a [`Socket`], for what is sent over it: a request is handed over
-//! and its outcome awaited for a bounded time, and the status is whatever was
-//! last published. A CPU2 that has stopped answering therefore costs a caller
-//! a timeout, not its life, and no call into CPU2 is ever abandoned halfway.
+//! [`init`] creates the parts. The [`Service`] is the only code that calls
+//! into the stack, and it runs inside the coprocessor task. The rest of the
+//! firmware uses the [`Handle`] to manage the network and a [`Socket`] to
+//! send and receive datagrams. Both send a request to the service and wait
+//! for the response with a timeout, and the status they read is the last one
+//! the service published. So if CPU2 stops responding, a caller gets a
+//! timeout instead of hanging, and no call into CPU2 is abandoned halfway.
 //!
-//! The service does one thing at a time: it answers a request, or it takes a
-//! notification from the stack, and a notification is acknowledged only when
-//! it has been dealt with. That is the order ST's own code keeps, and what
-//! receiving needs: a datagram is CPU2's to take back at the acknowledgement.
+//! The service does one thing at a time: it handles a request, or it handles
+//! a notification from the stack. It acknowledges a notification only after
+//! handling it. ST's own code works in the same order, and receiving depends
+//! on it: CPU2 frees a received datagram when the notification is
+//! acknowledged.
 //!
-//! The only memory CPU2 is ever pointed at is `'static` and set aside for it
-//! in [`init`] (see the buffers in `ot.rs`), so that it has nothing of anyone
-//! else's to read or write, however a call ends. It reads the dataset to
-//! join, which is why a board is given one rather than asked to make one up,
-//! and it writes what it is asked about its neighbor and router tables, an
-//! entry at a time.
+//! Every pointer passed to CPU2 points into `'static` memory that [`init`]
+//! reserves for the purpose (see the buffers in `ot.rs`). CPU2 therefore
+//! never reads or writes memory that something else owns, however a call
+//! ends. CPU2 reads the dataset to join from that memory, which is why a
+//! board is given a dataset instead of being asked to create one. CPU2
+//! writes the entries of its neighbor and router tables there, one entry per
+//! call.
 
 use core::cell::Cell;
 use core::net::{Ipv6Addr, SocketAddrV6};
@@ -51,12 +53,12 @@ mod ot;
 use ot::OpenThread as _;
 pub use ot::{Datagram, MAX_DATAGRAM_LEN, TCP_CHUNK_LEN, TcpChunk};
 
-/// Where a datagram to every board goes: all the devices of the network,
-/// whatever addresses they have and however many hops away they are.
+/// The destination of a datagram to every board: the realm-local all-nodes
+/// multicast address. It reaches devices any number of hops away.
 const ALL_BOARDS: Ipv6Addr = Ipv6Addr::new(0xff03, 0, 0, 0, 0, 0, 0, 1);
 
-/// What boards talk to each other about, each on a UDP port of its own. The
-/// ports are among the sixteen that 6LoWPAN writes in four bits.
+/// The kinds of message that boards exchange, each on its own UDP port. The
+/// ports are in the range of sixteen that 6LoWPAN compresses to four bits.
 #[derive(Clone, Copy)]
 enum Port {
     Reports,
@@ -75,27 +77,27 @@ impl Port {
         }
     }
 
-    /// Where the port's socket is among the sockets.
+    /// The index of the port's socket in the socket arrays.
     const fn index(self) -> usize {
         self as usize
     }
 }
 
-/// How many datagrams that have arrived on a port can wait to be taken. One
-/// more than that is dropped.
+/// How many received datagrams can queue on a port. Any further datagram is
+/// dropped.
 const RECEIVED_DEPTH: usize = 8;
 
-/// Another board, by its address on the network.
+/// Another board, identified by its IPv6 address.
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub struct Peer(Ipv6Addr);
 
-/// A datagram that has arrived, and the board it is from.
+/// A received datagram and its sender.
 pub struct Received {
     pub from: Peer,
     pub datagram: Datagram,
 }
 
-/// What the [`Handle`] can ask for that changes the network the board is on.
+/// A request from the [`Handle`] that changes the board's network.
 enum Request {
     Join(Dataset),
     Leave,
@@ -150,16 +152,16 @@ impl From<OtError> for TcpError {
     }
 }
 
-/// What a [`Socket`] can ask for.
+/// A request from a [`Socket`].
 enum SocketRequest {
-    /// Start taking in what is sent to the socket's port, or stop.
+    /// Start or stop receiving datagrams on the socket's port.
     Listen(bool),
-    /// To every board on the network.
+    /// Send to every board on the network.
     Broadcast(Datagram),
     Send(Peer, Datagram),
 }
 
-/// What a [`Socket`] and the service have between them.
+/// The state shared by a [`Socket`] and the service.
 struct SocketShared {
     requests: request::Channel<SocketRequest, NetworkResult>,
     received: Channel<ThreadModeRawMutex, Received, RECEIVED_DEPTH>,
@@ -174,7 +176,7 @@ impl SocketShared {
     }
 }
 
-/// Where the board stands with its network, as last published.
+/// The last published network status.
 struct Status(Mutex<ThreadModeRawMutex, Cell<NetworkStatus>>);
 
 impl Status {
@@ -188,30 +190,32 @@ impl Status {
     }
 }
 
-/// How long a request gets. Each one is a few calls into CPU2 (a hundred or
-/// so for a table) and at most one flash page, done in well under a second.
+/// Timeout for a request. A request takes a few calls into CPU2 (about a
+/// hundred for a table) and writes at most one flash page, which all
+/// finishes in well under a second.
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(5);
 
-/// What the ends have between them, and what CPU2 gets pointed at.
+/// The state shared by the handles and the service, and the buffers that
+/// CPU2 is given pointers to.
 struct Shared {
     requests: request::Channel<Request, NetworkResult>,
     neighbor_requests: request::Channel<NeighborsRequest, NeighborsResult>,
     router_requests: request::Channel<RoutersRequest, RoutersResult>,
     address_requests: request::Channel<AddressesRequest, AddressesResult>,
-    /// One for each [`Port`], at its index.
+    /// One per [`Port`], at the port's index.
     sockets: [SocketShared; Port::ALL.len()],
     tcp_requests: request::Channel<TcpRequest, TcpResult>,
     status: Status,
     buffers: Buffers,
 }
 
-/// The memory CPU2 gets pointed at: a buffer for each call that takes a
-/// pointer.
+/// The memory that CPU2 is given pointers to: one buffer for each call that
+/// takes a pointer.
 struct Buffers {
     active_dataset: ot::DatasetBuffer,
     next_neighbor: ot::NeighborBuffer,
     next_hop: ot::NextHopBuffer,
-    /// One for the socket of each [`Port`], at its index.
+    /// One for each [`Port`]'s socket, at the port's index.
     udp: [ot::UdpBuffer; Port::ALL.len()],
     tcp: ot::TcpBuffer,
 }
@@ -288,45 +292,44 @@ pub fn init() -> (Handle, Sockets, Tcp, Service) {
     (handle, sockets, tcp, service)
 }
 
-/// What boards say to each other over Thread, a socket for each thing they
-/// talk about.
+/// The UDP sockets that boards exchange messages on, one per kind of
+/// message.
 pub struct Sockets {
     /// Sensor reports.
     pub reports: Socket,
     /// Firmware updates.
     pub updates: Socket,
-    /// The boards' configurations.
+    /// Board configurations.
     pub configs: Socket,
 }
 
-/// Datagrams to the boards on the network, and from them.
+/// A UDP socket for datagrams to and from the boards on the network.
 pub struct Socket {
     requests: request::Client<SocketRequest, NetworkResult>,
     received: channel::Receiver<'static, ThreadModeRawMutex, Received, RECEIVED_DEPTH>,
 }
 
 impl Socket {
-    /// Send `datagram` to every board on the network. Nothing tells whether
-    /// any of them got it.
+    /// Send `datagram` to every board on the network. Delivery is not
+    /// confirmed.
     pub async fn broadcast(&mut self, datagram: Datagram) -> NetworkResult {
         self.request(SocketRequest::Broadcast(datagram)).await
     }
 
-    /// Send `datagram` to one board. Nothing tells whether it got it.
+    /// Send `datagram` to one board. Delivery is not confirmed.
     pub async fn send_to(&mut self, peer: Peer, datagram: Datagram) -> NetworkResult {
         self.request(SocketRequest::Send(peer, datagram)).await
     }
 
-    /// Start taking in what boards send to this socket, or stop: what they
-    /// send to all of them, this one among them, and what they send to this
-    /// one alone. A board that is not listening is not troubled by any of
-    /// it.
+    /// Start or stop receiving datagrams on this socket: both those sent to
+    /// every board and those sent to this board alone. A board that is not
+    /// listening ignores them.
     pub async fn listen(&mut self, on: bool) -> NetworkResult {
         self.request(SocketRequest::Listen(on)).await
     }
 
-    /// The next datagram that has arrived. None does unless the board is
-    /// listening.
+    /// Wait for the next received datagram. Nothing arrives unless the
+    /// socket is listening.
     pub async fn receive(&mut self) -> Received {
         self.received.receive().await
     }
@@ -413,8 +416,8 @@ impl Tcp {
     }
 }
 
-/// A look at where the board stands with its network, for what only needs
-/// that.
+/// Read-only access to the network status, for code that needs nothing
+/// else.
 #[derive(Clone, Copy)]
 pub struct Monitor {
     status: &'static Status,
@@ -426,7 +429,7 @@ impl Monitor {
     }
 }
 
-/// How the rest of the firmware reaches Thread.
+/// Manages the board's Thread network for the rest of the firmware.
 pub struct Handle {
     requests: request::Client<Request, NetworkResult>,
     neighbor_requests: request::Client<NeighborsRequest, NeighborsResult>,
@@ -440,26 +443,26 @@ impl Handle {
         self.status.get()
     }
 
-    /// The dataset of the network the board is configured for, which it
+    /// The stored dataset: the network the board is configured for and
     /// rejoins at every power-up.
     pub fn dataset(&self) -> Option<Dataset> {
         persistent_config::dataset()
     }
 
-    /// Start joining the network `dataset` describes, and keep rejoining it
-    /// across power cycles. [`Handle::status`] tells when the board has
-    /// attached.
+    /// Start joining the network that `dataset` describes, and store the
+    /// dataset so that the board rejoins after a power cycle.
+    /// [`Handle::status`] shows when the board has attached.
     pub async fn join(&mut self, dataset: Dataset) -> NetworkResult {
         self.request(Request::Join(dataset)).await
     }
 
-    /// Drop off the network and forget it.
+    /// Leave the network and erase the stored dataset.
     pub async fn leave(&mut self) -> NetworkResult {
         self.request(Request::Leave).await
     }
 
-    /// The board's children, and the routers it has a direct radio link with
-    /// right now, other than its parent.
+    /// The board's children, and the routers it currently has a direct radio
+    /// link with, other than its parent.
     pub async fn neighbors(&mut self) -> NeighborsResult {
         self.neighbor_requests
             .ask(NeighborsRequest, REQUEST_TIMEOUT)
@@ -467,8 +470,7 @@ impl Handle {
             .unwrap_or(Err(NetworkError::Unresponsive))
     }
 
-    /// Every router on the board's network, and what the board does to get a
-    /// message to it.
+    /// Every router on the board's network, and the board's route to it.
     pub async fn routers(&mut self) -> RoutersResult {
         self.router_requests
             .ask(RoutersRequest, REQUEST_TIMEOUT)
@@ -492,8 +494,9 @@ impl Handle {
     }
 }
 
-/// What it takes to run Thread: the stack's ends of the CPU2 mailbox, and the
-/// means to keep a dataset in flash next to a running radio stack.
+/// What the service needs to run Thread: the Thread channels of the CPU2
+/// mailbox, and flash access for storing the dataset while the radio stack
+/// runs.
 pub struct Thread<'a, 'd> {
     pub ot: ThreadOt<'d>,
     pub cli_rx: ThreadCliRx<'d>,
@@ -509,12 +512,12 @@ struct Requests {
     neighbors: request::Server<NeighborsRequest, NeighborsResult>,
     routers: request::Server<RoutersRequest, RoutersResult>,
     addresses: request::Server<AddressesRequest, AddressesResult>,
-    /// One for each [`Port`], at its index.
+    /// One per [`Port`], at the port's index.
     sockets: [request::Server<SocketRequest, NetworkResult>; Port::ALL.len()],
     tcp: request::Server<TcpRequest, TcpResult>,
 }
 
-/// A request that has been taken, and is owed an answer.
+/// A request that has been received and not yet answered.
 enum Asked {
     Change(request::Pending, Request),
     Neighbors(request::Pending),
@@ -554,7 +557,7 @@ impl Requests {
         }
     }
 
-    /// Answer `asked` with `error`.
+    /// Respond to `asked` with `error`.
     fn refuse(&self, asked: Asked, error: NetworkError) {
         match asked {
             Asked::Change(pending, _) => self.changes.answer(pending, Err(error)),
@@ -614,12 +617,13 @@ struct TcpEndpoint {
     waiting: Option<(request::Pending, TcpWait)>,
 }
 
-/// What has arrived on the socket of each [`Port`], on its way to whoever
-/// has that socket.
+/// The queues that carry received datagrams from the service to the
+/// [`Socket`] of each [`Port`].
 type Arrivals =
     [channel::Sender<'static, ThreadModeRawMutex, Received, RECEIVED_DEPTH>; Port::ALL.len()];
 
-/// The end of Thread that answers the [`Handle`] and the [`Socket`]s.
+/// Serves requests from the [`Handle`], the [`Socket`]s and the [`Tcp`]
+/// handle.
 pub struct Service {
     requests: Requests,
     received: Arrivals,
@@ -662,10 +666,10 @@ impl Service {
             },
         };
 
-        // The stack stalls unless its CLI output is acknowledged. (The CLI
-        // itself is on CPU1 in this stack version and nothing uses it, but
-        // starting the stack never finishes with its channel left
-        // unanswered.)
+        // The stack stalls unless its CLI output is acknowledged. In this
+        // stack version the CLI itself runs on CPU1 and nothing uses it, but
+        // the stack never finishes starting if the CLI channel is not
+        // serviced.
         join(drain_cli(cli_rx), network.run()).await.0
     }
 
@@ -700,7 +704,7 @@ struct Network<'a, 'd> {
     received: Arrivals,
     status: &'static Status,
     buffers: &'static Buffers,
-    /// Whether the socket of each [`Port`] is bound to it.
+    /// Whether each [`Port`]'s socket is bound to its port.
     listening: [bool; Port::ALL.len()],
     tcp: TcpEndpoint,
 }
@@ -708,7 +712,7 @@ struct Network<'a, 'd> {
 impl Network<'_, '_> {
     async fn run(mut self) -> ! {
         if let Err(e) = self.start().await {
-            // A call into a stack that did not start might never come back.
+            // A call into a stack that failed to start might never return.
             unavailable(self.requests, self.status, e).await
         }
 
@@ -762,8 +766,8 @@ impl Network<'_, '_> {
                     Request::Join(dataset) => self.join(&dataset).await,
                     Request::Leave => self.leave().await,
                 };
-                // The status is published before the outcome, so that whoever
-                // asked never reads a status older than the answer.
+                // Publish the status before responding, so that the caller
+                // never reads a status that is older than the response.
                 self.publish_status().await;
                 self.requests.changes.answer(pending, outcome);
             }
@@ -985,14 +989,14 @@ impl Network<'_, '_> {
         }
     }
 
-    /// Have the socket of `port` take in what is sent to it, or not.
+    /// Start or stop receiving on the socket of `port`.
     async fn listen(&mut self, port: Port, on: bool) -> ot::Result<()> {
         let listening = &mut self.listening[port.index()];
         if on == *listening {
             return Ok(());
         }
-        // A socket cannot be taken off a port again, so either way it is a
-        // fresh one.
+        // A socket cannot be unbound from its port, so close it and open a
+        // new one in both cases.
         let socket = &self.buffers.udp[port.index()];
         self.ot.udp_close(socket).await?;
         self.ot.udp_open(socket, port.index()).await?;
@@ -1004,7 +1008,8 @@ impl Network<'_, '_> {
         Ok(())
     }
 
-    /// Send from the socket of `port` to that port at `address`.
+    /// Send `datagram` from the socket of `port` to the same port at
+    /// `address`.
     async fn send(&mut self, port: Port, address: Ipv6Addr, datagram: &Datagram) -> ot::Result<()> {
         let socket = &self.buffers.udp[port.index()];
         self.ot
@@ -1023,8 +1028,8 @@ impl Network<'_, '_> {
             .ot
             .dataset_set_active_tlvs(&self.buffers.active_dataset, dataset);
         if let Err(e) = set.await {
-            // The stack has turned the dataset down and kept the one it had.
-            // Go back to that network, which is also the one in flash.
+            // The stack rejected the dataset and kept its previous one. That
+            // is also the one in flash, so go back to that network.
             if persistent_config::dataset().is_some() {
                 self.up().await?;
             }
@@ -1044,7 +1049,7 @@ impl Network<'_, '_> {
             .map_err(|_| NetworkError::Storage)
     }
 
-    /// Go back to the network the board was on before it lost power.
+    /// Rejoin the network the board was on before it lost power.
     async fn rejoin(&mut self, dataset: &Dataset) -> ot::Result<()> {
         self.ot
             .dataset_set_active_tlvs(&self.buffers.active_dataset, dataset)
@@ -1064,7 +1069,8 @@ impl Network<'_, '_> {
         self.ot.ip6_set_enabled(false).await
     }
 
-    /// The stack's neighbor table, as far as it fits in a [`NeighborTable`].
+    /// The stack's neighbor table, with as many entries as fit in a
+    /// [`NeighborTable`].
     async fn neighbors(&mut self) -> NeighborsResult {
         let mut table = NeighborTable::default();
         let mut iterator = ot::NeighborIterator::INIT;
@@ -1081,7 +1087,7 @@ impl Network<'_, '_> {
         Ok(table)
     }
 
-    /// Every router the stack knows of, and its way to each.
+    /// Every router the stack knows of, and the route to each.
     async fn routers(&mut self) -> RoutersResult {
         let mut table = RouterTable::default();
         for id in RouterId::all() {
@@ -1092,7 +1098,7 @@ impl Network<'_, '_> {
                 .ot
                 .thread_get_next_hop_and_path_cost(&self.buffers.next_hop, id)
                 .await;
-            // The table has room for a router of every ID.
+            // Cannot fail: the table has room for a router of every ID.
             let _ = table.routers.push(Router { id, route });
         }
         Ok(table)
