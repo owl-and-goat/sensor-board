@@ -23,6 +23,7 @@ pub enum Sensor {
     Temperature,
     Humidity,
     Acceleration,
+    Sound,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Schema)]

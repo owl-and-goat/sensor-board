@@ -17,6 +17,7 @@ use crate::{
         self,
         capacitance::{CapacitanceSensor, Channel},
         color::{self, ColorSensor},
+        mic::Mic,
         temp_rh::TempRhSensor,
     },
     thread, update,
@@ -24,6 +25,9 @@ use crate::{
 
 /// The interval between reports.
 const INTERVAL: Duration = Duration::from_secs(10);
+
+/// How long the microphone listens for each report.
+const SOUND_DURATION: Duration = Duration::from_secs(1);
 
 /// Timeout for a request to start or stop collecting. It covers one
 /// [`thread::Socket`] request, which has its own timeout, and the report
@@ -41,6 +45,7 @@ pub struct Builder {
     pub capacitance: &'static sensor::Shared<CapacitanceSensor<'static>>,
     pub color: Option<&'static sensor::Shared<ColorSensor<'static>>>,
     pub temp_rh: Option<&'static sensor::Shared<TempRhSensor<'static>>>,
+    pub mic: &'static sensor::Shared<Mic<'static>>,
 }
 
 impl Builder {
@@ -54,6 +59,7 @@ impl Builder {
             capacitance: self.capacitance,
             color: self.color,
             temp_rh: self.temp_rh,
+            mic: self.mic,
             requests: server,
             board: BoardId(embassy_stm32::uid::uid()),
             sequence: 0,
@@ -82,6 +88,7 @@ pub struct Task {
     capacitance: &'static sensor::Shared<CapacitanceSensor<'static>>,
     color: Option<&'static sensor::Shared<ColorSensor<'static>>>,
     temp_rh: Option<&'static sensor::Shared<TempRhSensor<'static>>>,
+    mic: &'static sensor::Shared<Mic<'static>>,
     requests: request::Server<Collect, NetworkResult>,
     board: BoardId,
     sequence: u32,
@@ -190,10 +197,13 @@ impl Task {
             }
         };
 
+        let sound = self.mic.lock().await.measure(SOUND_DURATION).await;
+
         Readings {
             capacitance,
             color,
             temp_rh,
+            sound,
         }
     }
 }

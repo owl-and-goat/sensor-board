@@ -31,6 +31,8 @@ panic-probe = { version = "1.0.0", features = ["print-defmt"] }
 protocol = { path = "../protocol", features = ["defmt"] }
 static_cell = "2.1"
 heapless = "0.9"
+# log10 for the sound level in dB SPL.
+libm = "0.2"
 
 # Firmware updates: the state page that tells bootloader/ what to do at the
 # next reset, flash partitions, and the digest check of a received image.
@@ -63,7 +65,8 @@ features = ["defmt", "stm32wb55cg", "wb55_thread"]
 [profile.release]
 debug = 2
 lto = "fat"
-opt-level = "s"
+# Not "s": with the microphone, that no longer fits the firmware's 224 K.
+opt-level = "z"
 codegen-units = 1
 
 [profile.dev]

@@ -5,7 +5,7 @@ use std::time::Duration;
 
 use anyhow::{Result, bail};
 use postcard_rpc::host_client::MultiSubRxError;
-use protocol::{Report, SensorReadResult, TempRh};
+use protocol::{Report, SensorReadResult, SoundLevel, TempRh};
 
 use crate::board::Board;
 
@@ -91,8 +91,13 @@ pub fn describe(report: &Report) -> String {
         }) => format!("{temperature:.2} °C {humidity:.2} %RH"),
         Err(e) => format!("failed ({e})"),
     };
+    let sound = match &readings.sound {
+        Ok(SoundLevel { leq }) => format!("{leq:.1} dB SPL"),
+        Err(e) => format!("failed ({e})"),
+    };
     format!(
-        "{board}  build {firmware}  #{sequence}  capacitance {}  color {}  temp-rh {temp_rh}",
+        "{board}  build {firmware}  #{sequence}  capacitance {}  color {}  temp-rh {temp_rh}  \
+         sound {sound}",
         capacitance.join(", "),
         color.join(", ")
     )
@@ -135,6 +140,7 @@ mod tests {
                     temperature: 21.5,
                     humidity: 45.25,
                 }),
+                sound: Ok(SoundLevel { leq: 48.5 }),
             },
         };
         assert_eq!(
@@ -142,7 +148,7 @@ mod tests {
             "4B0041000350475532303120  build 1791145757  #7  capacitance 1234567, 0, \
              failed (I2C ACK Not Received), 42  color red 512, green 256, blue 128, \
              white failed (Color Sensor Channel Out of Range), infrared 0  \
-             temp-rh 21.50 °C 45.25 %RH"
+             temp-rh 21.50 °C 45.25 %RH  sound 48.5 dB SPL"
         );
     }
 }

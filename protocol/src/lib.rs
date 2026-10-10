@@ -666,6 +666,10 @@ pub enum SensorReadError {
     /// The light on the channel is outside of the range it can measure.
     #[error("Color Sensor Channel Out of Range")]
     OutOfRange,
+    /// The microphone's bitstream came in faster than it was worked out, for
+    /// so long that the measurement was given up.
+    #[error("Microphone Overrun")]
+    MicOverrun,
 }
 
 pub type SensorReadResult = Result<SensorValue, SensorReadError>;
@@ -725,6 +729,17 @@ pub struct TempRh {
 }
 
 pub type TempRhResult = Result<TempRh, SensorReadError>;
+
+/// A sound level the microphone measured, unweighted.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize, Schema)]
+#[cfg_attr(feature = "defmt", derive(defmt::Format))]
+pub struct SoundLevel {
+    /// The equivalent continuous level over the measurement, in dB SPL. The
+    /// microphone's sensitivity is good to ±3 dB.
+    pub leq: f32,
+}
+
+pub type SoundLevelResult = Result<SoundLevel, SensorReadError>;
 
 /// A board's identity: its chip's unique ID, which is also its USB serial
 /// number. Written the way that serial is, as upper-case hex.
@@ -793,6 +808,8 @@ pub struct Readings {
     pub color: [SensorReadResult; 5],
     /// The temperature & humidity sensor, at high precision, unheated.
     pub temp_rh: TempRhResult,
+    /// The microphone, over a second.
+    pub sound: SoundLevelResult,
 }
 
 impl Report {
@@ -1327,6 +1344,7 @@ mod tests {
                     temperature: -45.0,
                     humidity: 119.0,
                 }),
+                sound: Ok(SoundLevel { leq: 122.5 }),
             },
         }
     }

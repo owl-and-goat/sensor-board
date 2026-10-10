@@ -26,7 +26,7 @@ use embassy_stm32::{
     gpio::{self, Output},
     i2c,
     mode::Async,
-    peripherals::{self, DMA1_CH1, DMA2_CH1, I2C1},
+    peripherals::{self, DMA1_CH1, DMA1_CH2, DMA2_CH1, I2C1},
     rcc,
     rtc::{Rtc, RtcConfig},
     wdg::IndependentWatchdog,
@@ -35,13 +35,22 @@ use embassy_sync::{blocking_mutex::raw::ThreadModeRawMutex, mutex::Mutex};
 use embassy_time::{Duration, Timer};
 use static_cell::StaticCell;
 
-use crate::sensor::{capacitance::CapacitanceSensor, color::ColorSensor, temp_rh::TempRhSensor};
+use crate::sensor::{
+    capacitance::CapacitanceSensor,
+    color::ColorSensor,
+    mic::{
+        Mic,
+        pdm::{self, Pdm},
+    },
+    temp_rh::TempRhSensor,
+};
 
 bind_interrupts!(struct Irqs {
     I2C1_EV => i2c::EventInterruptHandler<I2C1>;
     I2C1_ER => i2c::ErrorInterruptHandler<I2C1>;
     DMA1_CHANNEL1 => dma::InterruptHandler<DMA1_CH1>;
     DMA2_CHANNEL1 => dma::InterruptHandler<DMA2_CH1>;
+    DMA1_CHANNEL2 => dma::InterruptHandler<DMA1_CH2>;
 });
 
 fn configure_clocks() -> rcc::Config {
@@ -57,6 +66,29 @@ fn configure_clocks() -> rcc::Config {
     // proper low-power sleep!
     clocks.hsi48 = None;
     clocks.mux.clk48sel = rcc::mux::Clk48sel::PLL1_Q;
+
+    // The microphone (SAI1) wants a PDM clock of 2.048 MHz, which decimated by
+    // 128 is 16 kHz audio. From 32 MHz that takes a /125 somewhere, and the
+    // only place for it is the PLL input divider (shared by both PLLs) times
+    // PLLSAI1's P: 32 / 5 = 6.4 MHz in, then 6.4 * 32 / 25 = 8.192 MHz for
+    // SAI1, and 6.4 * 30 / 4 = 48 MHz for USB.
+    clocks.pll = Some(rcc::Pll {
+        source: rcc::PllSource::HSE,
+        prediv: rcc::PllPreDiv::DIV5,
+        mul: rcc::PllMul::MUL30,
+        divp: None,
+        divq: Some(rcc::PllQDiv::DIV4),
+        divr: None,
+    });
+    clocks.pllsai1 = Some(rcc::Pll {
+        source: rcc::PllSource::HSE,
+        prediv: rcc::PllPreDiv::DIV5,
+        mul: rcc::PllMul::MUL32,
+        divp: Some(rcc::PllPDiv::DIV25),
+        divq: None,
+        divr: None,
+    });
+    clocks.mux.sai1sel = rcc::mux::Sai1sel::PLLSAI1_P;
 
     clocks
 }
@@ -199,11 +231,25 @@ async fn main(spawner: Spawner) {
         }
     };
 
+    static MIC_BUF: StaticCell<[u8; 512]> = StaticCell::new();
+    let pdm = Pdm::new(
+        p.SAI1,
+        p.PA3,
+        p.PA10,
+        pdm::Channel::Right,
+        p.DMA1_CH2,
+        Irqs,
+        MIC_BUF.init([0; 512]),
+    );
+    static MIC: StaticCell<sensor::Shared<Mic<'static>>> = StaticCell::new();
+    let mic = &*MIC.init(Mutex::new(Mic::new(pdm)));
+
     let (report_task, report_handle) = report::Builder {
         socket: report_socket,
         capacitance,
         color,
         temp_rh,
+        mic,
     }
     .init();
 
@@ -213,6 +259,7 @@ async fn main(spawner: Spawner) {
         capacitance,
         color,
         temp_rh,
+        mic,
     }
     .init();
     spawner.spawn(metrics(metrics_task).unwrap());

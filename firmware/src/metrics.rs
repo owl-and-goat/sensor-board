@@ -27,6 +27,7 @@ use crate::{
         self,
         capacitance::{self, CapacitanceSensor},
         color::{self, ColorSensor},
+        mic::Mic,
         temp_rh::TempRhSensor,
     },
     thread, update,
@@ -48,8 +49,11 @@ const RETRY: Duration = Duration::from_secs(5);
 /// The shortest poll interval. A shorter configured interval is raised to it.
 const MIN_INTERVAL: Duration = Duration::from_millis(100);
 
+/// How long the microphone listens for each measurement.
+const SOUND_DURATION: Duration = Duration::from_secs(1);
+
 /// The sensors that have a driver.
-const SENSORS: [Sensor; 7] = [
+const SENSORS: [Sensor; 8] = [
     Sensor::Capacitance0,
     Sensor::Capacitance1,
     Sensor::Capacitance2,
@@ -57,6 +61,7 @@ const SENSORS: [Sensor; 7] = [
     Sensor::Color,
     Sensor::Temperature,
     Sensor::Humidity,
+    Sensor::Sound,
 ];
 
 /// The capacitance channels, indexed by the channel number in their metrics.
@@ -116,6 +121,8 @@ struct Metrics {
     temperature: BoardFamily<Gauge>,
     humidity: BoardFamily<Gauge>,
     temp_rh_errors: BoardFamily<Counter>,
+    sound_level: BoardFamily<Gauge>,
+    sound_errors: BoardFamily<Counter>,
     scrapes: BoardFamily<Counter>,
     pushes: BoardFamily<Counter>,
     push_failures: BoardFamily<Counter>,
@@ -149,6 +156,12 @@ impl Metrics {
             temp_rh_errors: MetricBuilder::new("sensor_board_temp_rh_errors_total")
                 .with_help("Failed measurements of the temperature & humidity sensor.")
                 .build_labeled(),
+            sound_level: MetricBuilder::new("sensor_board_sound_level_db_spl")
+                .with_help("Sound level over a second, unweighted, in dB SPL.")
+                .build_labeled(),
+            sound_errors: MetricBuilder::new("sensor_board_sound_errors_total")
+                .with_help("Failed measurements of the sound level.")
+                .build_labeled(),
             scrapes: MetricBuilder::new("sensor_board_scrapes_total")
                 .with_help("Scrapes of the board's metrics endpoint.")
                 .build_labeled(),
@@ -176,6 +189,8 @@ impl Metrics {
         self.temperature.fmt_metric(text)?;
         self.humidity.fmt_metric(text)?;
         self.temp_rh_errors.fmt_metric(text)?;
+        self.sound_level.fmt_metric(text)?;
+        self.sound_errors.fmt_metric(text)?;
         self.scrapes.fmt_metric(text)?;
         self.pushes.fmt_metric(text)?;
         self.push_failures.fmt_metric(text)?;
@@ -207,6 +222,7 @@ pub struct Builder {
     pub capacitance: &'static sensor::Shared<CapacitanceSensor<'static>>,
     pub color: Option<&'static sensor::Shared<ColorSensor<'static>>>,
     pub temp_rh: Option<&'static sensor::Shared<TempRhSensor<'static>>>,
+    pub mic: &'static sensor::Shared<Mic<'static>>,
 }
 
 impl Builder {
@@ -224,6 +240,7 @@ impl Builder {
                 capacitance: self.capacitance,
                 color: self.color,
                 temp_rh: self.temp_rh,
+                mic: self.mic,
                 board: BoardId(embassy_stm32::uid::uid()),
                 metrics: shared,
                 text: TEXT.init(Text::new()),
@@ -309,6 +326,7 @@ struct Exporter {
     capacitance: &'static sensor::Shared<CapacitanceSensor<'static>>,
     color: Option<&'static sensor::Shared<ColorSensor<'static>>>,
     temp_rh: Option<&'static sensor::Shared<TempRhSensor<'static>>>,
+    mic: &'static sensor::Shared<Mic<'static>>,
     /// This board's ID.
     board: BoardId,
     metrics: &'static SharedMetrics,
@@ -508,6 +526,7 @@ impl Exporter {
                 self.read_temp_rh(|metrics| &metrics.humidity, |reading| reading.humidity)
                     .await
             }
+            Sensor::Sound => self.read_sound().await,
             // Not in `SENSORS`: these have no driver.
             Sensor::Distance | Sensor::Acceleration => {}
         }
@@ -587,6 +606,18 @@ impl Exporter {
             let gauge = gauge(metrics).register(BoardLabels(self.board));
             if let (Some(reading), Some(gauge)) = (reading, gauge) {
                 gauge.set_value(value(reading).into());
+            }
+        });
+    }
+
+    /// Measure the sound level.
+    async fn read_sound(&mut self) {
+        let level = self.mic.lock().await.measure(SOUND_DURATION).await;
+        self.count(|metrics| &metrics.sound_errors, usize::from(level.is_err()));
+        self.metrics.with(|metrics| {
+            let gauge = metrics.sound_level.register(BoardLabels(self.board));
+            if let (Ok(level), Some(gauge)) = (level, gauge) {
+                gauge.set_value(level.leq.into());
             }
         });
     }
