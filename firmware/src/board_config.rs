@@ -201,7 +201,7 @@ impl Configs<'_, '_> {
     async fn serve(&mut self) -> ! {
         // Requests are multicast, so every board has to listen for them.
         if let Err(e) = self.socket.listen(true).await {
-            defmt::warn!("config: none over the network: {}", e);
+            defmt::warn!("config: cannot listen for requests: {}", e);
         }
 
         loop {
@@ -255,10 +255,10 @@ impl Configs<'_, '_> {
         let kept = persistent_config::set_board_config(&mut flash, config).await;
         match kept {
             Ok(()) => {
-                defmt::info!("config: kept a new one");
+                defmt::info!("config: stored a new configuration");
                 self.current.sender().send(Some(config.clone()));
             }
-            Err(e) => defmt::error!("config: flash: {}", e),
+            Err(e) => defmt::error!("config: flash write failed: {}", e),
         }
         kept.map_err(|_| ConfigError::Storage)
     }
@@ -347,7 +347,7 @@ impl Configs<'_, '_> {
             config: persistent_config::board_config(),
         };
         if let Err(e) = self.send(Some(asker), &has).await {
-            defmt::debug!("config: not sent: {}", e);
+            defmt::debug!("config: could not send a reply: {}", e);
         }
     }
 

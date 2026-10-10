@@ -96,28 +96,26 @@ impl Metrics {
     fn new() -> Self {
         Metrics {
             firmware_build: MetricBuilder::new("sensor_board_firmware_build")
-                .with_help(
-                    "The build of the firmware a board runs: when it was built, in Unix time.",
-                )
+                .with_help("Build time of the running firmware, as a Unix timestamp.")
                 .build_labeled(),
             capacitance: MetricBuilder::new("sensor_board_capacitance")
                 .with_help("Raw reading of a capacitance channel.")
                 .build_labeled(),
             capacitance_errors: MetricBuilder::new("sensor_board_capacitance_errors_total")
-                .with_help("Readings of a capacitance channel that failed.")
+                .with_help("Failed readings of a capacitance channel.")
                 .build_labeled(),
             scrapes: MetricBuilder::new("sensor_board_scrapes_total")
-                .with_help("Times a board was asked for its metrics over the network.")
+                .with_help("Scrapes of the board's metrics endpoint.")
                 .build_labeled(),
             pushes: MetricBuilder::new("sensor_board_pushes_total")
-                .with_help("Times a board set out to push its metrics to its Pushgateway.")
+                .with_help("Push attempts to the Pushgateway.")
                 .build_labeled(),
             push_failures: MetricBuilder::new("sensor_board_push_failures_total")
-                .with_help("Pushes that the Pushgateway did not take.")
+                .with_help("Failed pushes to the Pushgateway.")
                 .build_labeled(),
             push_status: MetricBuilder::new("sensor_board_push_status")
                 .with_help(
-                    "The HTTP status of the Pushgateway's answer to the last push, or 0 for none.",
+                    "HTTP status of the Pushgateway's response to the last push, or 0 for none.",
                 )
                 .build_labeled(),
         }
@@ -302,7 +300,7 @@ impl Exporter {
     async fn stop(&mut self) {
         self.tcp.close().await;
         if let Err(e) = self.tcp.listen(None).await {
-            defmt::debug!("metrics: still listening: {}", e);
+            defmt::debug!("metrics: could not stop listening: {}", e);
         }
     }
 
@@ -331,7 +329,7 @@ impl Exporter {
             match came_in.await {
                 Ok(()) => return,
                 Err(e) => {
-                    defmt::debug!("metrics: no scrapes for now: {}", e);
+                    defmt::debug!("metrics: cannot accept scrapes yet: {}", e);
                     Timer::after(RETRY).await;
                 }
             }
@@ -357,7 +355,7 @@ impl Exporter {
             }
         };
         if let Err(e) = answered.await {
-            defmt::debug!("metrics: a scrape came to nothing: {}", e);
+            defmt::debug!("metrics: scrape failed: {}", e);
         }
         self.tcp.close().await;
     }
@@ -404,7 +402,7 @@ impl Exporter {
 
         let taken = matches!(status, Ok(200..300));
         if let Err(e) = status {
-            defmt::debug!("metrics: a push came to nothing: {}", e);
+            defmt::debug!("metrics: push failed: {}", e);
         }
         self.count(|metrics| &metrics.push_failures, usize::from(!taken));
         self.metrics.with(|metrics| {
@@ -469,7 +467,7 @@ impl Exporter {
         self.text.clear();
         let written = self.metrics.with(|metrics| metrics.write(self.text));
         if written.is_err() {
-            defmt::error!("metrics: more text than there is room for");
+            defmt::error!("metrics: the text does not fit its buffer");
             self.text.clear();
         }
         written

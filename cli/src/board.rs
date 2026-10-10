@@ -102,7 +102,12 @@ impl Board {
     /// The board's ID, parsed from its USB serial number.
     pub fn id(&self) -> Result<BoardId> {
         let id = self.serial.parse();
-        id.map_err(|_| anyhow!("board {}: its serial number is no board's", self.serial))
+        id.map_err(|_| {
+            anyhow!(
+                "board {}: its serial number is not a valid board ID",
+                self.serial
+            )
+        })
     }
 
     pub async fn info(&self) -> Result<BoardInfo> {

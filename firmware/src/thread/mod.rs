@@ -403,7 +403,7 @@ impl Tcp {
     /// endpoint for the next connection.
     pub async fn close(&mut self) {
         if let Err(e) = self.request(TcpRequest::Close, REQUEST_TIMEOUT).await {
-            defmt::warn!("thread: a TCP connection could not be dropped: {}", e);
+            defmt::warn!("thread: could not abort the TCP connection: {}", e);
         }
     }
 
@@ -821,7 +821,7 @@ impl Network<'_, '_> {
         // Thread works without TCP, so a failure here is not fatal.
         match self.ot.tcp_init(&self.buffers.tcp).await {
             Ok(()) => self.tcp.ready = true,
-            Err(e) => defmt::warn!("thread: no TCP: {}", e),
+            Err(e) => defmt::warn!("thread: TCP is unavailable: {}", e),
         }
         Ok(())
     }

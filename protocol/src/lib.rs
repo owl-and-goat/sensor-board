@@ -1018,13 +1018,15 @@ impl fmt::Display for ConfigError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             ConfigError::Unavailable => {
-                f.write_str("the board keeps no configuration without a wireless stack")
+                f.write_str("the board cannot store a configuration without a wireless stack")
             }
             ConfigError::Storage => f.write_str("the configuration could not be written to flash"),
-            ConfigError::Network(e) => write!(f, "could not ask over the network: {e}"),
-            ConfigError::NoAnswer => f.write_str("no answer over the network"),
+            ConfigError::Network(e) => {
+                write!(f, "could not send the request over the network: {e}")
+            }
+            ConfigError::NoAnswer => f.write_str("the board did not reply over the network"),
             ConfigError::Unresponsive => {
-                f.write_str("the board did not get to the configuration in time")
+                f.write_str("the board did not complete the request in time")
             }
         }
     }

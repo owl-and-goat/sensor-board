@@ -149,12 +149,12 @@ fn name(value: &impl ValueEnum) -> String {
 /// Parse a `--sensor` argument.
 fn sensor_change(text: &str) -> Result<SensorChange, String> {
     let Some((sensor, interval)) = text.split_once('=') else {
-        return Err("write it as SENSOR=INTERVAL, as in temperature=30s".to_owned());
+        return Err("expected SENSOR=INTERVAL, as in temperature=30s".to_owned());
     };
     let Ok(sensor) = Sensor::from_str(sensor, true) else {
         let sensors: Vec<String> = Sensor::value_variants().iter().map(name).collect();
         return Err(format!(
-            "there is no sensor {sensor}; there are {}",
+            "unknown sensor {sensor}; the sensors are {}",
             sensors.join(", ")
         ));
     };
@@ -174,13 +174,13 @@ fn pushgateway_change(text: &str) -> Result<PushgatewayChange, String> {
     }
     match text.parse() {
         Ok(address) => Ok(PushgatewayChange(Some(address))),
-        Err(_) => Err("write it as [ADDRESS]:PORT, with an IPv6 address, or none".to_owned()),
+        Err(_) => Err("expected [ADDRESS]:PORT with an IPv6 address, or none".to_owned()),
     }
 }
 
 /// Parse an interval: a whole number followed by a unit, as in `30s`.
 fn parse_interval(text: &str) -> Result<Duration, String> {
-    let malformed = || format!("{text} is no interval: write one as 500ms, 30s, 5m or 1h");
+    let malformed = || format!("{text} is not an interval: expected one like 500ms, 30s, 5m or 1h");
 
     let number = text.trim_end_matches(|c: char| c.is_ascii_alphabetic());
     let unit = match &text[number.len()..] {
@@ -191,7 +191,7 @@ fn parse_interval(text: &str) -> Result<Duration, String> {
         _ => return Err(malformed()),
     };
     match number.parse::<u32>() {
-        Ok(0) => Err("an interval is longer than nothing".to_owned()),
+        Ok(0) => Err("an interval must be greater than zero".to_owned()),
         Ok(number) => Ok(unit * number),
         Err(_) => Err(malformed()),
     }
