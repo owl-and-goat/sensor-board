@@ -193,7 +193,8 @@ configuration (see below):
   every sensor read, as job =sensor_board= with its serial number as the
   instance. after a failed push it waits a minute before the next one.
 
-a board without a configuration does neither.
+a board without a configuration is treated as =aux=. it reads no sensors, so
+its endpoint only has the firmware build and the scrape counter.
 
 the metrics are the readings of the sensors enabled in the configuration,
 each read at its own interval, plus counters for scrapes and pushes. every

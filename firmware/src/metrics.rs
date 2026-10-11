@@ -5,8 +5,8 @@
 //! - `Battery`: it pushes them to the configured Pushgateway after every
 //!   sensor read.
 //!
-//! A board without a configuration exports nothing. The configuration also
-//! sets which sensors are read and how often.
+//! A board without a configuration is taken to be on aux power, and reads no
+//! sensors. The configuration also sets which sensors are read and how often.
 
 use core::cell::RefCell;
 use core::fmt::{self, Write as _};
@@ -367,12 +367,14 @@ impl Exporter {
             });
         }
 
-        match config {
-            Some(config) => match config.power_mode {
-                PowerMode::Aux => self.serve().await,
-                PowerMode::Battery => self.push(config.pushgateway).await,
-            },
-            None => self.push(None).await,
+        // A board without a configuration is taken to be on aux power.
+        let power_mode = config.map_or(PowerMode::Aux, |config| config.power_mode);
+        match power_mode {
+            PowerMode::Aux => self.serve().await,
+            PowerMode::Battery => {
+                let gateway = config.and_then(|config| config.pushgateway);
+                self.push(gateway).await
+            }
         }
     }
 

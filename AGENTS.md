@@ -347,6 +347,10 @@ Prometheus. The power mode in the configuration selects how:
 - `Battery`: the board pushes to its configured Pushgateway after every
   sensor read.
 
+A board without a configuration is taken to be on aux power. It reads no
+sensors, so it serves only the firmware build and the scrape counter, and it
+registers its endpoint like any other board on aux power.
+
 The metric types come from tinymetrics. `firmware/src/http.rs` implements
 the HTTP: one request and one response per connection. To add a sensor, add
 it to `SENSORS` and to the `match` in `Exporter::read`, and its metrics to
@@ -452,6 +456,9 @@ registered again when it switched back, and scrapes answered again 16 s
 after a connection attempt that the board could not answer. With the module
 live on cerberus, Prometheus scraped the board it found this way, under the
 board's serial number as the instance. Only that one board had the firmware.
+Later that day a second board, which had no configuration, registered four
+seconds after it started, and Prometheus scraped the firmware build and the
+scrape counter from it.
 
 ## Board configuration
 
