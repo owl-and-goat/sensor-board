@@ -85,8 +85,12 @@ enum FirmwareCommand {
         #[command(flatten)]
         target: Target,
     },
-    /// Update every board on the network. An attached board receives the image and offers it
-    /// to the others, which fetch it over the network. That board is updated last
+    /// Update every board on the network
+    ///
+    /// An attached board receives the image and offers it to the others, which fetch it over
+    /// the network. That board is updated last. With no board attached, this machine offers
+    /// the image itself, through the border router. It then cannot tell which build each
+    /// board runs, and reports the boards that fetched the image
     Push {
         /// The image, as built by `just firmware-image`
         image: PathBuf,
@@ -95,6 +99,17 @@ enum FirmwareCommand {
         /// it, the first attached board that is on a network
         #[arg(long, value_name = "SERIAL")]
         board: Option<String>,
+
+        /// Push through the border router whose REST API is at this address, or at
+        /// cerberus:8081 if no address is given, even if a board is attached
+        #[arg(
+            long,
+            value_name = "HOST:PORT",
+            num_args = 0..=1,
+            default_missing_value = border_router::DEFAULT_ADDRESS,
+            conflicts_with = "board"
+        )]
+        border_router: Option<String>,
     },
 }
 
@@ -159,7 +174,7 @@ enum NetworkCommand {
             long,
             value_name = "HOST:PORT",
             num_args = 0..=1,
-            default_missing_value = discovery::DEFAULT_BORDER_ROUTER,
+            default_missing_value = border_router::DEFAULT_ADDRESS,
             conflicts_with = "board"
         )]
         border_router: Option<String>,
@@ -370,9 +385,24 @@ async fn main() -> Result<()> {
             let image = firmware::Image::read(&image)?;
             firmware::update(target.board().await?, &image).await
         }
-        Command::Firmware(FirmwareCommand::Push { image, board }) => {
+        Command::Firmware(FirmwareCommand::Push {
+            image,
+            board,
+            border_router,
+        }) => {
             let image = firmware::Image::read(&image)?;
-            firmware::push(firmware::gateway(board.as_deref()).await?, &image).await
+            let border_router = match border_router {
+                Some(address) => Some(address),
+                // With nothing attached, the border router is the only way.
+                None if board.is_none() && board::devices().await?.is_empty() => {
+                    Some(border_router::DEFAULT_ADDRESS.to_owned())
+                }
+                None => None,
+            };
+            match border_router {
+                Some(address) => firmware::push_through_border_router(&address, &image).await,
+                None => firmware::push(firmware::gateway(board.as_deref()).await?, &image).await,
+            }
         }
         Command::Network(NetworkCommand::Addresses(target)) => {
             let board = target.board().await?;

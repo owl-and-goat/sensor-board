@@ -1016,11 +1016,17 @@ pub struct Fetcher {
     pub received: u32,
 }
 
+/// The UDP port of [`UpdateMessage`]. A board sends its requests to this port
+/// at the address an offer came from, so a host that offers an image has to
+/// send the offer from this port.
+pub const UPDATE_PORT: u16 = 61621;
+
 /// The messages boards exchange over the network for firmware updates. A
 /// board that has an image staged and has been told to offer it
 /// ([`StartOffering`]) multicasts an offer at intervals. A board that runs
 /// another build requests the image chunk by chunk, stages it, and restarts
-/// into it.
+/// into it. A host can also offer an image itself, to each board's routable
+/// address through a border router.
 ///
 /// The encoding of this type must never change: a board on an old firmware
 /// has to understand the offer of the firmware that replaces it. So do not

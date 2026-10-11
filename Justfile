@@ -47,7 +47,7 @@ update-all: firmware-image
         {{just_executable()}} cli firmware update {{firmware_image}} --board "$serial"
     done
 
-# Update every board on the network. An attached board receives the image over USB and offers it to the others, which fetch it over the network. With several boards attached, that is the first one on a network, unless one is selected: just push --board <serial>
+# Update every board on the network. An attached board receives the image over USB and offers it to the others, which fetch it over the network. With several boards attached, that is the first one on a network, unless one is selected: just push --board <serial>. With no board attached, or with just push --border-router, this machine offers the image itself through the border router
 push *board: firmware-image
     {{just_executable()}} cli firmware push {{firmware_image}} {{board}}
 

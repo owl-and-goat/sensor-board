@@ -166,6 +166,30 @@ and at every offer it receives, so that its progress bar can show its serial
 number. The bars use indicatif, which draws nothing unless stderr is a
 terminal and `TERM` is not `dumb`.
 
+`firmware push` can also offer an image without an attached board
+(`push_through_border_router` in `cli/src/firmware.rs`). The CLI then does
+what an offering board does. It sends the offer from UDP port 61621 to the
+routable address of every device that the border router's REST API lists,
+and it answers the chunk requests. A board sends its requests to port 61621
+at the address the offer came from, which is why the CLI binds that port.
+
+- The offers are unicast. A multicast to `ff03::1` does not leave or enter
+  the Thread network.
+- The offer goes to every listed device, not only to the boards that answer
+  discovery. A board whose firmware predates discovery still has to get it.
+- The CLI receives no reports this way, so it does not know which build a
+  board runs. It ends when no board has asked for anything for 30 s, and it
+  reports the boards that fetched the image. It cannot tell a board that
+  kept the image from one that rolled it back.
+- A board gets a new address when it restarts into the image, so the device
+  list from before the push no longer reaches it.
+
+Tested on boards on 2026-10-11, with the two attached boards as the only
+targets: both fetched from the CLI at the same time (about 2 KiB/s each, a
+single board about 2.9 KiB/s), restarted and kept the image. Not tested: a
+push to every device that the border router lists, and a push with no board
+attached.
+
 The encoding of `UpdateMessage` is frozen, and tests in `protocol` pin its
 bytes, because a board on an old firmware has to understand the offer of the
 firmware that replaces it. Add new messages at the end of the enum: a

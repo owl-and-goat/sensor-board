@@ -1,10 +1,14 @@
-//! The REST API of an OpenThread border router, as far as `network show`
-//! uses it.
+//! The REST API of an OpenThread border router, as far as the CLI uses it:
+//! to find the devices on the border router's network.
 
 use std::{net::Ipv6Addr, time::Duration};
 
 use anyhow::{Context, Result};
 use serde::{Deserialize, de::DeserializeOwned};
+
+/// The border router to ask when none is named: the host and port of its
+/// REST API.
+pub const DEFAULT_ADDRESS: &str = "cerberus:8081";
 
 /// Timeout for a request. `/diagnostics` takes several seconds, because the
 /// border router queries every router and waits for the replies.
@@ -50,6 +54,28 @@ pub struct RouterLink {
     pub quality_in: u8,
 }
 
+/// The addresses that a machine outside the Thread network can send to, of
+/// every device but the border router itself: those that are neither
+/// link-local nor mesh-local.
+pub fn routable_addresses(node: &Node, devices: &[Diagnostics]) -> Vec<Ipv6Addr> {
+    let mesh_local_prefix = prefix(node.rloc_address);
+    devices
+        .iter()
+        .filter(|device| device.rloc16 != node.rloc16)
+        .flat_map(|device| &device.addresses)
+        .copied()
+        .filter(|address| !address.is_unicast_link_local() && prefix(*address) != mesh_local_prefix)
+        .collect()
+}
+
+/// The first 64 bits of `address`.
+fn prefix(address: Ipv6Addr) -> [u8; 8] {
+    *address
+        .octets()
+        .first_chunk()
+        .expect("an address is 16 bytes")
+}
+
 pub struct BorderRouter {
     address: String,
 }
@@ -68,6 +94,14 @@ impl BorderRouter {
 
     pub fn diagnostics(&self) -> Result<Vec<Diagnostics>> {
         self.get("diagnostics")
+    }
+
+    /// The border router's own node, and the diagnostics of every device on
+    /// its network. Does not block the caller's thread.
+    pub async fn network(self) -> Result<(Node, Vec<Diagnostics>)> {
+        let requests =
+            tokio::task::spawn_blocking(move || anyhow::Ok((self.node()?, self.diagnostics()?)));
+        requests.await?
     }
 
     /// Blocks until the border router has responded.
@@ -138,6 +172,38 @@ mod tests {
         );
         // A device that sent no route data has no links.
         assert!(board.route.links.is_empty());
+    }
+
+    #[test]
+    fn routable_addresses_leave_out_the_border_router_and_local_addresses() {
+        let mut devices: Vec<Diagnostics> = serde_json::from_str(DIAGNOSTICS).unwrap();
+        // The board's mesh-local and link-local addresses.
+        devices[1].addresses.extend([
+            "fd61:67e:fbdc:f78e:c51c:81a7:4754:989"
+                .parse::<Ipv6Addr>()
+                .unwrap(),
+            "fe80::a4ab:e08f:a44b:ab".parse().unwrap(),
+        ]);
+        let node = Node {
+            rloc16: 0x5c00,
+            rloc_address: "fd61:67e:fbdc:f78e:0:ff:fe00:5c00".parse().unwrap(),
+        };
+
+        assert_eq!(
+            routable_addresses(&node, &devices),
+            ["fdf7:2e7f:cbf2:1:605b:76:31d1:4464"
+                .parse::<Ipv6Addr>()
+                .unwrap()]
+        );
+    }
+
+    #[test]
+    fn prefix_is_the_first_64_bits() {
+        let address: Ipv6Addr = "fd61:67e:fbdc:f78e:0:ff:fe00:5c00".parse().unwrap();
+        assert_eq!(
+            prefix(address),
+            [0xfd, 0x61, 0x06, 0x7e, 0xfb, 0xdc, 0xf7, 0x8e]
+        );
     }
 
     #[test]

@@ -17,12 +17,9 @@ use tokio::{
 
 use crate::{
     board::Board,
-    border_router::{BorderRouter, RouterLink},
+    border_router::{self, BorderRouter, RouterLink},
     network,
 };
-
-/// The border router to ask when none is named.
-pub const DEFAULT_BORDER_ROUTER: &str = "cerberus:8081";
 
 /// How often the request is sent. Neither the request nor a reply is
 /// retransmitted when it is lost.
@@ -74,7 +71,7 @@ pub async fn show(serial: Option<&str>, border_router: Option<&str>) -> Result<(
         (None, Some(serial)) => through_board(&Board::select(Some(serial)).await?).await?,
         (None, None) => match Board::first_on_network().await? {
             Some(board) => through_board(&board).await?,
-            None => through_border_router(DEFAULT_BORDER_ROUTER).await?,
+            None => through_border_router(border_router::DEFAULT_ADDRESS).await?,
         },
     };
     print!("{}", describe(&found));
@@ -131,21 +128,8 @@ async fn through_board(board: &Board) -> Result<Vec<Found>> {
 /// `address`. Each link is as the border router measures it.
 async fn through_border_router(address: &str) -> Result<Vec<Found>> {
     eprintln!("Asking through the border router at {address}.");
-    let border_router = BorderRouter::at(address);
-    let requests = tokio::task::spawn_blocking(move || {
-        anyhow::Ok((border_router.node()?, border_router.diagnostics()?))
-    });
-    let (node, devices) = requests.await??;
-
-    let mesh_local_prefix = prefix(node.rloc_address);
-    // The addresses of every other device that this machine can send to.
-    let targets: Vec<Ipv6Addr> = devices
-        .iter()
-        .filter(|device| device.rloc16 != node.rloc16)
-        .flat_map(|device| &device.addresses)
-        .copied()
-        .filter(|address| !address.is_unicast_link_local() && prefix(*address) != mesh_local_prefix)
-        .collect();
+    let (node, devices) = BorderRouter::at(address).network().await?;
+    let targets = border_router::routable_addresses(&node, &devices);
     if targets.is_empty() {
         bail!("the border router lists no other device with a routable address");
     }
@@ -202,14 +186,6 @@ async fn through_border_router(address: &str) -> Result<Vec<Found>> {
         Found { member, link }
     });
     Ok(found.collect())
-}
-
-/// The first 64 bits of `address`.
-fn prefix(address: Ipv6Addr) -> [u8; 8] {
-    *address
-        .octets()
-        .first_chunk()
-        .expect("an address is 16 bytes")
 }
 
 /// The border router's link to the board with `rloc16`, from the border
@@ -365,14 +341,5 @@ mod tests {
         // A router with no direct link, and one that is not listed.
         assert_eq!(router_link(&links, 0xb800), None);
         assert_eq!(router_link(&links, 0xec00), None);
-    }
-
-    #[test]
-    fn prefix_is_the_first_64_bits() {
-        let address: Ipv6Addr = "fd61:67e:fbdc:f78e:0:ff:fe00:5c00".parse().unwrap();
-        assert_eq!(
-            prefix(address),
-            [0xfd, 0x61, 0x06, 0x7e, 0xfb, 0xdc, 0xf7, 0x8e]
-        );
     }
 }

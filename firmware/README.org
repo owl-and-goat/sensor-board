@@ -10,15 +10,15 @@ update (see below) and starts the firmware. from the top of the repository:
   just flash                  # both, through the st-link on the jtag port
   just update                 # the firmware, over usb, through the running firmware
   just update-all             # the same for every attached board, one after the other
-  just push                   # the firmware, to every board on the network, through an attached one
+  just push                   # the firmware, to every board on the network, through an attached one or the border router
   just dfu-flash              # both, over usb, through the rom bootloader
   just dfu-flash-all          # the same for every attached board, one after the other
 #+end_src
 
 with several boards attached, =just update= and =just dfu-flash= take
 =--board <serial>=. =just push= goes through the first attached board that is
-on a network, unless it is given =--board=. to flash only the firmware
-through the probe and
+on a network, unless it is given =--board=, and through the border router if
+no board is attached. to flash only the firmware through the probe and
 watch the board's log (the bootloader has to be on the board already):
 
 #+begin_src sh
@@ -70,6 +70,27 @@ all boards fetch at the same time, even when they relay for each other (see
 =TODO.org=). a board can only be updated this way once it runs a firmware
 that supports it, so its first such firmware has to come over usb.
 
+with no board attached, or with =--border-router=, =firmware push= offers the
+image itself. it reads the devices on the network from the border router's
+rest api (at =cerberus:8081=, or at the address given to =--border-router=),
+sends the offer to the routable address of each one every ten seconds, and
+answers the boards that fetch. this machine needs an address that the boards
+can answer (see "metrics").
+
+- the command cannot see which build a board runs. it lists the boards that
+  fetched the image, and ends once no board has asked for anything for half
+  a minute. =firmware status= and the =sensor_board_firmware_build= metric
+  show what a board runs afterwards.
+- a board that runs the image already, or on which the image failed before,
+  does not ask for it.
+- the offer goes to every device that the border router lists. a device that
+  is not a sensor board ignores it.
+
+tested on 2026-10-11 with the two attached boards as the only targets: both
+fetched from this machine at the same time, at about 2 KiB/s each, restarted
+and kept the image. not tested: a push to every device that the border router
+lists, and a push with no board attached.
+
 a board stays on its network through all of this: its stored configuration
 is in a separate page that neither firmware slot covers.
 
@@ -112,6 +133,7 @@ unambiguous prefix of it.
   cargo run -- firmware status --board 4d  # the running build, and the state of an update
   cargo run -- firmware update <image> --board 4d  # see "firmware updates" above
   cargo run -- firmware push <image>       # update every board on the network
+  cargo run -- firmware push <image> --border-router  # the same without an attached board
   cargo run -- network addresses --board 4b  # that board's ipv6 addresses
   cargo run -- network registration --board 4b  # whether prometheus can find that board
   cargo run -- network show                # every sensor board on the network; see below
