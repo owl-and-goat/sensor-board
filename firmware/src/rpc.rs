@@ -21,13 +21,13 @@ use protocol::{
     BoardId, BoardInfo, ConfigFor, ConfigResult, CoprocessorResult, CoprocessorStatus, Dataset,
     DiscoverBoards, ENDPOINT_LIST, EnterBootloader, FinishInstall, FinishUpdate, FirmwareStatus,
     GetBoardConfig, GetBoardInfo, GetCoprocessorStatus, GetFirmwareStatus, GetMetrics,
-    GetNetworkAddresses, GetNetworkDataset, GetNetworkNeighbors, GetNetworkRouters,
-    GetNetworkStatus, GetOfferProgress, GetRegistration, ImageChunk, ImageSize, JoinNetwork,
-    LeaveNetwork, MeasureTempRh, Member, MetricsChunk, NeighborsResult, NetworkResult,
-    NetworkStatus, OfferProgress, ReadSensorValue, Registration, Report, ReportReceived,
-    RoutersResult, SensorReadError, SensorReadReq, SensorReadResult, SetBoardConfig,
-    StartCollecting, StartOffering, StopCollecting, StopOffering, TOPICS_IN_LIST, TOPICS_OUT_LIST,
-    TempRhReq, TempRhResult, UninstallStack, UpdateImage, UpdateResult, WriteInstall, WriteUpdate,
+    GetNetworkAddresses, GetNetworkDataset, GetNetworkNeighbors, GetNetworkStatus,
+    GetOfferProgress, GetRegistration, ImageChunk, ImageSize, JoinNetwork, LeaveNetwork,
+    MeasureTempRh, Member, MetricsChunk, NeighborsResult, NetworkResult, NetworkStatus,
+    OfferProgress, ReadSensorValue, Registration, Report, ReportReceived, SensorReadError,
+    SensorReadReq, SensorReadResult, SetBoardConfig, StartCollecting, StartOffering,
+    StopCollecting, StopOffering, TOPICS_IN_LIST, TOPICS_OUT_LIST, TempRhReq, TempRhResult,
+    UninstallStack, UpdateImage, UpdateResult, WriteInstall, WriteUpdate,
 };
 
 use crate::{
@@ -70,7 +70,6 @@ define_dispatch! {
         | JoinNetwork          | async    | join_network       |
         | LeaveNetwork         | async    | leave_network      |
         | GetNetworkNeighbors  | async    | network_neighbors  |
-        | GetNetworkRouters    | async    | network_routers    |
         | GetCoprocessorStatus | blocking | coprocessor_status |
         | BeginInstall         | async    | begin_install      |
         | WriteInstall         | async    | write_install      |
@@ -190,10 +189,6 @@ async fn leave_network(context: &mut Context, _header: VarHeader, (): ()) -> Net
 
 async fn network_neighbors(context: &mut Context, _header: VarHeader, (): ()) -> NeighborsResult {
     context.thread.neighbors().await
-}
-
-async fn network_routers(context: &mut Context, _header: VarHeader, (): ()) -> RoutersResult {
-    context.thread.routers().await
 }
 
 async fn network_addresses(context: &mut Context, _header: VarHeader, (): ()) -> AddressesResult {

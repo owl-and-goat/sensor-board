@@ -165,21 +165,6 @@ CLOSED: [2026-09-03 Thu 22:37]
 Mostly the Y1 ring; also water1/water2, hp2/hp3, sda/scl, JP1 pairs.
 
 * Firmware
-** TODO Update boards over the mesh in an order that keeps the network together
-=firmware push= makes every board fetch the update at once, as soon as it
-receives the offer. A board is off the network for about half a minute, while
-its bootloader swaps the images and until it has rejoined. A router that is
-off the network does not relay, so a board behind it loses its connection to
-the board it was fetching from, and has to wait for the next offer to
-continue. Instead, update the leaf boards first (those that no other board
-is reached through), then work inwards to the board on USB, which is updated
-last. Update one board at a time, and wait for each to report its new build
-before starting the next.
-
-With five boards, every board is a router, so leaves cannot be identified by
-role. The order has to come from the gateway's router table (=network
-routers=): update the board with the highest path cost first, and never
-update a board that is the next hop to a board that is still waiting.
 * Rev. 2
 ** TODO fix the pin numbering for the color sensor footprint
 half of them are the wrong way gdi

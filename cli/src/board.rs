@@ -14,12 +14,12 @@ use protocol::{
     BoardInfo, ConfigError, ConfigFor, CoprocessorResult, CoprocessorStatus, Dataset,
     DiscoverBoards, EnterBootloader, FinishInstall, FinishUpdate, FirmwareStatus, GetBoardConfig,
     GetBoardInfo, GetCoprocessorStatus, GetFirmwareStatus, GetMetrics, GetNetworkAddresses,
-    GetNetworkDataset, GetNetworkNeighbors, GetNetworkRouters, GetNetworkStatus, GetOfferProgress,
-    GetRegistration, ImageChunk, ImageSize, JoinNetwork, LeaveNetwork, MeasureTempRh, Member,
-    NeighborTable, NetworkError, NetworkStatus, OfferProgress, ReadSensorValue, Registration,
-    Report, ReportReceived, RouterTable, Sensor, SensorReadReq, SensorReadResult, SetBoardConfig,
-    StartCollecting, StartOffering, StopCollecting, StopOffering, TempRhReq, TempRhResult, USB_PID,
-    USB_VID, UninstallStack, UpdateImage, UpdateResult, WriteInstall, WriteUpdate,
+    GetNetworkDataset, GetNetworkNeighbors, GetNetworkStatus, GetOfferProgress, GetRegistration,
+    ImageChunk, ImageSize, JoinNetwork, LeaveNetwork, MeasureTempRh, Member, NeighborTable,
+    NetworkError, NetworkStatus, OfferProgress, ReadSensorValue, Registration, Report,
+    ReportReceived, Sensor, SensorReadReq, SensorReadResult, SetBoardConfig, StartCollecting,
+    StartOffering, StopCollecting, StopOffering, TempRhReq, TempRhResult, USB_PID, USB_VID,
+    UninstallStack, UpdateImage, UpdateResult, WriteInstall, WriteUpdate,
 };
 
 /// Timeout for a call to a board. The slowest call is a join or leave that
@@ -155,12 +155,6 @@ impl Board {
     /// other than its parent.
     pub async fn neighbors(&self) -> Result<NeighborTable> {
         let result = self.call::<GetNetworkNeighbors>(&()).await?;
-        self.network_result(result)
-    }
-
-    /// Every router on the board's network, and the board's route to it.
-    pub async fn routers(&self) -> Result<RouterTable> {
-        let result = self.call::<GetNetworkRouters>(&()).await?;
         self.network_result(result)
     }
 

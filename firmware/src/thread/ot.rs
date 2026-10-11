@@ -14,7 +14,7 @@ use embassy_futures::{
 use embassy_stm32_wpan::sub::thread::{OtNotification, ThreadNotifRx, ThreadOt};
 use protocol::{
     Address, AddressKind, Addresses, Dataset, ExtAddress, Neighbor, NeighborKind, OtError,
-    RegistrationError, Role, Route, RouterId,
+    RegistrationError, Role,
 };
 
 // TODO: move ffi module to a submodule of this one?
@@ -77,32 +77,6 @@ fn neighbor_from_raw(info: &ffi::otNeighborInfo) -> Neighbor {
     }
 }
 
-/// Convert what `otThreadGetNextHopAndPathCost` returned for `destination`,
-/// an RLOC16, to a [`Route`].
-fn route_from_raw(destination: u16, next_hop: u16, cost: u8) -> Route {
-    /// The stack's value for "no next hop".
-    const INVALID_RLOC16: u16 = 0xfffe;
-    /// The path cost that the stack reports for an unreachable destination.
-    /// A child still reports its parent as the next hop in that case, as it
-    /// does for every destination.
-    const MAX_ROUTE_COST: u8 = 16;
-
-    if next_hop == INVALID_RLOC16 || cost >= MAX_ROUTE_COST {
-        Route::Unreachable
-    } else if next_hop != destination {
-        Route::Relayed {
-            next_hop: RouterId::of_rloc16(next_hop),
-            cost,
-        }
-    } else if cost == 0 {
-        // No link has a cost of zero, so this is the stack's answer for the
-        // device it runs on.
-        Route::ThisBoard
-    } else {
-        Route::Direct { cost }
-    }
-}
-
 /// CPU1 memory that CPU2 reads through a pointer: the dataset argument of
 /// `otDatasetSetActiveTlvs`. It has to be `&'static`, because CPU2 keeps
 /// reading it until it has answered the call, even if the future that made
@@ -128,23 +102,6 @@ impl NeighborBuffer {
         NeighborBuffer {
             iterator: UnsafeCell::new(NeighborIterator::INIT.0),
             info: UnsafeCell::new(MaybeUninit::zeroed()),
-        }
-    }
-}
-
-/// CPU1 memory that CPU2 writes through pointers: the two out arguments of
-/// `otThreadGetNextHopAndPathCost`. `&'static` for the same reason as
-/// [`NeighborBuffer`].
-pub struct NextHopBuffer {
-    next_hop_rloc16: UnsafeCell<u16>,
-    path_cost: UnsafeCell<u8>,
-}
-
-impl NextHopBuffer {
-    pub const fn new() -> Self {
-        NextHopBuffer {
-            next_hop_rloc16: UnsafeCell::new(0),
-            path_cost: UnsafeCell::new(0),
         }
     }
 }
@@ -837,52 +794,6 @@ pub unsafe trait OpenThread {
             read_volatile(info_out)
         };
         Ok(Some(neighbor_from_raw(&info)))
-    }
-
-    /// Whether a router on the network has this ID.
-    async fn thread_is_router_id_allocated(&mut self, id: RouterId) -> bool {
-        let allocated = unsafe {
-            // SAFETY: expects one argument, the router ID.
-            self.ffi_call(
-                ffi_command::MSG_M4TOM0_OT_THREAD_IS_ROUTER_ID_ALLOCATED,
-                &[id.0 as u32],
-            )
-            .await
-        };
-        allocated != 0
-    }
-
-    /// The stack's route to the router with this ID.
-    async fn thread_get_next_hop_and_path_cost(
-        &mut self,
-        buffer: &'static NextHopBuffer,
-        destination: RouterId,
-    ) -> Route {
-        let destination = destination.rloc16();
-        let next_hop_out = buffer.next_hop_rloc16.get();
-        let path_cost_out = buffer.path_cost.get();
-
-        let (next_hop, cost) = unsafe {
-            // SAFETY: expects the destination's RLOC16 and two pointers that
-            // it writes through, to a uint16_t and to a uint8_t. Both stay
-            // valid for as long as CPU2 could use them. (The name of the
-            // message is ST's spelling.)
-            self.ffi_call(
-                ffi_command::MSG_M4TOM0_OT_THREAD_GET_NEXT_HOP_AND_PAST_COST,
-                &[
-                    destination as u32,
-                    next_hop_out as u32,
-                    path_cost_out as u32,
-                ],
-            )
-            .await;
-            // SAFETY: CPU2 has answered, so it has finished writing. CPU1
-            // accesses the buffer only in this function, and never through
-            // a reference. CPU2 answers an earlier, dropped call before
-            // this one, so the buffer now holds this call's results.
-            (read_volatile(next_hop_out), read_volatile(path_cost_out))
-        };
-        route_from_raw(destination, next_hop, cost)
     }
 
     /// Open a UDP socket. It can send from then on. Datagrams it receives

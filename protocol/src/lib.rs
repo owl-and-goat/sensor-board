@@ -30,7 +30,6 @@ endpoints! {
     | JoinNetwork          | Dataset       | NetworkResult     | "network/join"               |
     | LeaveNetwork         | ()            | NetworkResult     | "network/leave"              |
     | GetNetworkNeighbors  | ()            | NeighborsResult   | "network/neighbors"          |
-    | GetNetworkRouters    | ()            | RoutersResult     | "network/routers"            |
     | GetCoprocessorStatus | ()            | CoprocessorStatus | "coprocessor/status"         |
     | BeginInstall         | ImageSize     | CoprocessorResult | "coprocessor/install/begin"  |
     | WriteInstall         | ImageChunk    | CoprocessorResult | "coprocessor/install/write"  |
@@ -425,25 +424,6 @@ impl fmt::Display for ExtAddress {
     }
 }
 
-/// The result of [`GetNetworkRouters`].
-pub type RoutersResult = Result<RouterTable, NetworkError>;
-
-/// A board's router table: every router on its network, in order of ID,
-/// with the board's route to it. Empty while the board is not attached to a
-/// network.
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, Schema)]
-#[cfg_attr(feature = "defmt", derive(defmt::Format))]
-pub struct RouterTable {
-    pub routers: heapless::Vec<Router, { RouterId::COUNT }>,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Schema)]
-#[cfg_attr(feature = "defmt", derive(defmt::Format))]
-pub struct Router {
-    pub id: RouterId,
-    pub route: Route,
-}
-
 /// The ID a router has on its network, 0 to 62. It is the top six bits of
 /// the router's RLOC16, and of the RLOC16 of each of its children.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Schema)]
@@ -451,16 +431,6 @@ pub struct Router {
 pub struct RouterId(pub u8);
 
 impl RouterId {
-    /// `OT_NETWORK_MAX_ROUTER_ID`
-    pub const MAX: u8 = 62;
-    /// The number of IDs, and so the most routers a table can list.
-    pub const COUNT: usize = Self::MAX as usize + 1;
-
-    /// Every ID, in order.
-    pub fn all() -> impl Iterator<Item = RouterId> {
-        (0..=Self::MAX).map(RouterId)
-    }
-
     /// The RLOC16 of the router with this ID.
     pub fn rloc16(self) -> u16 {
         (self.0 as u16) << 10
@@ -471,21 +441,6 @@ impl RouterId {
     pub fn of_rloc16(rloc16: u16) -> RouterId {
         RouterId((rloc16 >> 10) as u8)
     }
-}
-
-/// A board's route to a router. A `cost` covers the whole path: each link on
-/// it adds 1 if it is good, 2 if it is medium and 4 if it is poor.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Schema)]
-#[cfg_attr(feature = "defmt", derive(defmt::Format))]
-pub enum Route {
-    /// The router is the board itself.
-    ThisBoard,
-    /// The board sends directly to the router over their radio link.
-    Direct { cost: u8 },
-    /// The board sends to another router, which forwards the message.
-    Relayed { next_hop: RouterId, cost: u8 },
-    /// The board has no route to the router.
-    Unreachable,
 }
 
 /// What the radio coprocessor (CPU2) is running.
@@ -1724,8 +1679,6 @@ mod tests {
         assert_eq!(RouterId::of_rloc16(0x6c00), RouterId(27));
         // A child of that router.
         assert_eq!(RouterId::of_rloc16(0x6c01), RouterId(27));
-        assert_eq!(RouterId::all().count(), RouterId::COUNT);
-        assert_eq!(RouterId::all().last(), Some(RouterId(62)));
     }
 
     #[test]

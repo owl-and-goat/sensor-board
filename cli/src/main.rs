@@ -17,8 +17,7 @@ use clap::{Args, Parser, Subcommand};
 use board::Board;
 use network::SavedDataset;
 use protocol::{
-    BoardId, HeaterDuration, HeaterPower, Link, NetworkStatus, Precision, Role, RouterId, Sensor,
-    SensorValue, TempRh, TempRhReq,
+    BoardId, HeaterDuration, HeaterPower, Precision, Sensor, SensorValue, TempRh, TempRhReq,
 };
 
 #[derive(Parser)]
@@ -149,12 +148,6 @@ enum NetworkCommand {
     Leave(Target),
     /// Print the dataset of a board's network. It contains the network key
     Dataset(Target),
-    /// Print a board's neighbor table: its children, and the routers it has a direct radio link
-    /// with, other than its parent
-    Neighbors(Target),
-    /// Print a board's router table: every router on its network, and whether the board reaches it
-    /// directly or through another router
-    Routers(Target),
     /// Print a board's IPv6 addresses. Prometheus needs a routable one to scrape the board
     Addresses(Target),
     /// Show whether a board has registered its scrape endpoint with the border router, which
@@ -345,37 +338,6 @@ async fn main() -> Result<()> {
             match board.dataset().await? {
                 Some(dataset) => println!("{dataset}"),
                 None => bail!("board {} has no network", board.serial()),
-            }
-            Ok(())
-        }
-        Command::Network(NetworkCommand::Neighbors(target)) => {
-            let board = target.board().await?;
-            let table = board.neighbors().await?;
-            if table.neighbors.is_empty() {
-                println!("Board {} has no neighbors.", board.serial());
-            } else {
-                print!("{}", network::describe_neighbors(&table));
-            }
-            if let NetworkStatus::Configured(Link {
-                role: Role::Child,
-                rloc16,
-                ..
-            }) = board.network_status().await?
-            {
-                println!(
-                    "The board is a child of router {:#06x}, which the table leaves out.",
-                    RouterId::of_rloc16(rloc16).rloc16()
-                );
-            }
-            Ok(())
-        }
-        Command::Network(NetworkCommand::Routers(target)) => {
-            let board = target.board().await?;
-            let table = board.routers().await?;
-            if table.routers.is_empty() {
-                println!("Board {} knows of no routers.", board.serial());
-            } else {
-                print!("{}", network::describe_routers(&table));
             }
             Ok(())
         }

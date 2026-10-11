@@ -123,8 +123,6 @@ unambiguous prefix of it.
   cargo run -- list                        # every board: firmware build, network status
   cargo run -- network init                # put all attached boards on one thread network
   cargo run -- network dataset --board 4b  # that network's dataset, hex (holds the network key)
-  cargo run -- network neighbors --board 4b  # that board's direct neighbors and their link quality
-  cargo run -- network routers --board 4b  # every router, and the board's route to it
   cargo run -- network leave --board 4d
   cargo run -- coprocessor status --board 4d           # what cpu2 has installed and is running
   cargo run -- coprocessor install <image> --board 4d  # see "a new board" below
@@ -184,7 +182,8 @@ network for that.
   device that was asked: the attached board, or the border router. they show
   as =-= for a board that has no direct radio link with that device, and for
   the attached board itself. the attached board's parent also shows =-=
-  while the attached board is a child, as in =network neighbors=.
+  while the attached board is a child, because its neighbor table leaves the
+  parent out.
 - the border router's api has no age or rssi, and it has the quality only for
   boards that are routers.
 

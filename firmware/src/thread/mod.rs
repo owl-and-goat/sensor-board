@@ -20,8 +20,7 @@
 //! never reads or writes memory that something else owns, however a call
 //! ends. CPU2 reads the dataset to join from that memory, which is why a
 //! board is given a dataset instead of being asked to create one. CPU2
-//! writes the entries of its neighbor and router tables there, one entry per
-//! call.
+//! writes the entries of its neighbor table there, one entry per call.
 
 use core::cell::{Cell, RefCell};
 use core::fmt::Write as _;
@@ -30,7 +29,7 @@ use core::net::{Ipv6Addr, SocketAddrV6};
 use defmt::info;
 use embassy_futures::{
     join::join,
-    select::{Either, Either3, Either4, select, select_array, select3, select4},
+    select::{Either, Either4, select, select_array, select4},
 };
 use embassy_stm32_wpan::{
     shci::SchiCommandStatus,
@@ -44,7 +43,7 @@ use embassy_time::{Duration, Instant};
 use protocol::{
     Addresses, AddressesResult, BoardId, CONFIG_PORT, DISCOVERY_PORT, Dataset, HOST_NAME_PREFIX,
     Link, NeighborTable, NeighborsResult, NetworkError, NetworkResult, NetworkStatus, OtError,
-    Registration, RegistrationError, Router, RouterId, RouterTable, RoutersResult, UPDATE_PORT,
+    Registration, RegistrationError, UPDATE_PORT,
 };
 use static_cell::StaticCell;
 
@@ -110,11 +109,9 @@ enum Request {
     Leave,
 }
 
-/// Requests from the [`Handle`] for the neighbor table, the router table and
-/// the board's addresses. Each has its own response type, so each has its
-/// own channel.
+/// Requests from the [`Handle`] for the neighbor table and the board's
+/// addresses. Each has its own response type, so each has its own channel.
 struct NeighborsRequest;
-struct RoutersRequest;
 struct AddressesRequest;
 
 /// A TCP service to register with the network's SRP server, so that it can
@@ -243,7 +240,6 @@ const REQUEST_TIMEOUT: Duration = Duration::from_secs(5);
 struct Shared {
     requests: request::Channel<Request, NetworkResult>,
     neighbor_requests: request::Channel<NeighborsRequest, NeighborsResult>,
-    router_requests: request::Channel<RoutersRequest, RoutersResult>,
     address_requests: request::Channel<AddressesRequest, AddressesResult>,
     /// One per [`Port`], at the port's index.
     sockets: [SocketShared; Port::ALL.len()],
@@ -257,7 +253,6 @@ struct Shared {
 struct Buffers {
     active_dataset: ot::DatasetBuffer,
     next_neighbor: ot::NeighborBuffer,
-    next_hop: ot::NextHopBuffer,
     /// One for each [`Port`]'s socket, at the port's index.
     udp: [ot::UdpBuffer; Port::ALL.len()],
     tcp: ot::TcpBuffer,
@@ -272,7 +267,6 @@ pub fn init() -> (Handle, Sockets, Tcp, Service) {
     let shared: &'static Shared = SHARED.init(Shared {
         requests: request::Channel::new(),
         neighbor_requests: request::Channel::new(),
-        router_requests: request::Channel::new(),
         address_requests: request::Channel::new(),
         sockets: [const { SocketShared::new() }; Port::ALL.len()],
         tcp_requests: request::Channel::new(),
@@ -286,7 +280,6 @@ pub fn init() -> (Handle, Sockets, Tcp, Service) {
         buffers: Buffers {
             active_dataset: ot::DatasetBuffer::new(),
             next_neighbor: ot::NeighborBuffer::new(),
-            next_hop: ot::NextHopBuffer::new(),
             udp: [const { ot::UdpBuffer::new() }; Port::ALL.len()],
             tcp: ot::TcpBuffer::new(),
             srp: ot::SrpBuffer::new(),
@@ -295,13 +288,11 @@ pub fn init() -> (Handle, Sockets, Tcp, Service) {
 
     let (client, server) = shared.requests.split();
     let (neighbor_client, neighbor_server) = shared.neighbor_requests.split();
-    let (router_client, router_server) = shared.router_requests.split();
     let (address_client, address_server) = shared.address_requests.split();
     let (tcp_client, tcp_server) = shared.tcp_requests.split();
     let handle = Handle {
         requests: client,
         neighbor_requests: neighbor_client,
-        router_requests: router_client,
         address_requests: address_client,
         status: &shared.status,
     };
@@ -324,7 +315,6 @@ pub fn init() -> (Handle, Sockets, Tcp, Service) {
         requests: Requests {
             changes: server,
             neighbors: neighbor_server,
-            routers: router_server,
             addresses: address_server,
             sockets: [
                 report_server,
@@ -514,7 +504,6 @@ impl Monitor {
 pub struct Handle {
     requests: request::Client<Request, NetworkResult>,
     neighbor_requests: request::Client<NeighborsRequest, NeighborsResult>,
-    router_requests: request::Client<RoutersRequest, RoutersResult>,
     address_requests: request::Client<AddressesRequest, AddressesResult>,
     status: &'static Status,
 }
@@ -562,14 +551,6 @@ impl Handle {
             .unwrap_or(Err(NetworkError::Unresponsive))
     }
 
-    /// Every router on the board's network, and the board's route to it.
-    pub async fn routers(&mut self) -> RoutersResult {
-        self.router_requests
-            .call(RoutersRequest, REQUEST_TIMEOUT)
-            .await
-            .unwrap_or(Err(NetworkError::Unresponsive))
-    }
-
     /// The board's IPv6 unicast addresses.
     pub async fn addresses(&mut self) -> AddressesResult {
         self.address_requests
@@ -602,7 +583,6 @@ pub struct Thread<'a, 'd> {
 struct Requests {
     changes: request::Server<Request, NetworkResult>,
     neighbors: request::Server<NeighborsRequest, NeighborsResult>,
-    routers: request::Server<RoutersRequest, RoutersResult>,
     addresses: request::Server<AddressesRequest, AddressesResult>,
     /// One per [`Port`], at the port's index.
     sockets: [request::Server<SocketRequest, NetworkResult>; Port::ALL.len()],
@@ -613,7 +593,6 @@ struct Requests {
 enum Incoming {
     Change(request::Pending, Request),
     Neighbors(request::Pending),
-    Routers(request::Pending),
     Addresses(request::Pending),
     Socket(request::Pending, Port, SocketRequest),
     Tcp(request::Pending, TcpRequest),
@@ -622,11 +601,7 @@ enum Incoming {
 impl Requests {
     async fn receive(&self) -> Incoming {
         let sockets = self.sockets.each_ref().map(|socket| socket.receive());
-        let tables = select3(
-            self.neighbors.receive(),
-            self.routers.receive(),
-            self.addresses.receive(),
-        );
+        let tables = select(self.neighbors.receive(), self.addresses.receive());
         let next = select4(
             self.changes.receive(),
             tables,
@@ -635,13 +610,10 @@ impl Requests {
         );
         match next.await {
             Either4::First((pending, request)) => Incoming::Change(pending, request),
-            Either4::Second(Either3::First((pending, NeighborsRequest))) => {
+            Either4::Second(Either::First((pending, NeighborsRequest))) => {
                 Incoming::Neighbors(pending)
             }
-            Either4::Second(Either3::Second((pending, RoutersRequest))) => {
-                Incoming::Routers(pending)
-            }
-            Either4::Second(Either3::Third((pending, AddressesRequest))) => {
+            Either4::Second(Either::Second((pending, AddressesRequest))) => {
                 Incoming::Addresses(pending)
             }
             Either4::Third(((pending, request), socket)) => {
@@ -656,7 +628,6 @@ impl Requests {
         match incoming {
             Incoming::Change(pending, _) => self.changes.respond(pending, Err(error)),
             Incoming::Neighbors(pending) => self.neighbors.respond(pending, Err(error)),
-            Incoming::Routers(pending) => self.routers.respond(pending, Err(error)),
             Incoming::Addresses(pending) => self.addresses.respond(pending, Err(error)),
             Incoming::Socket(pending, port, _) => {
                 self.sockets[port.index()].respond(pending, Err(error))
@@ -896,10 +867,6 @@ impl Network<'_, '_> {
             Incoming::Neighbors(pending) => {
                 let neighbors = self.neighbors().await;
                 self.requests.neighbors.respond(pending, neighbors);
-            }
-            Incoming::Routers(pending) => {
-                let routers = self.routers().await;
-                self.requests.routers.respond(pending, routers);
             }
             Incoming::Addresses(pending) => {
                 let addresses = self.ot.ip6_unicast_addresses().await;
@@ -1307,23 +1274,6 @@ impl Network<'_, '_> {
                 table.truncated = true;
                 break;
             }
-        }
-        Ok(table)
-    }
-
-    /// Every router the stack knows of, and the route to each.
-    async fn routers(&mut self) -> RoutersResult {
-        let mut table = RouterTable::default();
-        for id in RouterId::all() {
-            if !self.ot.thread_is_router_id_allocated(id).await {
-                continue;
-            }
-            let route = self
-                .ot
-                .thread_get_next_hop_and_path_cost(&self.buffers.next_hop, id)
-                .await;
-            // Cannot fail: the table has room for a router of every ID.
-            let _ = table.routers.push(Router { id, route });
         }
         Ok(table)
     }

@@ -12,8 +12,8 @@ use std::{
 
 use anyhow::{Context, Result, bail};
 use protocol::{
-    Address, Addresses, Dataset, HOST_NAME_PREFIX, Link, Neighbor, NeighborTable, NetworkStatus,
-    Registration, Route, Router, RouterTable, SCRAPE_SERVICE,
+    Address, Addresses, Dataset, HOST_NAME_PREFIX, Link, NetworkStatus, Registration,
+    SCRAPE_SERVICE,
 };
 use rand::RngExt;
 
@@ -312,61 +312,6 @@ pub fn describe_link(link: &Link) -> String {
     }
 }
 
-/// Format the table as text: a heading, then one line per neighbor.
-pub fn describe_neighbors(table: &NeighborTable) -> String {
-    let mut text = format!(
-        "{:<6}  {:<6}  {:<16}  {:>7}  {:>7}  {:>8}  {:>9}  {:>6}\n",
-        "Kind", "RLOC16", "Extended address", "Age", "Quality", "Avg RSSI", "Last RSSI", "Margin"
-    );
-    for neighbor in &table.neighbors {
-        let Neighbor {
-            kind,
-            rloc16,
-            ext_address,
-            age_secs,
-            link_quality_in,
-            average_rssi,
-            last_rssi,
-            link_margin,
-        } = neighbor;
-        let (age, average_rssi, last_rssi, link_margin) = (
-            format!("{age_secs} s"),
-            format!("{average_rssi} dBm"),
-            format!("{last_rssi} dBm"),
-            format!("{link_margin} dB"),
-        );
-        text += &format!(
-            "{kind:<6}  {rloc16:#06x}  {ext_address:<16}  {age:>7}  {link_quality_in:>7}  \
-             {average_rssi:>8}  {last_rssi:>9}  {link_margin:>6}\n",
-        );
-    }
-    if table.truncated {
-        text += "The board has more neighbors than these.\n";
-    }
-    text
-}
-
-/// Format the table as text: a heading, then one line per router.
-pub fn describe_routers(table: &RouterTable) -> String {
-    let mut text = format!("{:<6}  {:<10}  {:>9}\n", "RLOC16", "Reached", "Path cost");
-    for Router { id, route } in &table.routers {
-        let (reached, cost) = match route {
-            Route::ThisBoard => ("this board".to_owned(), None),
-            Route::Direct { cost } => ("directly".to_owned(), Some(cost)),
-            Route::Relayed { next_hop, cost } => {
-                (format!("via {:#06x}", next_hop.rloc16()), Some(cost))
-            }
-            Route::Unreachable => ("no route".to_owned(), None),
-        };
-        let rloc16 = id.rloc16();
-        text += &match cost {
-            Some(cost) => format!("{rloc16:#06x}  {reached:<10}  {cost:>9}\n"),
-            None => format!("{rloc16:#06x}  {reached}\n"),
-        };
-    }
-    text
-}
-
 /// Format the addresses as text, one per line, each with its kind.
 pub fn describe_addresses(addresses: &Addresses) -> String {
     let mut text = String::new();
@@ -396,70 +341,9 @@ pub fn describe_registration(serial: &str, registration: &Registration) -> Strin
 
 #[cfg(test)]
 mod tests {
-    use protocol::{ExtAddress, NeighborKind, RegistrationError, RouterId};
+    use protocol::RegistrationError;
 
     use super::*;
-
-    #[test]
-    fn router_table_columns_are_aligned() {
-        let mut table = RouterTable::default();
-        let routes = [
-            (24, Route::Direct { cost: 1 }),
-            (27, Route::ThisBoard),
-            (
-                47,
-                Route::Relayed {
-                    next_hop: RouterId(24),
-                    cost: 3,
-                },
-            ),
-            (58, Route::Unreachable),
-        ];
-        for (id, route) in routes {
-            let id = RouterId(id);
-            table.routers.push(Router { id, route }).unwrap();
-        }
-
-        assert_eq!(
-            describe_routers(&table),
-            "RLOC16  Reached     Path cost\n\
-             0x6000  directly            1\n\
-             0x6c00  this board\n\
-             0xbc00  via 0x6000          3\n\
-             0xe800  no route\n"
-        );
-    }
-
-    #[test]
-    fn neighbor_table_columns_are_aligned() {
-        let neighbor = Neighbor {
-            kind: NeighborKind::Child,
-            rloc16: 0xd401,
-            ext_address: ExtAddress([0x02, 0xa1, 0, 0, 0, 0, 0x0f, 0xff]),
-            age_secs: 3,
-            link_quality_in: 3,
-            average_rssi: -18,
-            last_rssi: -20,
-            link_margin: 82,
-        };
-        let mut table = NeighborTable::default();
-        table.neighbors.push(neighbor).unwrap();
-        let router = Neighbor {
-            kind: NeighborKind::Router,
-            rloc16: 0x0c00,
-            age_secs: 120,
-            average_rssi: -101,
-            ..neighbor
-        };
-        table.neighbors.push(router).unwrap();
-
-        assert_eq!(
-            describe_neighbors(&table),
-            "Kind    RLOC16  Extended address      Age  Quality  Avg RSSI  Last RSSI  Margin\n\
-             child   0xd401  02a1000000000fff      3 s        3   -18 dBm    -20 dBm   82 dB\n\
-             router  0x0c00  02a1000000000fff    120 s        3  -101 dBm    -20 dBm   82 dB\n"
-        );
-    }
 
     fn dataset(byte: u8) -> Dataset {
         Dataset::from_tlvs(&[0, 1, byte]).unwrap()
