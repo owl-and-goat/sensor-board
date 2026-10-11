@@ -289,21 +289,25 @@ selects how the board exports its metrics (see "metrics" above):
   cargo run -- config show
 #+end_src
 
-with =--remote <serial>=, both commands apply to a board that is not
-attached. an attached board asks it over their network, and gives up after
-six seconds. with no board attached, or with =--border-router=, this machine
-asks it instead: it sends the request to every device that the border router
-lists, as =network show= does, and waits as long. =--remote= takes the
-board's full serial number, as =network show= prints it.
+=--board <serial>= names the board, whether it is attached or not. for an
+attached board the start of the serial number is enough, and the commands go
+over usb. a board that is not attached needs its whole serial number, as
+=network show= prints it. an attached board that is on a network asks it
+over that network, and gives up after six seconds. with no such board
+attached, or with =--border-router=, this machine asks it instead: it sends
+the request to every device that the border router lists, as =network show=
+does, and waits as long.
 
 #+begin_src sh
-  cargo run -- config set --remote 4D0021000350475532303120 --sensor temperature=30s
-  cargo run -- config show --remote 4D0021000350475532303120 --border-router
+  cargo run -- config show --board 4d    # an attached board
+  cargo run -- config set --board 4B002E000350475532303120 --sensor temperature=30s
+  cargo run -- config show --board 4B002E000350475532303120 --border-router
 #+end_src
 
-tested through the border router on 2026-10-11: reading the configurations
-of five boards, and changing one on an attached board, as seen over usb. not
-tested: the commands with no board attached.
+tested on 2026-10-11: reading the configuration of a board that is not
+attached through an attached one, reading the configurations of five boards
+through the border router, and changing one there on an attached board, as
+seen over usb. not tested: the commands with no board attached.
 
 a firmware that changes the layout of the configuration (by adding a sensor,
 for example) cannot read a configuration that the previous firmware stored.

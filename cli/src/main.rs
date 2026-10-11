@@ -255,44 +255,36 @@ impl Target {
     }
 }
 
-/// The board that a `config` command applies to: an attached board, or a board on a network that
-/// an attached board or the border router reaches.
+/// The board that a `config` command applies to, attached or not.
 #[derive(Args)]
 struct ConfigTarget {
-    /// The full serial number of a board that is not attached. An attached board relays the
-    /// command to it over their network. With no board attached, this machine sends it through
-    /// the border router
+    /// The board's serial number. The start of it is enough for an attached board, and it can
+    /// be left out if only one board is attached. A board that is not attached is reached
+    /// through an attached board that is on a network, or else through the border router
     #[arg(long, value_name = "SERIAL")]
-    remote: Option<BoardId>,
+    board: Option<String>,
 
-    /// Go through the border router whose REST API is at this address, or at cerberus:8081 if
-    /// no address is given, even if a board is attached. Needs --remote
+    /// Reach the board through the border router whose REST API is at this address, or at
+    /// cerberus:8081 if no address is given, whatever is attached
     #[arg(
         long,
         value_name = "HOST:PORT",
         num_args = 0..=1,
-        default_missing_value = border_router::DEFAULT_ADDRESS,
-        conflicts_with = "board"
+        default_missing_value = border_router::DEFAULT_ADDRESS
     )]
     border_router: Option<String>,
-
-    #[command(flatten)]
-    attached: Target,
 }
 
 impl ConfigTarget {
-    async fn route(&self) -> Result<config::Route> {
-        match border_router_for(&self.border_router, &self.attached.board).await? {
-            Some(address) => Ok(config::Route::BorderRouter(
-                config::Devices::of(&address).await?,
-            )),
-            None => Ok(config::Route::Attached(self.attached.board().await?)),
-        }
+    /// The way to reach the board, and the board.
+    async fn route(&self) -> Result<(config::Route, BoardId)> {
+        config::route(self.board.as_deref(), self.border_router.as_deref()).await
     }
 }
 
-/// The border router to go through instead of an attached board, if any: the one that the
-/// command names, or the default one if the command names no board either and none is attached.
+/// The border router for `firmware push` to go through instead of an attached board, if any: the
+/// one that the command names, or the default one if it names no board either and none is
+/// attached.
 async fn border_router_for(
     border_router: &Option<String>,
     board: &Option<String>,
@@ -473,10 +465,12 @@ async fn main() -> Result<()> {
             Ok(())
         }
         Command::Config(ConfigCommand::Show(target)) => {
-            config::show(target.route().await?, target.remote).await
+            let (route, board) = target.route().await?;
+            config::show(route, board).await
         }
         Command::Config(ConfigCommand::Set { changes, target }) => {
-            config::set(target.route().await?, target.remote, &changes).await
+            let (route, board) = target.route().await?;
+            config::set(route, board, &changes).await
         }
         Command::Sensor(SensorCommand::TempRh {
             precision,

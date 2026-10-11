@@ -20,7 +20,7 @@ use tokio::{
 };
 
 use crate::{
-    board::Board,
+    board::{self, Board},
     border_router::{self, BorderRouter},
 };
 
@@ -111,19 +111,85 @@ pub enum Route {
     BorderRouter(Devices),
 }
 
-impl Route {
-    /// The board a command applies to: `remote`, or without it the attached
-    /// board.
-    fn target(&self, remote: Option<BoardId>) -> Result<BoardId> {
-        match (remote, self) {
-            (Some(remote), _) => Ok(remote),
-            (None, Route::Attached(board)) => board.id(),
-            (None, Route::BorderRouter(_)) => {
-                bail!("through the border router, --remote <serial> has to name the board")
-            }
-        }
+/// What `--board` names: one of the attached boards, by its index, or a
+/// board that is not attached.
+#[derive(Debug, PartialEq, Eq)]
+enum Named {
+    Attached(usize),
+    Remote(BoardId),
+}
+
+/// Find the board that `serial` names among the boards with the serial
+/// numbers `attached`. The start of a serial number is enough for an
+/// attached board, and with `None` the board is the only attached one. A
+/// board that is not attached needs its whole serial number.
+fn named(serial: Option<&str>, attached: &[&str]) -> Result<Named> {
+    let listed = || -> String { attached.iter().map(|s| format!("\n  {s}")).collect() };
+    let Some(serial) = serial else {
+        return match attached {
+            [_] => Ok(Named::Attached(0)),
+            [] => bail!("no board is attached: name a board on the network with --board"),
+            _ => bail!(
+                "several boards are attached; pick one with --board:{}",
+                listed()
+            ),
+        };
+    };
+
+    let prefix = serial.to_uppercase();
+    let matching = (0..attached.len()).filter(|&i| attached[i].starts_with(&prefix));
+    match matching.collect::<Vec<usize>>().as_slice() {
+        [index] => Ok(Named::Attached(*index)),
+        [] => match serial.parse() {
+            Ok(board) => Ok(Named::Remote(board)),
+            Err(_) => bail!(
+                "no attached board has a serial number starting with {prefix}. For a board that \
+                 is not attached, give the whole serial number"
+            ),
+        },
+        _ => bail!(
+            "several attached boards have a serial number starting with {prefix}:{}",
+            listed()
+        ),
+    }
+}
+
+/// Find the board that `serial` names (see [`named`]) and the way to reach
+/// it. An attached board is reached over USB. Any other board is reached
+/// through an attached board that is on a network, and without one through
+/// the default border router. `border_router` is the address of a border
+/// router to go through in any case.
+pub async fn route(serial: Option<&str>, border_router: Option<&str>) -> Result<(Route, BoardId)> {
+    if let Some(address) = border_router {
+        let board = serial.and_then(|serial| serial.parse().ok());
+        let Some(board) = board else {
+            bail!("through the border router, --board has to give the board's whole serial number");
+        };
+        return Ok((Route::BorderRouter(Devices::of(address).await?), board));
     }
 
+    let attached = board::devices().await?;
+    let serials: Vec<&str> = attached.iter().map(board::serial_of).collect();
+    match named(serial, &serials)? {
+        Named::Attached(index) => {
+            let board = Board::open(&attached[index]).await?;
+            let id = board.id()?;
+            Ok((Route::Attached(board), id))
+        }
+        Named::Remote(board) => match Board::first_on_network().await? {
+            Some(relay) => {
+                eprintln!("Asking through board {}.", relay.serial());
+                Ok((Route::Attached(relay), board))
+            }
+            None => {
+                let devices = Devices::of(border_router::DEFAULT_ADDRESS).await?;
+                Ok((Route::BorderRouter(devices), board))
+            }
+        },
+    }
+}
+
+impl Route {
     async fn get(&mut self, target: BoardId) -> Result<Option<BoardConfig>> {
         match self {
             Route::Attached(board) => board.board_config(target).await,
@@ -252,10 +318,8 @@ fn reply(datagram: &[u8], board: BoardId, question: u32) -> Option<Option<BoardC
     }
 }
 
-/// Print the configuration of `remote`, which `route` reaches over the
-/// network, or with `None` of the attached board.
-pub async fn show(mut route: Route, remote: Option<BoardId>) -> Result<()> {
-    let target = route.target(remote)?;
+/// Print the configuration of the board `target`, which `route` reaches.
+pub async fn show(mut route: Route, target: BoardId) -> Result<()> {
     match route.get(target).await? {
         Some(config) => print!("Board {target}\n{}", describe(&config)),
         None => println!("Board {target} has no configuration."),
@@ -263,13 +327,12 @@ pub async fn show(mut route: Route, remote: Option<BoardId>) -> Result<()> {
     Ok(())
 }
 
-/// Apply `changes` to the configuration of `remote`, which `route` reaches
-/// over the network, or with `None` to that of the attached board.
-pub async fn set(mut route: Route, remote: Option<BoardId>, changes: &Changes) -> Result<()> {
+/// Apply `changes` to the configuration of the board `target`, which `route`
+/// reaches.
+pub async fn set(mut route: Route, target: BoardId, changes: &Changes) -> Result<()> {
     if changes.is_empty() {
         bail!("nothing to change: give --id, --power-mode, --sensor or --pushgateway");
     }
-    let target = route.target(remote)?;
     let current = route.get(target).await?;
     let config = match changes.apply(current) {
         Ok(config) => config,
@@ -503,6 +566,35 @@ mod tests {
         assert!(lines.contains(&"  capacitance1  off"), "{text}");
         assert!(lines.contains(&"  temperature   every 5m"), "{text}");
         assert_eq!(lines.len(), 3 + Sensor::value_variants().len());
+    }
+
+    #[test]
+    fn board_is_named_by_the_start_of_its_serial_if_attached() {
+        let attached = ["4C0032000350475532303120", "4D0021000350475532303120"];
+        let remote = "4B002E000350475532303120";
+
+        assert_eq!(named(Some("4d"), &attached).unwrap(), Named::Attached(1));
+        assert_eq!(
+            named(Some(attached[0]), &attached).unwrap(),
+            Named::Attached(0)
+        );
+        assert_eq!(
+            named(Some(remote), &attached).unwrap(),
+            Named::Remote(remote.parse().unwrap())
+        );
+        assert_eq!(
+            named(Some(remote), &[]).unwrap(),
+            Named::Remote(remote.parse().unwrap())
+        );
+        // The start of a serial number does not name a board that is not
+        // attached, and "4" names both attached boards.
+        assert!(named(Some("4B00"), &attached).is_err());
+        assert!(named(Some("4"), &attached).is_err());
+
+        // Without a serial number, the only attached board.
+        assert_eq!(named(None, &attached[..1]).unwrap(), Named::Attached(0));
+        assert!(named(None, &attached).is_err());
+        assert!(named(None, &[]).is_err());
     }
 
     #[test]
