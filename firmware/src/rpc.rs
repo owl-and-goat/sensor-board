@@ -19,15 +19,15 @@ use postcard_rpc::server::impls::embassy_usb_v0_6::dispatch_impl::spawn_fn;
 use protocol::{
     AddressesResult, ApplyUpdate, BeginInstall, BeginUpdate, BoardConfigResult, BoardDiscovered,
     BoardId, BoardInfo, ConfigFor, ConfigResult, CoprocessorResult, CoprocessorStatus, Dataset,
-    DiscoverBoards, ENDPOINT_LIST, EnterBootloader, FinishInstall, FinishUpdate, FirmwareStatus,
-    GetBoardConfig, GetBoardInfo, GetCoprocessorStatus, GetFirmwareStatus, GetMetrics,
-    GetNetworkAddresses, GetNetworkDataset, GetNetworkNeighbors, GetNetworkStatus,
-    GetOfferProgress, GetRegistration, ImageChunk, ImageSize, JoinNetwork, LeaveNetwork,
-    MeasureTempRh, Member, MetricsChunk, NeighborsResult, NetworkResult, NetworkStatus,
-    OfferProgress, ReadSensorValue, Registration, Report, ReportReceived, SensorReadError,
-    SensorReadReq, SensorReadResult, SetBoardConfig, StartCollecting, StartOffering,
-    StopCollecting, StopOffering, TOPICS_IN_LIST, TOPICS_OUT_LIST, TempRhReq, TempRhResult,
-    UninstallStack, UpdateImage, UpdateResult, WriteInstall, WriteUpdate,
+    DeviceModeResult, DiscoverBoards, ENDPOINT_LIST, EnterBootloader, FinishInstall, FinishUpdate,
+    FirmwareStatus, GetBoardConfig, GetBoardInfo, GetCoprocessorStatus, GetDeviceMode,
+    GetFirmwareStatus, GetMetrics, GetNetworkAddresses, GetNetworkDataset, GetNetworkNeighbors,
+    GetNetworkStatus, GetOfferProgress, GetRegistration, ImageChunk, ImageSize, JoinNetwork,
+    LeaveNetwork, MeasureTempRh, Member, MetricsChunk, NeighborsResult, NetworkResult,
+    NetworkStatus, OfferProgress, ReadSensorValue, Registration, Report, ReportReceived,
+    SensorReadError, SensorReadReq, SensorReadResult, SetBoardConfig, StartCollecting,
+    StartOffering, StopCollecting, StopOffering, TOPICS_IN_LIST, TOPICS_OUT_LIST, TempRhReq,
+    TempRhResult, UninstallStack, UpdateImage, UpdateResult, WriteInstall, WriteUpdate,
 };
 
 use crate::{
@@ -93,6 +93,7 @@ define_dispatch! {
         | GetMetrics           | blocking | metrics_text       |
         | DiscoverBoards       | async    | discover_boards    |
         | GetRegistration      | blocking | registration       |
+        | GetDeviceMode        | blocking | device_mode        |
     };
     topics_in: {
         list: TOPICS_IN_LIST;
@@ -197,6 +198,10 @@ async fn network_addresses(context: &mut Context, _header: VarHeader, (): ()) ->
 
 fn registration(context: &mut Context, _header: VarHeader, (): ()) -> Registration {
     context.thread.registration()
+}
+
+fn device_mode(context: &mut Context, _header: VarHeader, (): ()) -> DeviceModeResult {
+    context.thread.device_mode()
 }
 
 fn metrics_text(context: &mut Context, _header: VarHeader, offset: u32) -> MetricsChunk {

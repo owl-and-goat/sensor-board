@@ -21,10 +21,16 @@
 //! ends. CPU2 reads the dataset to join from that memory, which is why a
 //! board is given a dataset instead of being asked to create one. CPU2
 //! writes the entries of its neighbor table there, one entry per call.
+//!
+//! The board's configuration selects its [`DeviceMode`]. A board on aux power
+//! is a full Thread device. A board on battery is a sleepy end device: its
+//! receiver is off, and its parent keeps the messages for it until the board
+//! listens ([`device_mode`]).
 
 use core::cell::{Cell, RefCell};
 use core::fmt::Write as _;
 use core::net::{Ipv6Addr, SocketAddrV6};
+use core::time;
 
 use defmt::info;
 use embassy_futures::{
@@ -32,22 +38,23 @@ use embassy_futures::{
     select::{Either, Either4, select, select_array, select4},
 };
 use embassy_stm32_wpan::{
-    shci::SchiCommandStatus,
+    shci::{SchiCommandStatus, ShciOpcode},
     sub::thread::{ThreadCliRx, ThreadNotifRx, ThreadOt},
 };
 use embassy_sync::{
     blocking_mutex::{Mutex, raw::ThreadModeRawMutex},
     channel::{self, Channel},
 };
-use embassy_time::{Duration, Instant};
+use embassy_time::{Duration, Instant, Timer};
 use protocol::{
-    Addresses, AddressesResult, BoardId, CONFIG_PORT, DISCOVERY_PORT, Dataset, HOST_NAME_PREFIX,
-    Link, NeighborTable, NeighborsResult, NetworkError, NetworkResult, NetworkStatus, OtError,
-    Registration, RegistrationError, UPDATE_PORT,
+    Addresses, AddressesResult, BoardConfig, BoardId, CONFIG_PORT, DISCOVERY_PORT, Dataset,
+    DeviceMode, DeviceModeResult, HOST_NAME_PREFIX, Link, NeighborTable, NeighborsResult,
+    NetworkError, NetworkResult, NetworkStatus, OtError, PowerMode, Registration,
+    RegistrationError, UPDATE_PORT,
 };
 use static_cell::StaticCell;
 
-use crate::{persistent_config, radio_flash, request};
+use crate::{board_config, persistent_config, radio_flash, request};
 
 mod ffi;
 mod ot;
@@ -130,6 +137,78 @@ pub struct SrpService {
 /// most. The SRP client renews the registration at half this interval.
 const REGISTRATION_LEASE: Duration = Duration::from_secs(120);
 
+/// The link mode of a full Thread device, and that of a sleepy end device.
+const FULL_DEVICE: ot::LinkMode = ot::LinkMode {
+    rx_on_when_idle: true,
+    full_device: true,
+    full_network_data: true,
+};
+const SLEEPY_END_DEVICE: ot::LinkMode = ot::LinkMode {
+    rx_on_when_idle: false,
+    full_device: false,
+    full_network_data: true,
+};
+
+/// The unit of a CSL period: 802.15.4 counts it in tens of symbols.
+const CSL_PERIOD_UNIT: time::Duration = time::Duration::from_micros(160);
+
+/// The shortest CSL period that the stack accepts, just under 10 ms, and the
+/// longest one that 802.15.4 has, about 10.5 s: the count of units is
+/// sixteen bits.
+const MIN_CSL_PERIOD: time::Duration = time::Duration::from_micros(62 * 160);
+const MAX_CSL_PERIOD: time::Duration = time::Duration::from_micros(0xffff * 160);
+
+/// How long a parent keeps a child that it does not hear from, unless the
+/// child polls so rarely that it needs longer: the stack's default.
+const CHILD_TIMEOUT: time::Duration = time::Duration::from_secs(240);
+
+/// The longest data poll period. The child timeout is twice the poll period,
+/// so that one missed poll does not cost the board its parent, and the stack
+/// limits the child timeout to eight hours.
+const MAX_POLL_PERIOD: time::Duration = time::Duration::from_secs(4 * 60 * 60);
+
+/// The data poll period of a board on battery that has no sensor enabled.
+/// Such a board has nothing to send, and polls only to stay on its network.
+const IDLE_POLL_PERIOD: time::Duration = time::Duration::from_secs(120);
+
+/// The data poll period of a sleepy board while it may get an answer: while
+/// it has a TCP connection, and for [`ANSWER_TIME`] after it has sent a
+/// datagram. An answer arrives at the parent after the board has stopped
+/// listening, and waits there for the next poll.
+const FAST_POLL_PERIOD: time::Duration = time::Duration::from_millis(100);
+const ANSWER_TIME: Duration = Duration::from_secs(2);
+
+/// The mode of a board with this configuration.
+///
+/// A board on battery wakes to read a sensor and to push its metrics, so it
+/// uses its radio once in the shortest poll interval of its sensors anyway.
+/// It listens for messages at that same interval, and not more often. If the
+/// interval is short enough to be a CSL period, the board is a synchronized
+/// sleepy end device. Otherwise it polls its parent.
+fn device_mode(config: Option<&BoardConfig>) -> DeviceMode {
+    // A board without a configuration is taken to be on aux power.
+    let Some(config) = config.filter(|config| config.power_mode == PowerMode::Battery) else {
+        return DeviceMode::Full;
+    };
+    match config.sensor_config.shortest_interval() {
+        Some(interval) if interval <= MAX_CSL_PERIOD => {
+            // A CSL period is a whole number of units. The interval is short
+            // enough for its microseconds to fit in 32 bits.
+            let units = interval.as_micros() as u32 / CSL_PERIOD_UNIT.as_micros() as u32;
+            let period = CSL_PERIOD_UNIT * units;
+            DeviceMode::SynchronizedSleepy {
+                csl_period: period.max(MIN_CSL_PERIOD),
+            }
+        }
+        Some(interval) => DeviceMode::Sleepy {
+            poll_period: interval.min(MAX_POLL_PERIOD),
+        },
+        None => DeviceMode::Sleepy {
+            poll_period: IDLE_POLL_PERIOD,
+        },
+    }
+}
+
 /// A request from the [`Tcp`] handle. The response is sent when the
 /// operation completes or fails. Some operations wait for the peer.
 enum TcpRequest {
@@ -199,10 +278,12 @@ impl SocketShared {
 }
 
 /// What the service last published: the network status with the board's
-/// addresses at that time, and the state of the service registration.
+/// addresses at that time, the state of the service registration, and the
+/// device mode.
 struct Status {
     network: Mutex<ThreadModeRawMutex, RefCell<(NetworkStatus, Addresses)>>,
     registration: Mutex<ThreadModeRawMutex, Cell<Registration>>,
+    mode: Mutex<ThreadModeRawMutex, Cell<DeviceModeResult>>,
 }
 
 impl Status {
@@ -218,6 +299,10 @@ impl Status {
         self.registration.lock(Cell::get)
     }
 
+    fn mode(&self) -> DeviceModeResult {
+        self.mode.lock(Cell::get)
+    }
+
     fn publish(&self, status: NetworkStatus, addresses: Addresses) {
         info!("thread: {}", status);
         self.network.lock(|s| s.replace((status, addresses)));
@@ -227,6 +312,11 @@ impl Status {
         if self.registration.lock(|r| r.replace(registration)) != registration {
             info!("thread: registration {}", registration);
         }
+    }
+
+    fn publish_mode(&self, mode: DeviceModeResult) {
+        info!("thread: device mode {}", mode);
+        self.mode.lock(|m| m.set(mode));
     }
 }
 
@@ -260,9 +350,10 @@ struct Buffers {
 }
 
 /// Create the [`Handle`], the [`Sockets`] and the [`Tcp`] handle for the rest
-/// of the firmware, and the [`Service`] for the coprocessor task to run.
-/// Panics if called a second time.
-pub fn init() -> (Handle, Sockets, Tcp, Service) {
+/// of the firmware, and the [`Service`] for the coprocessor task to run. The
+/// service takes the board's device mode from `config`. Panics if called a
+/// second time.
+pub fn init(config: board_config::Monitor) -> (Handle, Sockets, Tcp, Service) {
     static SHARED: StaticCell<Shared> = StaticCell::new();
     let shared: &'static Shared = SHARED.init(Shared {
         requests: request::Channel::new(),
@@ -276,6 +367,8 @@ pub fn init() -> (Handle, Sockets, Tcp, Service) {
                 Addresses::default(),
             ))),
             registration: Mutex::new(Cell::new(Registration::Off)),
+            // The stack starts as a full Thread device.
+            mode: Mutex::new(Cell::new(Ok(DeviceMode::Full))),
         },
         buffers: Buffers {
             active_dataset: ot::DatasetBuffer::new(),
@@ -330,6 +423,7 @@ pub fn init() -> (Handle, Sockets, Tcp, Service) {
             config_sender,
             discovery_sender,
         ],
+        config,
         status: &shared.status,
         buffers: &shared.buffers,
     };
@@ -524,6 +618,12 @@ impl Handle {
         self.status.registration()
     }
 
+    /// The device mode that the board last switched to, or why it could not
+    /// switch.
+    pub fn device_mode(&self) -> DeviceModeResult {
+        self.status.mode()
+    }
+
     /// The stored dataset: the network the board is configured for and
     /// rejoins at every power-up.
     pub fn dataset(&self) -> Option<Dataset> {
@@ -708,6 +808,8 @@ type ReceivedQueues =
 pub struct Service {
     requests: Requests,
     received: ReceivedQueues,
+    /// The board's configuration, which selects the device mode.
+    config: board_config::Monitor,
     status: &'static Status,
     buffers: &'static Buffers,
 }
@@ -734,8 +836,12 @@ impl Service {
             flash,
             requests: self.requests,
             received: self.received,
+            config: self.config,
             status: self.status,
             buffers: self.buffers,
+            mode: DeviceMode::Full,
+            poll_period: None,
+            answer_until: Instant::now(),
             listening: [false; Port::ALL.len()],
             tcp: TcpEndpoint {
                 ready: false,
@@ -770,6 +876,7 @@ impl Service {
 
 async fn unavailable(requests: Requests, status: &Status, error: NetworkError) -> ! {
     status.publish(NetworkStatus::Unavailable(error), Addresses::default());
+    status.publish_mode(Err(error));
     loop {
         let incoming = requests.receive().await;
         requests.reject(incoming, error);
@@ -790,8 +897,16 @@ struct Network<'a, 'd> {
     flash: &'a radio_flash::Shared<'d>,
     requests: Requests,
     received: ReceivedQueues,
+    config: board_config::Monitor,
     status: &'static Status,
     buffers: &'static Buffers,
+    /// The device mode that the stack has.
+    mode: DeviceMode,
+    /// The data poll period that the stack has. `None` is the stack's own.
+    poll_period: Option<time::Duration>,
+    /// Until when a sleepy board polls fast for an answer to a datagram
+    /// that it sent.
+    answer_until: Instant,
     /// Whether each [`Port`]'s socket is bound to its port.
     listening: [bool; Port::ALL.len()],
     tcp: TcpEndpoint,
@@ -805,6 +920,11 @@ impl Network<'_, '_> {
             unavailable(self.requests, self.status, e).await
         }
 
+        // Before the board attaches, so that a board on battery attaches as
+        // a sleepy end device and is never a router.
+        let mode = device_mode(self.config.config().as_ref());
+        self.set_device_mode(mode).await;
+
         if let Some(dataset) = persistent_config::dataset()
             && let Err(e) = self.rejoin(&dataset).await
         {
@@ -813,6 +933,16 @@ impl Network<'_, '_> {
         self.publish_status().await;
 
         loop {
+            self.update_poll_period().await;
+            let answer_until = self.answer_until;
+            let answer_time_over = async {
+                if Instant::now() < answer_until {
+                    Timer::at(answer_until).await
+                } else {
+                    core::future::pending().await
+                }
+            };
+
             // Accept an incoming connection only if the listener is active
             // and the endpoint has no connection.
             let accept_tcp =
@@ -824,10 +954,16 @@ impl Network<'_, '_> {
                 &self.buffers.tcp,
                 accept_tcp,
             );
-            match select(self.requests.receive(), notification).await {
-                Either::First(incoming) => self.handle_request(incoming).await,
-                Either::Second(ot::Notification::StateChanged) => self.publish_status().await,
-                Either::Second(ot::Notification::UdpReceived {
+            let next = select4(
+                self.requests.receive(),
+                notification,
+                self.config.changed(),
+                answer_time_over,
+            );
+            match next.await {
+                Either4::First(incoming) => self.handle_request(incoming).await,
+                Either4::Second(ot::Notification::StateChanged) => self.publish_status().await,
+                Either4::Second(ot::Notification::UdpReceived {
                     socket,
                     from,
                     payload,
@@ -840,15 +976,96 @@ impl Network<'_, '_> {
                         defmt::warn!("thread: nothing is taking datagrams; dropped one");
                     }
                 }
-                Either::Second(ot::Notification::Tcp(event)) => self.tcp_event(event).await,
-                Either::Second(ot::Notification::SrpUpdate(error)) => {
+                Either4::Second(ot::Notification::Tcp(event)) => self.tcp_event(event).await,
+                Either4::Second(ot::Notification::SrpUpdate(error)) => {
                     self.srp.last_error = error;
                     self.publish_registration();
                 }
-                Either::Second(ot::Notification::Other(id)) => {
+                Either4::Second(ot::Notification::Other(id)) => {
                     defmt::trace!("cpu2: notification {}", id);
                 }
+                Either4::Third(config) => {
+                    let mode = device_mode(config.as_ref());
+                    if mode != self.mode {
+                        self.set_device_mode(mode).await;
+                    }
+                }
+                // The next iteration slows the polls down again.
+                Either4::Fourth(()) => {}
             }
+        }
+    }
+
+    /// Switch the stack to `mode`. If the board is attached and the change
+    /// needs it, the stack detaches and attaches again by itself.
+    async fn set_device_mode(&mut self, mode: DeviceMode) {
+        let (link_mode, child_timeout, csl_period) = match mode {
+            DeviceMode::Full => (FULL_DEVICE, CHILD_TIMEOUT, time::Duration::ZERO),
+            DeviceMode::Sleepy { poll_period } => (
+                SLEEPY_END_DEVICE,
+                CHILD_TIMEOUT.max(2 * poll_period),
+                time::Duration::ZERO,
+            ),
+            DeviceMode::SynchronizedSleepy { csl_period } => {
+                (SLEEPY_END_DEVICE, CHILD_TIMEOUT, csl_period)
+            }
+        };
+
+        // The link mode comes last: with it the board attaches again, and
+        // tells its new parent the child timeout and the CSL period.
+        let switched = async {
+            let timeout = child_timeout.as_secs() as u32;
+            self.ot.thread_set_child_timeout(timeout).await;
+            let csl_period = csl_period.as_micros() as u32;
+            self.ot.link_set_csl_period(csl_period).await?;
+            self.ot.thread_set_link_mode(link_mode).await
+        };
+        let switched = switched.await;
+        if switched.is_ok() {
+            self.mode = mode;
+            // A full Thread device listens all the time. Only a sleepy
+            // board's radio is ever idle.
+            self.allow_radio_low_power(mode != DeviceMode::Full).await;
+        }
+        let published = switched.map(|()| mode).map_err(NetworkError::from);
+        self.status.publish_mode(published);
+    }
+
+    /// Tell CPU2 whether the 802.15.4 radio may enter its low-power mode
+    /// while it is idle (`SHCI_C2_RADIO_AllowLowPower`).
+    async fn allow_radio_low_power(&mut self, allow: bool) {
+        /// `THREAD_IP`, which selects the 802.15.4 radio.
+        const THREAD_IP: u8 = 1;
+
+        let mut flash = self.flash.lock().await;
+        let allowed: Result<SchiCommandStatus, ()> = flash
+            .sys()
+            .write_and_get_response(ShciOpcode::RadioAllowLowPower, &[THREAD_IP, allow as u8])
+            .await;
+        if !matches!(allowed, Ok(SchiCommandStatus::ShciSuccess)) {
+            defmt::warn!("thread: CPU2 rejected the radio's low-power setting");
+        }
+    }
+
+    /// Give the stack the data poll period that the board needs now.
+    async fn update_poll_period(&mut self) {
+        let answer_expected =
+            self.tcp.connection != Connection::Closed || Instant::now() < self.answer_until;
+        let period = match self.mode {
+            DeviceMode::Full => None,
+            _ if answer_expected => Some(FAST_POLL_PERIOD),
+            DeviceMode::Sleepy { poll_period } => Some(poll_period),
+            // The stack polls by itself as often as CSL needs.
+            DeviceMode::SynchronizedSleepy { .. } => None,
+        };
+        if period == self.poll_period {
+            return;
+        }
+        // Zero selects the stack's own period.
+        let millis = period.map_or(0, |period| period.as_millis() as u32);
+        match self.ot.link_set_poll_period(millis).await {
+            Ok(()) => self.poll_period = period,
+            Err(e) => defmt::warn!("thread: could not set the poll period: {}", e),
         }
     }
 
@@ -1197,9 +1414,15 @@ impl Network<'_, '_> {
     /// `address`.
     async fn send(&mut self, port: Port, address: Ipv6Addr, datagram: &Datagram) -> ot::Result<()> {
         let socket = &self.buffers.udp[port.index()];
-        self.ot
+        let sent = self
+            .ot
             .udp_send(socket, address, port.number(), datagram)
-            .await
+            .await;
+        // An answer may follow, and a sleepy board has to poll for it.
+        if self.mode != DeviceMode::Full {
+            self.answer_until = Instant::now() + ANSWER_TIME;
+        }
+        sent
     }
 
     async fn publish_status(&mut self) {

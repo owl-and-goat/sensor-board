@@ -49,6 +49,15 @@ pub enum PowerMode {
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SensorsConfig(pub EnumMap<Sensor, Option<SensorConfig>>);
 
+impl SensorsConfig {
+    /// The shortest poll interval of the enabled sensors. `None` if no
+    /// sensor is enabled.
+    pub fn shortest_interval(&self) -> Option<Duration> {
+        let enabled = self.0.values().flatten();
+        enabled.map(|sensor| sensor.poll_interval).min()
+    }
+}
+
 impl Schema for SensorsConfig {
     const SCHEMA: &'static schema::NamedType = &NamedType {
         name: "SensorConfig",
@@ -128,6 +137,13 @@ mod tests {
         assert_eq!(BoardConfig::decode(&[]), None);
         // Erased flash.
         assert_eq!(BoardConfig::decode(&[0xff; BoardConfig::MAX_LEN]), None);
+    }
+
+    #[test]
+    fn shortest_interval_is_of_the_enabled_sensors() {
+        let shortest = config().sensor_config.shortest_interval();
+        assert_eq!(shortest, Some(Duration::from_millis(250)));
+        assert_eq!(SensorsConfig::default().shortest_interval(), None);
     }
 
     #[test]

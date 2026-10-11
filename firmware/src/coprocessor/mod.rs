@@ -84,6 +84,8 @@ pub struct Builder<'d> {
     /// The board-configuration service. This task runs it for the same
     /// reason.
     pub board_config: board_config::Service,
+    /// The board's configuration, which selects its Thread device mode.
+    pub config: board_config::Monitor,
 }
 
 /// The UDP sockets for tasks other than the coprocessor task.
@@ -105,7 +107,7 @@ impl<'d> Builder<'d> {
         });
 
         let (client, server) = shared.requests.split();
-        let (thread_handle, sockets, tcp, thread) = thread::init();
+        let (thread_handle, sockets, tcp, thread) = thread::init(self.config);
         let task = Task {
             ipcc: self.ipcc,
             flash: self.flash,

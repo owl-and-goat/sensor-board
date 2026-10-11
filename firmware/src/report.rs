@@ -1,18 +1,21 @@
-//! Sensor reports. Every board periodically multicasts its readings to its
-//! network. A board that the host has told to collect also receives the
-//! reports, including its own, and forwards them over USB.
+//! Sensor reports. Every board on aux power periodically multicasts its
+//! readings to its network. A board that the host has told to collect also
+//! receives the reports, including its own, and forwards them over USB.
+//!
+//! A board on battery does not report. Its radio is off between the pushes
+//! of its metrics, and a report every ten seconds would keep waking it.
 
 use defmt::debug;
 use embassy_futures::select::{Either3, select3};
 use embassy_time::{Duration, Ticker};
 use protocol::{
-    BoardId, NetworkError, NetworkResult, Precision, Readings, Report, SensorReadError,
+    BoardId, NetworkError, NetworkResult, PowerMode, Precision, Readings, Report, SensorReadError,
     SensorValue, TempRhReq,
 };
 use static_cell::StaticCell;
 
 use crate::{
-    request, rpc,
+    board_config, request, rpc,
     sensor::{
         self,
         capacitance::{CapacitanceSensor, Channel},
@@ -42,6 +45,8 @@ struct Collect(bool);
 pub struct Builder {
     /// The UDP socket for reports.
     pub socket: thread::Socket,
+    /// The board's configuration, which says whether it is on battery.
+    pub config: board_config::Monitor,
     pub capacitance: &'static sensor::Shared<CapacitanceSensor<'static>>,
     pub color: Option<&'static sensor::Shared<ColorSensor<'static>>>,
     pub temp_rh: Option<&'static sensor::Shared<TempRhSensor<'static>>>,
@@ -56,6 +61,7 @@ impl Builder {
 
         let task = Task {
             socket: self.socket,
+            config: self.config,
             capacitance: self.capacitance,
             color: self.color,
             temp_rh: self.temp_rh,
@@ -85,6 +91,7 @@ impl Handle {
 
 pub struct Task {
     socket: thread::Socket,
+    config: board_config::Monitor,
     capacitance: &'static sensor::Shared<CapacitanceSensor<'static>>,
     color: Option<&'static sensor::Shared<ColorSensor<'static>>>,
     temp_rh: Option<&'static sensor::Shared<TempRhSensor<'static>>>,
@@ -104,6 +111,7 @@ impl Task {
                 self.socket.receive(),
             );
             match next.await {
+                Either3::First(()) if self.on_battery() => {}
                 Either3::First(()) => self.report().await,
                 Either3::Second((pending, Collect(on))) => {
                     let outcome = self.socket.listen(on).await;
@@ -115,6 +123,11 @@ impl Task {
                 },
             }
         }
+    }
+
+    fn on_battery(&mut self) -> bool {
+        let config = self.config.config();
+        config.is_some_and(|config| config.power_mode == PowerMode::Battery)
     }
 
     /// Read the sensors and send a report to every board.

@@ -134,6 +134,7 @@ unambiguous prefix of it.
   cargo run -- firmware push <image> --border-router  # the same without an attached board
   cargo run -- network addresses --board 4b  # that board's ipv6 addresses
   cargo run -- network registration --board 4b  # whether prometheus can find that board
+  cargo run -- network mode --board 4b     # full thread device, or sleepy on battery
   cargo run -- network show                # every sensor board on the network; see below
   cargo run -- reports watch               # print the boards' sensor reports as they arrive
   cargo run -- metrics show --board 4d     # the board's current prometheus metrics
@@ -195,8 +196,9 @@ attached board's neighbor table.
 
 ** sensor reports
 
-every board multicasts a report with its sensor readings to its network
-every ten seconds. =reports watch= prints the reports that one attached
+every board on aux power multicasts a report with its sensor readings to
+its network every ten seconds. a board on battery sends none (see "boards on
+battery"). =reports watch= prints the reports that one attached
 board receives, including that board's own, for as long as the command runs.
 the board has to stay attached: if it goes away (unplugged, reflashed), the
 command waits for it to come back. any board can do this. a board only
@@ -214,7 +216,8 @@ configuration (see below):
   it handles one scrape at a time.
 - =battery=: the board pushes to the pushgateway in its configuration after
   every sensor read, as job =sensor_board= with its serial number as the
-  instance. after a failed push it waits a minute before the next one.
+  instance. after a failed push it waits a minute before the next one. it
+  also keeps its radio off between pushes (see "boards on battery").
 
 a board without a configuration is treated as =aux=. it reads no sensors, so
 its endpoint only has the firmware build and the scrape counter.
@@ -271,8 +274,8 @@ modes when the configuration changes, pushes to addresses where nothing
 answers, and a scrape with =curl= from a machine on the lan, through a
 border router. tested on 2026-10-11: the registration, its advertisement
 over mdns, the registration after a restart, and prometheus on the border
-router's machine scraping the board it found this way. not tested yet: a
-push that succeeds.
+router's machine scraping the board it found this way, and pushes that a
+pushgateway on the lan accepted.
 
 ** board configuration
 
@@ -313,10 +316,47 @@ for example) cannot read a configuration that the previous firmware stored.
 the board then has no configuration until it is set again. two boards whose
 firmwares have different layouts do not answer each other's requests either.
 
-so far only the metrics use the configuration: the power mode, the
-pushgateway, and the intervals of the sensors that have a driver. the
-board's number is not used yet. sensor reports are sent every ten seconds
-regardless, and a board on battery is still a full router.
+the metrics use the power mode, the pushgateway, and the intervals of the
+sensors that have a driver. the power mode and the intervals also decide how
+the board takes part in its network (see "boards on battery"). the board's
+number is not used yet.
+
+** boards on battery
+
+a board whose power mode is =battery= turns its radio receiver off between
+uses: it becomes a thread sleepy end device. its parent (a router, or the
+border router) keeps the messages for it until the board listens. the board
+listens once in the shortest poll interval of its enabled sensors, which is
+how often it wakes to read a sensor and push anyway:
+
+- if that interval is at most about 10.5 seconds, the board is a
+  synchronized sleepy end device: it listens in a short window every
+  interval, at times it has agreed with its parent.
+- if it is longer, the board asks its parent for its messages every
+  interval, up to four hours.
+- with no sensor enabled, it asks every two minutes.
+
+#+begin_src sh
+  cargo run -- network mode --board 4b    # the mode a board is in
+#+end_src
+
+the mode follows the configuration: a change of the power mode or of a
+sensor's interval takes effect within seconds, without a restart.
+
+- a board on battery sends no sensor reports, so =reports watch= does not
+  show it, and =firmware push= does not wait for it.
+- a board on battery that is not attached cannot be reached yet: not through
+  an attached board (the requests are multicast, which a sleepy board does
+  not get), and not through the border router (which only lists routers). it
+  has to be configured and updated over usb. attached, it works as before,
+  also as the board that other boards are asked through.
+- only the radio sleeps so far. the processor, the usb port and the clocks
+  stay on. the board's current has not been measured.
+
+tested on a board on 2026-10-11, with a pushgateway on the lan: the board
+attaching as a sleepy child, pushes accepted about every 10 s, messages
+delivered in the listening windows (with gaps, in which they wait for the
+next push), an interval of 30 s, and the change to =aux= and back.
 
 * getting into the bootloader
 

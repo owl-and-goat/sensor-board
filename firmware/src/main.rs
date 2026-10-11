@@ -186,13 +186,15 @@ async fn main(spawner: Spawner) {
     spawner.spawn(bootloader(bootloader_task).unwrap());
 
     let (update_handle, update_service) = update::init();
-    let (config_handle, config_service, config_monitor) = board_config::init();
+    let (config_handle, config_service, [metrics_config, thread_config, report_config]) =
+        board_config::init();
     let (coprocessor_task, coprocessor_handle, thread_handle, sockets, tcp) =
         coprocessor::Builder {
             ipcc: p.IPCC,
             flash: p.FLASH,
             update: update_service,
             board_config: config_service,
+            config: thread_config,
         }
         .init();
     spawner.spawn(coprocessor(coprocessor_task).unwrap());
@@ -252,6 +254,7 @@ async fn main(spawner: Spawner) {
 
     let (report_task, report_handle) = report::Builder {
         socket: sockets.reports,
+        config: report_config,
         capacitance,
         color,
         temp_rh,
@@ -267,7 +270,7 @@ async fn main(spawner: Spawner) {
 
     let (metrics_task, metrics_handle) = metrics::Builder {
         tcp,
-        config: config_monitor,
+        config: metrics_config,
         capacitance,
         color,
         temp_rh,

@@ -426,7 +426,7 @@ fn parse_interval(text: &str) -> Result<Duration, String> {
 
 /// Format an interval the way [`parse_interval`] reads it, using the largest
 /// unit that divides it evenly.
-fn describe_interval(interval: Duration) -> String {
+pub fn describe_interval(interval: Duration) -> String {
     let ms = interval.as_millis();
     if interval.subsec_nanos() % 1_000_000 != 0 {
         // Not a whole number of milliseconds, so it has no such form.

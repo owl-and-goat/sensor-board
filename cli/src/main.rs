@@ -153,6 +153,9 @@ enum NetworkCommand {
     /// Show whether a board has registered its scrape endpoint with the border router, which
     /// then advertises it over mDNS for Prometheus to find
     Registration(Target),
+    /// Show how a board takes part in its network: as a full Thread device, or, on battery, as
+    /// a sleepy end device that keeps its receiver off
+    Mode(Target),
     /// List the sensor boards on the network: serial number, RLOC16, IPv6 address and link
     ///
     /// Asks through an attached board if there is one, and otherwise through the border router.
@@ -406,6 +409,16 @@ async fn main() -> Result<()> {
                 "{}  {}",
                 board.serial(),
                 network::describe_registration(board.serial(), &registration)
+            );
+            Ok(())
+        }
+        Command::Network(NetworkCommand::Mode(target)) => {
+            let board = target.board().await?;
+            let mode = board.device_mode().await?;
+            println!(
+                "{}  {}",
+                board.serial(),
+                network::describe_device_mode(mode)
             );
             Ok(())
         }

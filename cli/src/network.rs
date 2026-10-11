@@ -12,12 +12,12 @@ use std::{
 
 use anyhow::{Context, Result, bail};
 use protocol::{
-    Address, Addresses, Dataset, HOST_NAME_PREFIX, Link, NetworkStatus, Registration,
+    Address, Addresses, Dataset, DeviceMode, HOST_NAME_PREFIX, Link, NetworkStatus, Registration,
     SCRAPE_SERVICE,
 };
 use rand::RngExt;
 
-use crate::board::Board;
+use crate::{board::Board, config::describe_interval};
 
 /// Timeout for a board to attach. Forming a network is the slow case: the
 /// first board looks for an existing network before it becomes leader.
@@ -339,6 +339,21 @@ pub fn describe_registration(serial: &str, registration: &Registration) -> Strin
     }
 }
 
+/// Describe how a board takes part in its network.
+pub fn describe_device_mode(mode: DeviceMode) -> String {
+    match mode {
+        DeviceMode::Full => "full Thread device: its receiver is always on".into(),
+        DeviceMode::Sleepy { poll_period } => format!(
+            "sleepy end device: polls its parent every {}",
+            describe_interval(poll_period)
+        ),
+        DeviceMode::SynchronizedSleepy { csl_period } => format!(
+            "synchronized sleepy end device: listens every {}",
+            describe_interval(csl_period)
+        ),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use protocol::RegistrationError;
@@ -472,6 +487,26 @@ mod tests {
         assert_eq!(
             describe(Registration::Off),
             "not registered: the board does not serve its metrics"
+        );
+    }
+
+    #[test]
+    fn device_mode_names_the_interval() {
+        assert_eq!(
+            describe_device_mode(DeviceMode::Full),
+            "full Thread device: its receiver is always on"
+        );
+        assert_eq!(
+            describe_device_mode(DeviceMode::Sleepy {
+                poll_period: Duration::from_secs(300)
+            }),
+            "sleepy end device: polls its parent every 5m"
+        );
+        assert_eq!(
+            describe_device_mode(DeviceMode::SynchronizedSleepy {
+                csl_period: Duration::from_secs(10)
+            }),
+            "synchronized sleepy end device: listens every 10s"
         );
     }
 }

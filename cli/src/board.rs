@@ -11,15 +11,16 @@ use postcard_rpc::{
 };
 use protocol::{
     Addresses, ApplyUpdate, BeginInstall, BeginUpdate, BoardConfig, BoardDiscovered, BoardId,
-    BoardInfo, ConfigError, ConfigFor, CoprocessorResult, CoprocessorStatus, Dataset,
+    BoardInfo, ConfigError, ConfigFor, CoprocessorResult, CoprocessorStatus, Dataset, DeviceMode,
     DiscoverBoards, EnterBootloader, FinishInstall, FinishUpdate, FirmwareStatus, GetBoardConfig,
-    GetBoardInfo, GetCoprocessorStatus, GetFirmwareStatus, GetMetrics, GetNetworkAddresses,
-    GetNetworkDataset, GetNetworkNeighbors, GetNetworkStatus, GetOfferProgress, GetRegistration,
-    ImageChunk, ImageSize, JoinNetwork, LeaveNetwork, MeasureTempRh, Member, NeighborTable,
-    NetworkError, NetworkStatus, OfferProgress, ReadSensorValue, Registration, Report,
-    ReportReceived, Sensor, SensorReadReq, SensorReadResult, SetBoardConfig, StartCollecting,
-    StartOffering, StopCollecting, StopOffering, TempRhReq, TempRhResult, USB_PID, USB_VID,
-    UninstallStack, UpdateImage, UpdateResult, WriteInstall, WriteUpdate,
+    GetBoardInfo, GetCoprocessorStatus, GetDeviceMode, GetFirmwareStatus, GetMetrics,
+    GetNetworkAddresses, GetNetworkDataset, GetNetworkNeighbors, GetNetworkStatus,
+    GetOfferProgress, GetRegistration, ImageChunk, ImageSize, JoinNetwork, LeaveNetwork,
+    MeasureTempRh, Member, NeighborTable, NetworkError, NetworkStatus, OfferProgress,
+    ReadSensorValue, Registration, Report, ReportReceived, Sensor, SensorReadReq, SensorReadResult,
+    SetBoardConfig, StartCollecting, StartOffering, StopCollecting, StopOffering, TempRhReq,
+    TempRhResult, USB_PID, USB_VID, UninstallStack, UpdateImage, UpdateResult, WriteInstall,
+    WriteUpdate,
 };
 
 /// Timeout for a call to a board. The slowest call is a join or leave that
@@ -187,6 +188,13 @@ impl Board {
     /// network's SRP server.
     pub async fn registration(&self) -> Result<Registration> {
         self.call::<GetRegistration>(&()).await
+    }
+
+    /// How the board takes part in its network: the device mode it last
+    /// switched to.
+    pub async fn device_mode(&self) -> Result<DeviceMode> {
+        let result = self.call::<GetDeviceMode>(&()).await?;
+        self.network_result(result)
     }
 
     /// Subscribe to the discovery replies that the board forwards: the

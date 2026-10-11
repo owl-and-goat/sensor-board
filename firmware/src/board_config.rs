@@ -7,8 +7,9 @@
 //! network: it multicasts a [`ConfigMessage`], and the target board replies.
 //!
 //! [`init`] returns the [`Handle`] for the rest of the firmware, the
-//! [`Service`], and a [`Monitor`]. The service runs inside the coprocessor
-//! task, because flash writes have to be coordinated with CPU2.
+//! [`Service`], and a [`Monitor`] for each part of the firmware that depends
+//! on the configuration. The service runs inside the coprocessor task,
+//! because flash writes have to be coordinated with CPU2.
 
 use embassy_futures::select::{Either3, select3};
 use embassy_sync::{
@@ -41,8 +42,12 @@ enum Request {
     Set(ConfigFor),
 }
 
+/// How many [`Monitor`]s there are: one each for the metrics, Thread and
+/// the reports.
+const MONITORS: usize = 3;
+
 /// The board's current configuration, updated when a new one is stored.
-type Current = Watch<ThreadModeRawMutex, Option<BoardConfig>, 1>;
+type Current = Watch<ThreadModeRawMutex, Option<BoardConfig>, MONITORS>;
 
 struct Shared {
     requests: request::Channel<Request, BoardConfigResult>,
@@ -50,8 +55,8 @@ struct Shared {
 }
 
 /// Create the [`Handle`] and [`Service`] that read and set the configuration,
-/// and the [`Monitor`] that watches it. Panics if called a second time.
-pub fn init() -> (Handle, Service, Monitor) {
+/// and the [`Monitor`]s that watch it. Panics if called a second time.
+pub fn init() -> (Handle, Service, [Monitor; MONITORS]) {
     static SHARED: StaticCell<Shared> = StaticCell::new();
     let shared: &'static Shared = SHARED.init(Shared {
         requests: request::Channel::new(),
@@ -63,17 +68,17 @@ pub fn init() -> (Handle, Service, Monitor) {
         requests: server,
         current: &shared.current,
     };
-    let monitor = Monitor {
-        // Cannot fail: the `Watch` allows one receiver, and this is the
-        // only one.
+    let monitors = core::array::from_fn(|_| Monitor {
+        // Cannot fail: the `Watch` allows as many receivers as there are
+        // monitors.
         current: shared.current.receiver().unwrap(),
-    };
-    (Handle { requests: client }, service, monitor)
+    });
+    (Handle { requests: client }, service, monitors)
 }
 
 /// Watches the board's configuration for changes.
 pub struct Monitor {
-    current: watch::Receiver<'static, ThreadModeRawMutex, Option<BoardConfig>, 1>,
+    current: watch::Receiver<'static, ThreadModeRawMutex, Option<BoardConfig>, MONITORS>,
 }
 
 impl Monitor {

@@ -4,7 +4,7 @@
 
 mod board_config;
 
-use core::{fmt, net::Ipv6Addr, str::FromStr};
+use core::{fmt, net::Ipv6Addr, str::FromStr, time::Duration};
 
 use postcard_rpc::{Key, Topic, TopicDirection, endpoints, topics};
 use postcard_schema::Schema;
@@ -53,6 +53,7 @@ endpoints! {
     | GetMetrics           | u32           | MetricsChunk      | "metrics/get"                |
     | DiscoverBoards       | ()            | NetworkResult     | "network/discover"           |
     | GetRegistration      | ()            | Registration      | "network/registration"       |
+    | GetDeviceMode        | ()            | DeviceModeResult  | "network/mode"               |
 }
 
 topics! {
@@ -1312,6 +1313,31 @@ impl fmt::Display for RegistrationError {
         }
     }
 }
+
+/// How a board takes part in its Thread network. The board's power mode
+/// selects it: [`PowerMode::Aux`] is a full device, and
+/// [`PowerMode::Battery`] one of the two sleepy end devices, depending on
+/// the shortest poll interval of the board's sensors.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Schema)]
+#[cfg_attr(feature = "defmt", derive(defmt::Format))]
+pub enum DeviceMode {
+    /// A full Thread device. Its receiver is always on, and it becomes a
+    /// router when the network needs one.
+    Full,
+    /// A sleepy end device. Its receiver is off. Its parent queues the
+    /// messages for it, and the board asks for them with a data poll every
+    /// `poll_period`.
+    Sleepy { poll_period: Duration },
+    /// A synchronized sleepy end device. Its receiver is off except for a
+    /// short window every `csl_period`, at times it has agreed with its
+    /// parent (coordinated sampled listening). The parent sends to it in
+    /// those windows.
+    SynchronizedSleepy { csl_period: Duration },
+}
+
+/// The response to [`GetDeviceMode`]: the mode the board last switched to,
+/// or why it could not.
+pub type DeviceModeResult = Result<DeviceMode, NetworkError>;
 
 /// A chunk of a board's metrics in Prometheus's text format, starting at the
 /// byte offset given to [`GetMetrics`]. Each request renders the metrics

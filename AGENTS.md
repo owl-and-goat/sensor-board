@@ -332,7 +332,8 @@ working.
 `firmware/src/report.rs` multicasts a `protocol::Report` to every board
 (`ff03::1`, UDP port 61620) every ten seconds. When the host tells a board to
 collect, the board binds that port and forwards each report it receives to
-the host as the `ReportReceived` topic.
+the host as the `ReportReceived` topic. A board on battery sends no reports
+(see "Boards on battery").
 
 - To add a sensor, add it to `protocol::Readings`, to `Task::readings` in
   `report.rs`, and to `describe` in `cli/src/reports.rs`.
@@ -389,7 +390,7 @@ Prometheus. The power mode in the configuration selects how:
 
 - `Aux`: the board serves a scrape endpoint at `/metrics` on TCP port 9469.
 - `Battery`: the board pushes to its configured Pushgateway after every
-  sensor read.
+  sensor read. It is also a sleepy end device (see "Boards on battery").
 
 A board without a configuration is taken to be on aux power. It reads no
 sensors, so it serves only the firmware build and the scrape counter, and it
@@ -443,8 +444,8 @@ connection that is being opened, and switching between serving and pushing
 when the configuration changes. Also tested that day, with the board on a
 border router's network: a scrape with `curl` from a machine on the LAN,
 answered in full (1528 bytes), on a board that had served a scrape before.
-Not tested yet: an outgoing connection that is accepted, so no push has
-reached a Pushgateway.
+Tested on 2026-10-11: pushes that a Pushgateway on the LAN accepted, from a
+board that was a router and from one that was a sleepy end device.
 
 ## Service registration
 
@@ -540,10 +541,11 @@ same two times. The firmware has nothing for this. A board replies to port
   records.
 - When the dataset is written, a configuration record that the firmware
   cannot decode is copied over unchanged.
-- Only the metrics use the configuration (`Monitor` in `board_config.rs`
-  notifies them when it changes). The reports and Thread do not: a board on
-  battery is a router like any other.
-- A request goes to `ff03::1`, which does not reach a sleepy end device.
+- The metrics, the Thread service and the reports use the configuration.
+  Each has its own `Monitor` (`board_config.rs`), which notifies it of a
+  change.
+- A request goes to `ff03::1`, which does not reach a sleepy end device. So
+  it does not reach a board on battery (see "Boards on battery").
 
 Tested on boards on 2026-10-07: setting a configuration over USB, and on
 another board through the attached one. Both configurations survived a
@@ -554,3 +556,95 @@ configurations of five boards, and changing one on an attached board, as
 seen over USB. Also that day: reading the configuration of a board that is
 not attached, named with `--board`, through an attached one. Not tested: the
 commands with no board attached.
+
+## Boards on battery
+
+A board whose power mode is `Battery` is a Thread sleepy end device: its
+receiver is off, and its parent keeps the messages for it. `device_mode` in
+`firmware/src/thread/mod.rs` maps the configuration to a
+`protocol::DeviceMode`. The Thread service switches to it before the board
+first attaches, and again when the configuration changes. `network mode`
+prints the mode the service last switched to (`GetDeviceMode`).
+
+- Aux power, or no configuration: a full Thread device, as before.
+- Battery: the board listens once in the shortest poll interval of its
+  enabled sensors. It wakes that often anyway, to read a sensor and push.
+  - Up to 10.4856 s, the interval is the CSL period, and the board is a
+    synchronized sleepy end device. The limit is 802.15.4's: a CSL period is
+    a 16-bit count of 160 µs.
+  - Above that, the board polls its parent at the interval, up to four
+    hours.
+  - With no sensor enabled, it polls every two minutes.
+
+A sleepy board polls every 100 ms while it has a TCP connection, and for two
+seconds after it sends a UDP datagram (`update_poll_period`). An answer
+reaches the parent after the board has stopped listening. Without the fast
+polls it would wait there until the next poll or CSL window, and a push
+would time out.
+
+For a sleepy board the firmware also sends `SHCI_C2_RADIO_AllowLowPower`, as
+ST's sleepy end device example does. CPU2 accepts it. What it saves has not
+been measured.
+
+A board on battery sends no sensor reports.
+
+Only the radio sleeps. CPU1 still runs all the time, with the crystal, both
+PLLs and USB on. The board's current has not been measured in either mode.
+Putting CPU1 in Stop mode is not done:
+
+- The board cannot tell whether a USB host is attached: VBUS and the battery
+  share the regulator's input, and no pin senses VBUS. USB needs the PLL, so
+  something has to decide when a board on battery may drop USB.
+- embassy-stm32 0.6.0 has a low-power executor (`low-power` feature). For
+  this chip it does the semaphore handshake with CPU2 before Stop, but it
+  does not restore the clocks afterwards (`exit_stop` in `low_power.rs`
+  reinitializes RCC for other families only), and the firmware's system
+  clock is the crystal.
+- The `watchdog` task wakes CPU1 every 20 ms.
+- It needs a debug probe for the log and a meter for the current.
+
+Things learned:
+
+- ST's FTD image can be a sleepy end device and a CSL receiver. Its build
+  sets `OPENTHREAD_CONFIG_MAC_CSL_RECEIVER_ENABLE`
+  (`openthread_api_config_ftd.h` in stm32-mw-wpan). The MTD image is not
+  needed.
+- `otThreadSetLinkMode` on an attached board makes the stack detach and
+  attach again by itself, if the change needs that. The board was a sleepy
+  child again within ten seconds of a change to battery, and a router again
+  about a minute after a change to aux.
+- The stack's data poll period is the shorter of the period it is given and
+  the child timeout less four seconds. So a long poll period needs a long
+  child timeout. The firmware sets the timeout to twice the poll period, and
+  at least to the default 240 s. The stack limits it to eight hours.
+- With a CSL period set, the stack also polls every 99 s by itself, to stay
+  synchronized (the CSL timeout of 100 s).
+- `otLinkSetCslPeriod` takes microseconds: a multiple of 160, and at least
+  62 of them (from the stack's source, as are the two points above).
+- A multicast to `ff03::1` does not reach a sleepy child. A parent forwards
+  only the groups that the child registered with it, and the realm-local
+  all-Thread-nodes address. So the requests that an attached board
+  multicasts (configuration, discovery, update offers) do not reach a board
+  on battery.
+- The border router's `/diagnostics` has an entry for each router. A child
+  is only in its parent's child table there, without its addresses. So the
+  CLI's border-router commands do not find a board on battery either. Such
+  a board has to be configured and updated over USB.
+- CSL delivery has gaps. With the board silent (no Pushgateway), pings from
+  the border router's machine arrived in batches 10 s apart, but with
+  stretches of 30 to 60 s in which none arrived. That happened with a
+  sensor board as the parent and with the border router, and with the
+  radio's low-power mode allowed or not. A message that misses its windows
+  is delivered at the next data poll. With pushes every interval, that is
+  within the interval anyway, so CSL adds little here.
+
+Tested on a board on 2026-10-11 (battery, sound every 10 s, a Pushgateway on
+the LAN), with a sensor board and with the border router as the parent: the
+board attaching as a sleepy child, which the border router's diagnostics
+show as receiver off; pushes that the Pushgateway accepted, about one every
+10 s; CSL delivery as described above; an interval of 30 s, with pushes and
+pings delivered every 30 s; the change to aux and back while attached; a
+scrape while on aux; and `network show` and `config show` for another board
+through the sleepy board, which got the replies. Not tested: a board on
+battery that is not on USB, a poll period longer than 30 s, and what any of
+this does to the current.
