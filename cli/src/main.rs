@@ -140,6 +140,9 @@ enum NetworkCommand {
     Routers(Target),
     /// Print a board's IPv6 addresses. Prometheus needs a routable one to scrape the board
     Addresses(Target),
+    /// Show whether a board has registered its scrape endpoint with the border router, which
+    /// then advertises it over mDNS for Prometheus to find
+    Registration(Target),
     /// List the sensor boards on the network: serial number, RLOC16, IPv6 address and link
     ///
     /// Asks through an attached board if there is one, and otherwise through the border router.
@@ -377,6 +380,16 @@ async fn main() -> Result<()> {
             } else {
                 print!("{}", network::describe_addresses(&addresses));
             }
+            Ok(())
+        }
+        Command::Network(NetworkCommand::Registration(target)) => {
+            let board = target.board().await?;
+            let registration = board.registration().await?;
+            println!(
+                "{}  {}",
+                board.serial(),
+                network::describe_registration(board.serial(), &registration)
+            );
             Ok(())
         }
         Command::Network(NetworkCommand::Show {

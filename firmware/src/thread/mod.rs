@@ -23,7 +23,8 @@
 //! writes the entries of its neighbor and router tables there, one entry per
 //! call.
 
-use core::cell::RefCell;
+use core::cell::{Cell, RefCell};
+use core::fmt::Write as _;
 use core::net::{Ipv6Addr, SocketAddrV6};
 
 use defmt::info;
@@ -41,9 +42,9 @@ use embassy_sync::{
 };
 use embassy_time::{Duration, Instant};
 use protocol::{
-    Addresses, AddressesResult, DISCOVERY_PORT, Dataset, Link, NeighborTable, NeighborsResult,
-    NetworkError, NetworkResult, NetworkStatus, OtError, Router, RouterId, RouterTable,
-    RoutersResult,
+    Addresses, AddressesResult, BoardId, DISCOVERY_PORT, Dataset, HOST_NAME_PREFIX, Link,
+    NeighborTable, NeighborsResult, NetworkError, NetworkResult, NetworkStatus, OtError,
+    Registration, RegistrationError, Router, RouterId, RouterTable, RoutersResult,
 };
 use static_cell::StaticCell;
 
@@ -115,11 +116,29 @@ struct NeighborsRequest;
 struct RoutersRequest;
 struct AddressesRequest;
 
+/// A TCP service to register with the network's SRP server, so that it can
+/// be found with DNS-SD.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub struct SrpService {
+    /// The DNS-SD service type, such as `_http._tcp`.
+    pub kind: &'static str,
+    pub port: u16,
+}
+
+/// How long the SRP server keeps the board's registration, and reserves the
+/// board's name for its key, without a renewal. CPU2 makes a new key every
+/// time it starts. So after a reset the board cannot register until its
+/// previous registration has run out, and this is how long that takes at
+/// most. The SRP client renews the registration at half this interval.
+const REGISTRATION_LEASE: Duration = Duration::from_secs(120);
+
 /// A request from the [`Tcp`] handle. The response is sent when the
 /// operation completes or fails. Some operations wait for the peer.
 enum TcpRequest {
     /// Listen on this port, or with `None` stop listening.
     Listen(Option<u16>),
+    /// Register this service, or with `None` remove the registration.
+    Register(Option<SrpService>),
     /// Wait for an incoming connection.
     Accept,
     /// Open a connection.
@@ -181,22 +200,35 @@ impl SocketShared {
     }
 }
 
-/// The last published network status, and the board's addresses at that
-/// time.
-struct Status(Mutex<ThreadModeRawMutex, RefCell<(NetworkStatus, Addresses)>>);
+/// What the service last published: the network status with the board's
+/// addresses at that time, and the state of the service registration.
+struct Status {
+    network: Mutex<ThreadModeRawMutex, RefCell<(NetworkStatus, Addresses)>>,
+    registration: Mutex<ThreadModeRawMutex, Cell<Registration>>,
+}
 
 impl Status {
     fn get(&self) -> NetworkStatus {
-        self.0.lock(|s| s.borrow().0)
+        self.network.lock(|s| s.borrow().0)
     }
 
     fn addresses(&self) -> Addresses {
-        self.0.lock(|s| s.borrow().1.clone())
+        self.network.lock(|s| s.borrow().1.clone())
+    }
+
+    fn registration(&self) -> Registration {
+        self.registration.lock(Cell::get)
     }
 
     fn publish(&self, status: NetworkStatus, addresses: Addresses) {
         info!("thread: {}", status);
-        self.0.lock(|s| s.replace((status, addresses)));
+        self.network.lock(|s| s.replace((status, addresses)));
+    }
+
+    fn publish_registration(&self, registration: Registration) {
+        if self.registration.lock(|r| r.replace(registration)) != registration {
+            info!("thread: registration {}", registration);
+        }
     }
 }
 
@@ -228,6 +260,7 @@ struct Buffers {
     /// One for each [`Port`]'s socket, at the port's index.
     udp: [ot::UdpBuffer; Port::ALL.len()],
     tcp: ot::TcpBuffer,
+    srp: ot::SrpBuffer,
 }
 
 /// Create the [`Handle`], the [`Sockets`] and the [`Tcp`] handle for the rest
@@ -242,16 +275,20 @@ pub fn init() -> (Handle, Sockets, Tcp, Service) {
         address_requests: request::Channel::new(),
         sockets: [const { SocketShared::new() }; Port::ALL.len()],
         tcp_requests: request::Channel::new(),
-        status: Status(Mutex::new(RefCell::new((
-            NetworkStatus::Starting,
-            Addresses::default(),
-        )))),
+        status: Status {
+            network: Mutex::new(RefCell::new((
+                NetworkStatus::Starting,
+                Addresses::default(),
+            ))),
+            registration: Mutex::new(Cell::new(Registration::Off)),
+        },
         buffers: Buffers {
             active_dataset: ot::DatasetBuffer::new(),
             next_neighbor: ot::NeighborBuffer::new(),
             next_hop: ot::NextHopBuffer::new(),
             udp: [const { ot::UdpBuffer::new() }; Port::ALL.len()],
             tcp: ot::TcpBuffer::new(),
+            srp: ot::SrpBuffer::new(),
         },
     });
 
@@ -391,6 +428,16 @@ impl Tcp {
             .await
     }
 
+    /// Register `service` with the network's SRP server, under the board's
+    /// host name, or with `None` remove the registration. The stack keeps
+    /// the registration up to date from then on, also when the board joins
+    /// its network later. [`Handle::registration`] shows whether the server
+    /// has it.
+    pub async fn register(&mut self, service: Option<SrpService>) -> Result<(), TcpError> {
+        self.request(TcpRequest::Register(service), REQUEST_TIMEOUT)
+            .await
+    }
+
     /// Wait for an incoming connection. Does not time out.
     pub async fn accept(&mut self) -> Result<(), TcpError> {
         loop {
@@ -480,6 +527,11 @@ impl Handle {
         Monitor {
             status: self.status,
         }
+    }
+
+    /// Whether the service given to [`Tcp::register`] is registered.
+    pub fn registration(&self) -> Registration {
+        self.status.registration()
     }
 
     /// The stored dataset: the network the board is configured for and
@@ -660,6 +712,20 @@ struct TcpEndpoint {
     waiting: Option<(request::Pending, TcpWait)>,
 }
 
+/// The service's view of the SRP client, which registers the board's host
+/// name and one service.
+struct SrpClient {
+    /// Whether the client has been given the host name.
+    named: bool,
+    /// The service to register.
+    service: Option<SrpService>,
+    /// Whether the client has been given `service`.
+    given: bool,
+    /// Why the service could not be given to the client, or else why the
+    /// client's last update failed, if it did.
+    last_error: Option<RegistrationError>,
+}
+
 /// The queues that carry received datagrams from the service to the
 /// [`Socket`] of each [`Port`].
 type ReceivedQueues =
@@ -708,6 +774,12 @@ impl Service {
                 end_of_stream: false,
                 waiting: None,
             },
+            srp: SrpClient {
+                named: false,
+                service: None,
+                given: false,
+                last_error: None,
+            },
         };
 
         // The stack stalls unless its CLI output is acknowledged. In this
@@ -751,6 +823,7 @@ struct Network<'a, 'd> {
     /// Whether each [`Port`]'s socket is bound to its port.
     listening: [bool; Port::ALL.len()],
     tcp: TcpEndpoint,
+    srp: SrpClient,
 }
 
 impl Network<'_, '_> {
@@ -796,6 +869,10 @@ impl Network<'_, '_> {
                     }
                 }
                 Either::Second(ot::Notification::Tcp(event)) => self.tcp_event(event).await,
+                Either::Second(ot::Notification::SrpUpdate(error)) => {
+                    self.srp.last_error = error;
+                    self.publish_registration();
+                }
                 Either::Second(ot::Notification::Other(id)) => {
                     defmt::trace!("cpu2: notification {}", id);
                 }
@@ -897,6 +974,10 @@ impl Network<'_, '_> {
                 }
                 done
             }
+            TcpRequest::Register(service) => {
+                self.register(service).await?;
+                done
+            }
             TcpRequest::Accept => {
                 // A peer that the board cannot answer never completes the
                 // handshake, and the stack does not report that. Free the
@@ -966,9 +1047,9 @@ impl Network<'_, '_> {
     /// Abort the endpoint's connection, whatever state it is in.
     async fn tcp_close(&mut self) -> ot::Result<()> {
         if self.tcp.connection != Connection::Closed {
-            let (aborted, state_changed) =
+            let (aborted, changed) =
                 ot::tcp_abort(&mut self.notif_rx, &mut self.ot, &self.buffers.tcp).await;
-            if state_changed {
+            if changed {
                 self.publish_status().await;
             }
             aborted?;
@@ -1053,6 +1134,78 @@ impl Network<'_, '_> {
         }
     }
 
+    /// Have the SRP client register `service`, or with `None` remove the
+    /// service it has. The client starts by itself when the network has an
+    /// SRP server, and renews the registration before it runs out.
+    async fn register(&mut self, service: Option<SrpService>) -> ot::Result<()> {
+        if service == self.srp.service && (self.srp.given || service.is_none()) {
+            return Ok(());
+        }
+        let given = self.give_service(service).await;
+        self.srp.service = service;
+        self.srp.given = service.is_some() && given.is_ok();
+        self.srp.last_error = given.err().map(RegistrationError::Stack);
+        self.publish_registration();
+        given
+    }
+
+    /// Replace the service that the SRP client has with `service`.
+    async fn give_service(&mut self, service: Option<SrpService>) -> ot::Result<()> {
+        let buffer = &self.buffers.srp;
+
+        if self.srp.given {
+            // The client tells the server, and keeps the service until the
+            // server has answered.
+            self.srp.given = false;
+            match self.ot.srp_client_remove_service(buffer).await {
+                Ok(()) | Err(OtError::NotFound) => {}
+                Err(e) => return Err(e),
+            }
+        }
+        let Some(service) = service else {
+            return Ok(());
+        };
+
+        if !self.srp.named {
+            // The name comes last: the calls before it can be repeated if
+            // one of them fails, and the name can only be given once.
+            let lease = REGISTRATION_LEASE.as_secs() as u32;
+            self.ot.srp_client_set_lease_interval(lease).await;
+            self.ot.srp_client_set_key_lease_interval(lease).await;
+            self.ot.srp_client_set_callback().await;
+            self.ot.srp_client_enable_auto_host_address().await?;
+
+            let mut name: heapless::String<64> = heapless::String::new();
+            let board = BoardId(embassy_stm32::uid::uid());
+            // Cannot fail: the name is 37 characters.
+            let _ = write!(name, "{HOST_NAME_PREFIX}{board}");
+            self.ot.srp_client_set_host_name(buffer, &name).await?;
+            self.srp.named = true;
+        }
+        // The client may still have the previous service, if the server has
+        // not answered its removal. Take it back before changing it.
+        match self.ot.srp_client_clear_service(buffer).await {
+            Ok(()) | Err(OtError::NotFound) => {}
+            Err(e) => return Err(e),
+        }
+        self.ot
+            .srp_client_add_service(buffer, service.kind, service.port)
+            .await
+    }
+
+    fn publish_registration(&mut self) {
+        let registration = match self.srp.service {
+            None => Registration::Off,
+            Some(_) if self.srp.given && self.buffers.srp.is_registered() => {
+                Registration::Registered
+            }
+            Some(_) => Registration::Pending {
+                last_error: self.srp.last_error,
+            },
+        };
+        self.status.publish_registration(registration);
+    }
+
     /// Start or stop receiving on the socket of `port`.
     async fn listen(&mut self, port: Port, on: bool) -> ot::Result<()> {
         let listening = &mut self.listening[port.index()];
@@ -1088,6 +1241,8 @@ impl Network<'_, '_> {
             _ => Addresses::default(),
         };
         self.status.publish(status, addresses);
+        // For an SRP update that was reported during `ot::tcp_abort`.
+        self.publish_registration();
     }
 
     async fn join(&mut self, dataset: &Dataset) -> NetworkResult {

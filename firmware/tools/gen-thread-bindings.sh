@@ -39,6 +39,7 @@ cat > "$work/wrapper.h" <<'HDR'
 #include <openthread/ping_sender.h>
 #include <openthread/udp.h>
 #include <openthread/tcp.h>
+#include <openthread/srp_client.h>
 #include "stm32wbxx_core_interface_def.h"
 HDR
 
@@ -63,6 +64,7 @@ $nix run nixpkgs#rust-bindgen -- "$work/wrapper.h" -o "$out" \
   --allowlist-type 'otUdpSocket|otSockAddr|otMessageInfo|otNetifIdentifier' \
   --allowlist-type 'otTcpEndpoint|otTcpListener|otTcp.*InitializeArgs|otLinkedBuffer' \
   --allowlist-type 'otTcpDisconnectedReason|otTcpIncomingConnectionAction|otNetifAddress' \
+  --allowlist-type 'otSrpClientService|otSrpClientItemState' \
   --allowlist-var 'OT_TCP_.*' \
   -- -target thumbv7em-none-eabihf -fshort-enums -nostdinc \
      -isystem "$(clang -print-resource-dir)/include" \

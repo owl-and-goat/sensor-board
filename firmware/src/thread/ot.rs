@@ -13,8 +13,8 @@ use embassy_futures::{
 };
 use embassy_stm32_wpan::sub::thread::{OtNotification, ThreadNotifRx, ThreadOt};
 use protocol::{
-    Address, AddressKind, Addresses, Dataset, ExtAddress, Neighbor, NeighborKind, OtError, Role,
-    Route, RouterId,
+    Address, AddressKind, Addresses, Dataset, ExtAddress, Neighbor, NeighborKind, OtError,
+    RegistrationError, Role, Route, RouterId,
 };
 
 // TODO: move ffi module to a submodule of this one?
@@ -247,6 +247,79 @@ impl TcpBuffer {
     }
 }
 
+/// The longest name the SRP client is given: a DNS label.
+const SRP_NAME_LEN: usize = 63;
+
+/// CPU1 memory for the SRP client: the one service it registers, and the
+/// names it registers under. CPU2 links the service into its own list when
+/// the service is added, and writes the service's state there. It keeps
+/// reading the names for as long as it has the host name or the service. So
+/// this has to be `&'static` for the same reason as [`UdpBuffer`].
+pub struct SrpBuffer {
+    service: UnsafeCell<MaybeUninit<ffi::otSrpClientService>>,
+    /// The host name, which is also the service's instance name. A C string.
+    host_name: UnsafeCell<[u8; SRP_NAME_LEN + 1]>,
+    /// The service's type, such as `_http._tcp`. A C string.
+    service_type: UnsafeCell<[u8; SRP_NAME_LEN + 1]>,
+}
+
+impl SrpBuffer {
+    pub const fn new() -> Self {
+        SrpBuffer {
+            service: UnsafeCell::new(MaybeUninit::zeroed()),
+            host_name: UnsafeCell::new([0; SRP_NAME_LEN + 1]),
+            service_type: UnsafeCell::new([0; SRP_NAME_LEN + 1]),
+        }
+    }
+
+    fn service(&self) -> *mut ffi::otSrpClientService {
+        self.service.get().cast()
+    }
+
+    /// Whether the server had the service when the client last heard from
+    /// it.
+    pub fn is_registered(&self) -> bool {
+        use ffi::otSrpClientItemState as State;
+
+        // SAFETY: the state is one byte, in memory that started out zeroed.
+        // CPU2 may write it at any time, and every value it writes is valid.
+        let state = unsafe { read_volatile(&raw const (*self.service()).mState) };
+        matches!(
+            state,
+            State::OT_SRP_CLIENT_ITEM_STATE_REGISTERED
+                | State::OT_SRP_CLIENT_ITEM_STATE_TO_REFRESH
+                | State::OT_SRP_CLIENT_ITEM_STATE_REFRESHING
+        )
+    }
+}
+
+/// Write `text` to `to` as a C string. Fails if `text` does not fit or
+/// contains a NUL.
+///
+/// SAFETY: CPU2 must not be reading `to`.
+unsafe fn write_c_string<const N: usize>(to: &UnsafeCell<[u8; N]>, text: &str) -> Result<()> {
+    if text.len() >= N || text.bytes().any(|byte| byte == 0) {
+        return Err(OtError::InvalidArgs);
+    }
+    let to = to.get().cast::<u8>();
+    unsafe {
+        copy_nonoverlapping(text.as_ptr(), to, text.len());
+        write_volatile(to.add(text.len()), 0);
+    }
+    Ok(())
+}
+
+/// Convert the `otError` that the SRP client reports for an update. `None`
+/// if the server accepted the update.
+fn registration_error(raw: u32) -> Option<RegistrationError> {
+    match ffi::otError(raw as _) {
+        ffi::otError::OT_ERROR_NONE => None,
+        ffi::otError::OT_ERROR_DUPLICATED => Some(RegistrationError::NameTaken),
+        ffi::otError::OT_ERROR_RESPONSE_TIMEOUT => Some(RegistrationError::NoResponse),
+        _ => check(raw).err().map(RegistrationError::Stack),
+    }
+}
+
 /// A placeholder for callback pointers that CPU2 may require to be non-null.
 /// It is never called: CPU2 delivers its callbacks as notifications.
 unsafe extern "C" fn never_called() {}
@@ -281,6 +354,9 @@ pub enum Notification {
     },
     /// A TCP callback.
     Tcp(TcpEvent),
+    /// The SRP client has the outcome of an update it sent to the server:
+    /// `None` if the server accepted it.
+    SrpUpdate(Option<RegistrationError>),
     /// Any other notification, by its ID. Also a received datagram that
     /// could not be read.
     Other(u32),
@@ -379,6 +455,7 @@ pub async fn notification(
     const TCP_RECEIVE_AVAILABLE: u32 =
         ffi_notification::MSG_M0TOM4_TCP_RECEIVE_AVAILABLE_CALLBACK as u32;
     const TCP_DISCONNECTED: u32 = ffi_notification::MSG_M0TOM4_TCP_DISCONNECTED_CALLBACK as u32;
+    const SRP_CLIENT: u32 = ffi_notification::MSG_M0TOM4_SRP_CLIENT_CB as u32;
 
     let handle = |raw: OtNotification| match raw.id {
         STATE_CHANGE => Notification::StateChanged,
@@ -454,6 +531,12 @@ pub async fn notification(
             let [_, reason, _, _] = raw.data;
             Notification::Tcp(TcpEvent::Disconnected(disconnected_from_raw(reason)))
         }
+        SRP_CLIENT => {
+            // The arguments: the error, then pointers to the host and to
+            // the services, which are not needed.
+            let [error, _, _, _] = raw.data;
+            Notification::SrpUpdate(registration_error(error))
+        }
         other => Notification::Other(other),
     };
     notif_rx.receive_with(handle).await
@@ -491,7 +574,8 @@ fn address_from_raw(raw: &ffi::otNetifAddress) -> Address {
 
 /// Abort the TCP endpoint's connection, whatever state it is in. The
 /// endpoint can then be used for another connection. Returns the result,
-/// and whether a state-change notification arrived during the call.
+/// and whether the stack reported a state change or an SRP update during
+/// the call.
 ///
 /// CPU2 sends the disconnected callback from inside `otTcpAbort`, and does
 /// not answer the call until that notification is acknowledged. So this
@@ -504,8 +588,9 @@ pub async fn tcp_abort(
     buffer: &'static TcpBuffer,
 ) -> (Result<()>, bool) {
     const STATE_CHANGE: u32 = ffi_notification::MSG_M0TOM4_NOTIFY_STATE_CHANGE as u32;
+    const SRP_CLIENT: u32 = ffi_notification::MSG_M0TOM4_SRP_CLIENT_CB as u32;
 
-    let state_changed = Cell::new(false);
+    let changed = Cell::new(false);
     let endpoint = [buffer.endpoint()];
     let abort = unsafe {
         // SAFETY: expects a pointer to the endpoint.
@@ -513,13 +598,13 @@ pub async fn tcp_abort(
     };
     let acknowledge = async {
         loop {
-            if notif_rx.receive().await.id == STATE_CHANGE {
-                state_changed.set(true);
+            if matches!(notif_rx.receive().await.id, STATE_CHANGE | SRP_CLIENT) {
+                changed.set(true);
             }
         }
     };
     match select(abort, acknowledge).await {
-        Either::First(aborted) => (aborted, state_changed.get()),
+        Either::First(aborted) => (aborted, changed.get()),
         Either::Second(never) => never,
     }
 }
@@ -1176,6 +1261,149 @@ pub unsafe trait OpenThread {
             next = raw.mNext;
         }
         addresses
+    }
+
+    /// Set the name that the SRP client registers the device under. Do not
+    /// call this again once it has succeeded: CPU2 keeps reading the name.
+    async fn srp_client_set_host_name(
+        &mut self,
+        buffer: &'static SrpBuffer,
+        name: &str,
+    ) -> Result<()> {
+        unsafe {
+            // SAFETY: CPU2 has not been given the name yet.
+            write_c_string(&buffer.host_name, name)?;
+            // SAFETY: expects a pointer to a C string, which CPU2 keeps.
+            self.ffi_try(
+                ffi_command::MSG_M4TOM0_OT_SRP_CLIENT_SET_HOST_NAME,
+                &[buffer.host_name.get() as u32],
+            )
+            .await
+        }
+    }
+
+    /// Have the SRP client register the device's addresses with the host
+    /// name, and update the registration when they change. It registers the
+    /// addresses that are reachable from outside the Thread network, or the
+    /// mesh-local address if there is none.
+    async fn srp_client_enable_auto_host_address(&mut self) -> Result<()> {
+        unsafe {
+            // SAFETY: expects no arguments.
+            self.ffi_try(
+                ffi_command::MSG_M4TOM0_OT_SRP_CLIENT_ENABLE_AUTO_HOST_ADDRESS,
+                &[],
+            )
+            .await
+        }
+    }
+
+    /// Set how long the server is asked to keep a registration that the SRP
+    /// client does not renew, in seconds.
+    async fn srp_client_set_lease_interval(&mut self, secs: u32) {
+        unsafe {
+            // SAFETY: expects one argument, the interval. Returns nothing.
+            self.ffi_call(
+                ffi_command::MSG_M4TOM0_OT_SRP_CLIENT_SET_LEASE_INTERVAL,
+                &[secs],
+            )
+            .await;
+        }
+    }
+
+    /// Set how long the server is asked to reserve the device's names for
+    /// its key after a registration has expired, in seconds, counted from
+    /// the last renewal.
+    async fn srp_client_set_key_lease_interval(&mut self, secs: u32) {
+        unsafe {
+            // SAFETY: expects one argument, the interval. Returns nothing.
+            self.ffi_call(
+                ffi_command::MSG_M4TOM0_OT_SRP_CLIENT_SET_KEY_LEASE_INTERVAL,
+                &[secs],
+            )
+            .await;
+        }
+    }
+
+    /// Have the SRP client report the outcome of each update it sends to the
+    /// server. The reports arrive as notifications.
+    async fn srp_client_set_callback(&mut self) {
+        unsafe {
+            // SAFETY: expects the context for the callback, which can be
+            // any word. Returns nothing. The callback itself is not an
+            // argument.
+            self.ffi_call(ffi_command::MSG_M4TOM0_OT_SRP_CLIENT_SET_CALLBACK, &[0])
+                .await;
+        }
+    }
+
+    /// Give the SRP client a service to register: `kind` is its DNS-SD type,
+    /// such as `_http._tcp`. The service is named like the host. The client
+    /// must not have the service already: it has to be the first one, or
+    /// the last one has to have been cleared.
+    async fn srp_client_add_service(
+        &mut self,
+        buffer: &'static SrpBuffer,
+        kind: &str,
+        port: u16,
+    ) -> Result<()> {
+        let service = ffi::otSrpClientService {
+            mName: buffer.service_type.get().cast(),
+            mInstanceName: buffer.host_name.get().cast(),
+            mSubTypeLabels: null(),
+            // Without entries, the client sends the empty TXT record that
+            // DNS-SD requires.
+            mTxtEntries: null(),
+            mPort: port,
+            mPriority: 0,
+            mWeight: 0,
+            mNumTxtEntries: 0,
+            // CPU2 sets the next three fields.
+            mState: ffi::otSrpClientItemState::OT_SRP_CLIENT_ITEM_STATE_REMOVED,
+            mData: 0,
+            mNext: null_mut(),
+            // Zero selects the client's lease intervals.
+            mLease: 0,
+            mKeyLease: 0,
+        };
+        unsafe {
+            // SAFETY: CPU2 does not have the service, so it reads neither
+            // the service nor its type.
+            write_c_string(&buffer.service_type, kind)?;
+            write_volatile(buffer.service(), service);
+            // SAFETY: expects a pointer to an otSrpClientService, which
+            // CPU2 keeps and writes its state to.
+            self.ffi_try(
+                ffi_command::MSG_M4TOM0_OT_SRP_CLIENT_ADD_SERVICE,
+                &[buffer.service() as u32],
+            )
+            .await
+        }
+    }
+
+    /// Have the SRP client remove the service from the server. CPU2 keeps
+    /// the service until the server has answered.
+    async fn srp_client_remove_service(&mut self, buffer: &'static SrpBuffer) -> Result<()> {
+        unsafe {
+            // SAFETY: expects a pointer to an otSrpClientService.
+            self.ffi_try(
+                ffi_command::MSG_M4TOM0_OT_SRP_CLIENT_REMOVE_SERVICE,
+                &[buffer.service() as u32],
+            )
+            .await
+        }
+    }
+
+    /// Take the service away from the SRP client without telling the server.
+    /// CPU2 does not use the service after this call.
+    async fn srp_client_clear_service(&mut self, buffer: &'static SrpBuffer) -> Result<()> {
+        unsafe {
+            // SAFETY: expects a pointer to an otSrpClientService.
+            self.ffi_try(
+                ffi_command::MSG_M4TOM0_OT_SRP_CLIENT_CLEAR_SERVICE,
+                &[buffer.service() as u32],
+            )
+            .await
+        }
     }
 
     // TODO: the rest of the OpenThread API

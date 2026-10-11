@@ -12,8 +12,8 @@ use std::{
 
 use anyhow::{Context, Result, bail};
 use protocol::{
-    Address, Addresses, Dataset, Link, Neighbor, NeighborTable, NetworkStatus, Route, Router,
-    RouterTable,
+    Address, Addresses, Dataset, HOST_NAME_PREFIX, Link, Neighbor, NeighborTable, NetworkStatus,
+    Registration, Route, Router, RouterTable, SCRAPE_SERVICE,
 };
 use rand::RngExt;
 
@@ -379,9 +379,24 @@ pub fn describe_addresses(addresses: &Addresses) -> String {
     text
 }
 
+/// Describe the registration of the board with this serial number.
+pub fn describe_registration(serial: &str, registration: &Registration) -> String {
+    let name = format!("{HOST_NAME_PREFIX}{serial}");
+    match registration {
+        Registration::Off => "not registered: the board does not serve its metrics".into(),
+        Registration::Pending { last_error: None } => {
+            format!("not registered yet, as {SCRAPE_SERVICE} {name}")
+        }
+        Registration::Pending {
+            last_error: Some(e),
+        } => format!("not registered yet, as {SCRAPE_SERVICE} {name}: {e}"),
+        Registration::Registered => format!("registered as {SCRAPE_SERVICE} {name}"),
+    }
+}
+
 #[cfg(test)]
 mod tests {
-    use protocol::{ExtAddress, NeighborKind, RouterId};
+    use protocol::{ExtAddress, NeighborKind, RegistrationError, RouterId};
 
     use super::*;
 
@@ -552,5 +567,27 @@ mod tests {
             assert!(network.name.len() <= 16);
             assert_eq!(network.mesh_local_prefix[0], 0xfd);
         }
+    }
+
+    #[test]
+    fn registration_names_the_service_and_the_last_error() {
+        let serial = "4C0032000350475532303120";
+        let describe = |registration| describe_registration(serial, &registration);
+
+        assert_eq!(
+            describe(Registration::Registered),
+            "registered as _prometheus-http._tcp sensor-board-4C0032000350475532303120"
+        );
+        assert_eq!(
+            describe(Registration::Pending {
+                last_error: Some(RegistrationError::NameTaken)
+            }),
+            "not registered yet, as _prometheus-http._tcp sensor-board-4C0032000350475532303120: \
+             the name is taken"
+        );
+        assert_eq!(
+            describe(Registration::Off),
+            "not registered: the board does not serve its metrics"
+        );
     }
 }

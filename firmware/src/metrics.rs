@@ -36,6 +36,12 @@ use crate::{
 /// TCP port of the scrape endpoint.
 const SCRAPE_PORT: u16 = 9469;
 
+/// What the scrape endpoint is registered as, so that Prometheus can find it.
+const SCRAPE_SERVICE: thread::SrpService = thread::SrpService {
+    kind: protocol::SCRAPE_SERVICE,
+    port: SCRAPE_PORT,
+};
+
 /// The Pushgateway job name. The instance is the board's serial number.
 const JOB: &str = "sensor_board";
 
@@ -370,11 +376,14 @@ impl Exporter {
         }
     }
 
-    /// Close the connection and stop listening.
+    /// Close the connection, stop listening, and remove the registration.
     async fn stop(&mut self) {
         self.tcp.close().await;
         if let Err(e) = self.tcp.listen(None).await {
             defmt::debug!("metrics: could not stop listening: {}", e);
+        }
+        if let Err(e) = self.tcp.register(None).await {
+            defmt::debug!("metrics: could not remove the registration: {}", e);
         }
     }
 
@@ -397,10 +406,14 @@ impl Exporter {
     async fn accept_scrape(tcp: &mut thread::Tcp) {
         loop {
             let accepted = async {
-                // Listen on every attempt: the last one may have failed
-                // because Thread had not started. Listening on the same port
+                // Listen and register on every attempt: the last one may
+                // have failed because Thread had not started. Doing either
                 // again is a no-op.
                 tcp.listen(Some(SCRAPE_PORT)).await?;
+                // A scrape does not need the registration.
+                if let Err(e) = tcp.register(Some(SCRAPE_SERVICE)).await {
+                    defmt::debug!("metrics: could not register the endpoint: {}", e);
+                }
                 tcp.accept().await
             };
             match accepted.await {

@@ -111,6 +111,7 @@ unambiguous prefix of it.
   cargo run -- firmware update <image> --board 4d  # see "firmware updates" above
   cargo run -- firmware push <image> --board 4d    # update every board on the network
   cargo run -- network addresses --board 4b  # that board's ipv6 addresses
+  cargo run -- network registration --board 4b  # whether prometheus can find that board
   cargo run -- network show                # every sensor board on the network; see below
   cargo run -- reports watch               # print the boards' sensor reports as they arrive
   cargo run -- metrics show --board 4d     # the board's current prometheus metrics
@@ -199,16 +200,40 @@ each read at its own interval, plus counters for scrapes and pushes. every
 metric has a =board= label with the board's serial number. =metrics show=
 prints the current metrics over usb.
 
-to scrape a board, prometheus needs an address that is reachable from
-outside the thread network. =network addresses= lists it as =routable=. a
-board gets one once a border router advertises a prefix.
+a board that serves its metrics registers the scrape endpoint with the srp
+server of its network, which runs on the border router. the border router
+advertises it over mdns on the lan, as a =_prometheus-http._tcp= service
+named =sensor-board-<serial number>=, with the board's address that is
+reachable from outside the thread network. a board gets such an address once
+a border router advertises a prefix, and =network addresses= lists it as
+=routable=.
+
+#+begin_src sh
+  cargo run -- network registration --board 4c  # whether the board has registered
+  avahi-browse -rt _prometheus-http._tcp         # what the border router advertises
+#+end_src
+
+prometheus cannot browse mdns itself. on the machine it runs on, something
+has to write the advertised services to a file for =file_sd_configs=. the
+serial number is in the service's name, so it can become the =instance=
+label, as it is for a board that pushes:
 
 #+begin_src yaml
   scrape_configs:
-    - job_name: sensor-board
-      static_configs:
-        - targets: ["[fd12:3456:789a:1:4c51:2d3d:c69c:4af6]:9469"]
+    - job_name: sensor_board
+      scrape_interval: 30s
+      file_sd_configs:
+        - files: [/run/prometheus-mdns-sd/targets.json]
 #+end_src
+
+- a board gets new addresses and a new key for its registration every time
+  it restarts. the server keeps the name for the old key until the old
+  registration runs out, so a restarted board is found again after up to
+  three minutes. until then =network registration= says that the name is
+  taken.
+- the machine that scrapes needs an address that the thread network can
+  route back to. the border router only announces a route to =fc00::/7=, so
+  a connection from a global address gets no answer.
 
 a pushgateway is set as an ipv6 address and a port. the border router has to
 be able to route from the board to that address:
@@ -220,7 +245,10 @@ be able to route from the board to that address:
 tested on a board on 2026-10-10: metrics over usb, switching between the two
 modes when the configuration changes, pushes to addresses where nothing
 answers, and a scrape with =curl= from a machine on the lan, through a
-border router. not tested yet: a push that succeeds.
+border router. tested on 2026-10-11: the registration, its advertisement
+over mdns, the registration after a restart, and prometheus on the border
+router's machine scraping the board it found this way. not tested yet: a
+push that succeeds.
 
 ** board configuration
 

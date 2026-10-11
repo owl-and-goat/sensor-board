@@ -53,6 +53,7 @@ endpoints! {
     | GetNetworkAddresses  | ()            | AddressesResult   | "network/addresses"          |
     | GetMetrics           | u32           | MetricsChunk      | "metrics/get"                |
     | DiscoverBoards       | ()            | NetworkResult     | "network/discover"           |
+    | GetRegistration      | ()            | Registration      | "network/registration"       |
 }
 
 topics! {
@@ -1291,6 +1292,56 @@ impl DiscoveryMessage {
 
     fn key() -> [u8; 8] {
         Key::for_path::<DiscoveryMessage>("network/discovery").to_bytes()
+    }
+}
+
+/// The DNS-SD service type that a board registers its scrape endpoint as.
+/// Tools that find Prometheus scrape targets with DNS-SD look for this type.
+pub const SCRAPE_SERVICE: &str = "_prometheus-http._tcp";
+
+/// The start of the name that a board registers itself and its scrape
+/// endpoint under. The board's serial number follows.
+pub const HOST_NAME_PREFIX: &str = "sensor-board-";
+
+/// Whether a board has registered its scrape endpoint with the SRP server of
+/// its network, which runs on the border router. The border router
+/// advertises a registered endpoint over mDNS, as a [`SCRAPE_SERVICE`] named
+/// [`HOST_NAME_PREFIX`] and the board's serial number.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Schema)]
+#[cfg_attr(feature = "defmt", derive(defmt::Format))]
+pub enum Registration {
+    /// The board has nothing to register: it does not serve its metrics.
+    Off,
+    /// The board has not registered yet, and keeps trying. `last_error` is
+    /// why its last attempt failed, if one has.
+    Pending {
+        last_error: Option<RegistrationError>,
+    },
+    /// The server had the registration when the board last renewed it.
+    Registered,
+}
+
+/// Why an attempt to register failed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Schema)]
+#[cfg_attr(feature = "defmt", derive(defmt::Format))]
+pub enum RegistrationError {
+    /// The server holds the name for another key. A board gets a new key
+    /// when it restarts, so its own registration from before a restart is in
+    /// its way until that registration expires.
+    NameTaken,
+    /// The server did not answer.
+    NoResponse,
+    /// Any other error from the OpenThread stack.
+    Stack(OtError),
+}
+
+impl fmt::Display for RegistrationError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            RegistrationError::NameTaken => f.write_str("the name is taken"),
+            RegistrationError::NoResponse => f.write_str("the server did not answer"),
+            RegistrationError::Stack(e) => write!(f, "OpenThread error: {e}"),
+        }
     }
 }
 

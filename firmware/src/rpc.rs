@@ -22,12 +22,12 @@ use protocol::{
     DiscoverBoards, ENDPOINT_LIST, EnterBootloader, FinishInstall, FinishUpdate, FirmwareStatus,
     GetBoardConfig, GetBoardInfo, GetCoprocessorStatus, GetFirmwareStatus, GetMetrics,
     GetNetworkAddresses, GetNetworkDataset, GetNetworkNeighbors, GetNetworkRouters,
-    GetNetworkStatus, GetOfferProgress, ImageChunk, ImageSize, JoinNetwork, LeaveNetwork,
-    MeasureTempRh, Member, MetricsChunk, NeighborsResult, NetworkResult, NetworkStatus,
-    OfferProgress, ReadSensorValue, Report, ReportReceived, RoutersResult, SensorReadError,
-    SensorReadReq, SensorReadResult, SetBoardConfig, StartCollecting, StartOffering,
-    StopCollecting, StopOffering, TOPICS_IN_LIST, TOPICS_OUT_LIST, TempRhReq, TempRhResult,
-    UninstallStack, UpdateImage, UpdateResult, WriteInstall, WriteUpdate,
+    GetNetworkStatus, GetOfferProgress, GetRegistration, ImageChunk, ImageSize, JoinNetwork,
+    LeaveNetwork, MeasureTempRh, Member, MetricsChunk, NeighborsResult, NetworkResult,
+    NetworkStatus, OfferProgress, ReadSensorValue, Registration, Report, ReportReceived,
+    RoutersResult, SensorReadError, SensorReadReq, SensorReadResult, SetBoardConfig,
+    StartCollecting, StartOffering, StopCollecting, StopOffering, TOPICS_IN_LIST, TOPICS_OUT_LIST,
+    TempRhReq, TempRhResult, UninstallStack, UpdateImage, UpdateResult, WriteInstall, WriteUpdate,
 };
 
 use crate::{
@@ -93,6 +93,7 @@ define_dispatch! {
         | GetNetworkAddresses  | async    | network_addresses  |
         | GetMetrics           | blocking | metrics_text       |
         | DiscoverBoards       | async    | discover_boards    |
+        | GetRegistration      | blocking | registration       |
     };
     topics_in: {
         list: TOPICS_IN_LIST;
@@ -197,6 +198,10 @@ async fn network_routers(context: &mut Context, _header: VarHeader, (): ()) -> R
 
 async fn network_addresses(context: &mut Context, _header: VarHeader, (): ()) -> AddressesResult {
     context.thread.addresses().await
+}
+
+fn registration(context: &mut Context, _header: VarHeader, (): ()) -> Registration {
+    context.thread.registration()
 }
 
 fn metrics_text(context: &mut Context, _header: VarHeader, offset: u32) -> MetricsChunk {

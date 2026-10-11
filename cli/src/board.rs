@@ -15,11 +15,11 @@ use protocol::{
     DiscoverBoards, EnterBootloader, FinishInstall, FinishUpdate, FirmwareStatus, GetBoardConfig,
     GetBoardInfo, GetCoprocessorStatus, GetFirmwareStatus, GetMetrics, GetNetworkAddresses,
     GetNetworkDataset, GetNetworkNeighbors, GetNetworkRouters, GetNetworkStatus, GetOfferProgress,
-    ImageChunk, ImageSize, JoinNetwork, LeaveNetwork, MeasureTempRh, Member, NeighborTable,
-    NetworkError, NetworkStatus, OfferProgress, ReadSensorValue, Report, ReportReceived,
-    RouterTable, Sensor, SensorReadReq, SensorReadResult, SetBoardConfig, StartCollecting,
-    StartOffering, StopCollecting, StopOffering, TempRhReq, TempRhResult, USB_PID, USB_VID,
-    UninstallStack, UpdateImage, UpdateResult, WriteInstall, WriteUpdate,
+    GetRegistration, ImageChunk, ImageSize, JoinNetwork, LeaveNetwork, MeasureTempRh, Member,
+    NeighborTable, NetworkError, NetworkStatus, OfferProgress, ReadSensorValue, Registration,
+    Report, ReportReceived, RouterTable, Sensor, SensorReadReq, SensorReadResult, SetBoardConfig,
+    StartCollecting, StartOffering, StopCollecting, StopOffering, TempRhReq, TempRhResult, USB_PID,
+    USB_VID, UninstallStack, UpdateImage, UpdateResult, WriteInstall, WriteUpdate,
 };
 
 /// Timeout for a call to a board. The slowest call is a join or leave that
@@ -172,6 +172,12 @@ impl Board {
     pub async fn addresses(&self) -> Result<Addresses> {
         let result = self.call::<GetNetworkAddresses>(&()).await?;
         self.network_result(result)
+    }
+
+    /// Whether the board has registered its scrape endpoint with its
+    /// network's SRP server.
+    pub async fn registration(&self) -> Result<Registration> {
+        self.call::<GetRegistration>(&()).await
     }
 
     /// Subscribe to the discovery replies that the board forwards: the

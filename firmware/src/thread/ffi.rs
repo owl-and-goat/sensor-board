@@ -1903,6 +1903,70 @@ pub struct otTcpListenerInitializeArgs {
     #[doc = "< \"Accept done\" callback function"]
     pub mAcceptDoneCallback: otTcpAcceptDone,
 }
+#[doc = " Represents a TXT record entry representing a key/value pair (RFC 6763 - section 6.3).\n\n The string buffers pointed to by `mKey` and `mValue` MUST persist and remain unchanged after an instance of such\n structure is passed to OpenThread (as part of `otSrpClientService` instance).\n\n An array of `otDnsTxtEntry` entries are used in `otSrpClientService` to specify the full TXT record (a list of\n entries)."]
+#[repr(C)]
+#[derive(Debug, Copy, Clone)]
+pub struct otDnsTxtEntry {
+    #[doc = " The TXT record key string.\n\n If `mKey` is not NULL, then it MUST be a null-terminated C string. The entry is treated as key/value pair with\n `mValue` buffer providing the value.\n   - The entry is encoded as follows:\n        - A single string length byte followed by \"key=value\" format (without the quotation marks).\n- In this case, the overall encoded length must be 255 bytes or less.\n   - If `mValue` is NULL, then key is treated as a boolean attribute and encoded as \"key\" (with no `=`).\n   - If `mValue` is not NULL but `mValueLength` is zero, then it is treated as empty value and encoded as \"key=\".\n\n If `mKey` is NULL, then `mValue` buffer is treated as an already encoded TXT-DATA and is appended as is in the\n DNS message."]
+    pub mKey: *const core::ffi::c_char,
+    #[doc = "< The TXT record value or already encoded TXT-DATA (depending on `mKey`)."]
+    pub mValue: *const u8,
+    #[doc = "< Number of bytes in `mValue` buffer."]
+    pub mValueLength: u16,
+}
+impl otSrpClientItemState {
+    #[doc = "< Item to be added/registered."]
+    pub const OT_SRP_CLIENT_ITEM_STATE_TO_ADD: otSrpClientItemState = otSrpClientItemState(0);
+    #[doc = "< Item is being added/registered."]
+    pub const OT_SRP_CLIENT_ITEM_STATE_ADDING: otSrpClientItemState = otSrpClientItemState(1);
+    #[doc = "< Item to be refreshed (re-register to renew lease)."]
+    pub const OT_SRP_CLIENT_ITEM_STATE_TO_REFRESH: otSrpClientItemState = otSrpClientItemState(2);
+    #[doc = "< Item is being refreshed."]
+    pub const OT_SRP_CLIENT_ITEM_STATE_REFRESHING: otSrpClientItemState = otSrpClientItemState(3);
+    #[doc = "< Item to be removed."]
+    pub const OT_SRP_CLIENT_ITEM_STATE_TO_REMOVE: otSrpClientItemState = otSrpClientItemState(4);
+    #[doc = "< Item is being removed."]
+    pub const OT_SRP_CLIENT_ITEM_STATE_REMOVING: otSrpClientItemState = otSrpClientItemState(5);
+    #[doc = "< Item is registered with server."]
+    pub const OT_SRP_CLIENT_ITEM_STATE_REGISTERED: otSrpClientItemState = otSrpClientItemState(6);
+    #[doc = "< Item is removed."]
+    pub const OT_SRP_CLIENT_ITEM_STATE_REMOVED: otSrpClientItemState = otSrpClientItemState(7);
+}
+#[repr(transparent)]
+#[doc = " Specifies an SRP client item (service or host info) state."]
+#[derive(Debug, Copy, Clone, Hash, PartialEq, Eq)]
+pub struct otSrpClientItemState(pub core::ffi::c_uchar);
+#[doc = " Represents an SRP client service.\n\n The values in this structure, including the string buffers for the names and the TXT record entries, MUST persist\n and stay constant after an instance of this structure is passed to OpenThread from `otSrpClientAddService()` or\n `otSrpClientRemoveService()`.\n\n The `mState`, `mData`, `mNext` fields are used/managed by OT core only. Their value is ignored when an instance of\n `otSrpClientService` is passed in `otSrpClientAddService()` or `otSrpClientRemoveService()` or other functions. The\n caller does not need to set these fields.\n\n The `mLease` and `mKeyLease` fields specify the desired lease and key lease intervals for this service. Zero value\n indicates that the interval is unspecified and then the default lease or key lease intervals from\n `otSrpClientGetLeaseInterval()` and `otSrpClientGetKeyLeaseInterval()` are used for this service. If the key lease\n interval (whether set explicitly or determined from the default) is shorter than the lease interval for a service,\n SRP client will re-use the lease interval value for key lease interval as well. For example, if in service `mLease`\n is explicitly set to 2 days and `mKeyLease` is set to zero and default key lease is set to 1 day, then when\n registering this service, the requested key lease for this service is also set to 2 days."]
+#[repr(C)]
+#[derive(Debug, Copy, Clone)]
+pub struct otSrpClientService {
+    #[doc = "< The service labels (e.g., \"_mt._udp\", not the full domain name)."]
+    pub mName: *const core::ffi::c_char,
+    #[doc = "< The service instance name label (not the full name)."]
+    pub mInstanceName: *const core::ffi::c_char,
+    #[doc = "< Array of sub-type labels (must end with `NULL` or can be `NULL`)."]
+    pub mSubTypeLabels: *const *const core::ffi::c_char,
+    #[doc = "< Array of TXT entries (`mNumTxtEntries` gives num of entries)."]
+    pub mTxtEntries: *const otDnsTxtEntry,
+    #[doc = "< The service port number."]
+    pub mPort: u16,
+    #[doc = "< The service priority."]
+    pub mPriority: u16,
+    #[doc = "< The service weight."]
+    pub mWeight: u16,
+    #[doc = "< Number of entries in the `mTxtEntries` array."]
+    pub mNumTxtEntries: u8,
+    #[doc = "< Service state (managed by OT core)."]
+    pub mState: otSrpClientItemState,
+    #[doc = "< Internal data (used by OT core)."]
+    pub mData: u32,
+    #[doc = "< Pointer to next entry in a linked-list (managed by OT core)."]
+    pub mNext: *mut otSrpClientService,
+    #[doc = "< Desired lease interval in sec - zero to use default."]
+    pub mLease: u32,
+    #[doc = "< Desired key lease interval in sec - zero to use default."]
+    pub mKeyLease: u32,
+}
 pub mod MsgId_M4toM0_Enum_t {
     pub type Type = core::ffi::c_ushort;
     pub const MSG_M4TOM0_OT_LINK_ACTIVE_SCAN: Type = 0;

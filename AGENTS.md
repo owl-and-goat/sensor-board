@@ -398,6 +398,61 @@ answered in full (1528 bytes), on a board that had served a scrape before.
 Not tested yet: an outgoing connection that is accepted, so no push has
 reached a Pushgateway.
 
+## Service registration
+
+A board that serves scrapes registers the endpoint with the SRP server of
+its network, which runs on the border router (`Tcp::register`, called from
+`metrics.rs`). The border router advertises a registered endpoint over mDNS
+on the LAN: a `_prometheus-http._tcp` service named `sensor-board-<serial>`,
+on a host of the same name that has the board's routable address. Prometheus
+gets its targets from there. On cerberus that is
+`nixos/modules/cerberus/prometheus-mdns-sd.nix` in the universe repository,
+which writes what avahi sees to a `file_sd` file. A board that pushes
+registers nothing.
+
+The SRP client is OpenThread's, on CPU2 (`otSrpClient*`, wrapped in
+`thread/ot.rs`). The firmware gives it a host name and one service. The
+client does the rest: it finds the server in the network data, registers the
+addresses that are reachable from outside the Thread network, and renews the
+registration. `network registration` prints the state that the Thread
+service last published (`GetRegistration`).
+
+Things learned about the SRP client:
+
+- CPU2 keeps nothing across a reset. It makes a new SRP key every time it
+  starts, and the board gets new mesh-local and routable addresses. The
+  server reserves a name for the key that registered it. So after a reset it
+  rejects the board (`RegistrationError::NameTaken`) until the previous
+  registration has run out. For that reason the lease and the key lease are
+  both two minutes (`REGISTRATION_LEASE`), and the client renews every
+  minute. The client retries by itself, with a growing delay.
+- The lease intervals have to be set on the client, not in the service. An
+  update that only changes the host uses the client's intervals, which
+  default to two hours and fourteen days.
+- ST's build starts the client by itself once the network data has a server.
+  Nothing has to call `otSrpClientStart` or enable auto-start.
+- CPU2 keeps the `otSrpClientService` it is given, writes the service's
+  state into it, and keeps reading the name strings (`SrpBuffer`). The
+  firmware reads the state from there.
+- After `otSrpClientSetCallback`, CPU2 reports the outcome of each update as
+  a notification (`MSG_M0TOM4_SRP_CLIENT_CB`), with the `otError` as the
+  first argument. None of the calls that the firmware makes runs the
+  callback before it returns.
+- `otSrpClientRemoveService` leaves the service with the client until the
+  server has answered. `otSrpClientClearService` takes it back at once, so
+  the firmware calls it before it changes the service.
+
+Tested on a board on 2026-10-11, on the border router's network: the first
+registration, the mDNS advertisement as seen from the border router's
+machine and from another machine on the LAN, scrapes from the border
+router's machine at the advertised address (2588 bytes), the registration
+after a restart (108 s and 109 s, with `NameTaken` until then), the service
+removed within ten seconds when the board switched to pushing and
+registered again when it switched back, and scrapes answered again 16 s
+after a connection attempt that the board could not answer. With the module
+live on cerberus, Prometheus scraped the board it found this way, under the
+board's serial number as the instance. Only that one board had the firmware.
+
 ## Board configuration
 
 `protocol::BoardConfig` is stored in the stored-configuration page, after
