@@ -85,14 +85,16 @@ enum FirmwareCommand {
         #[command(flatten)]
         target: Target,
     },
-    /// Update every board on the network. The attached board receives the image and offers
-    /// it to the others, which fetch it over the network. The attached board is updated last
+    /// Update every board on the network. An attached board receives the image and offers it
+    /// to the others, which fetch it over the network. That board is updated last
     Push {
         /// The image, as built by `just firmware-image`
         image: PathBuf,
 
-        #[command(flatten)]
-        target: Target,
+        /// The attached board to push through: its serial number, or the start of it. Without
+        /// it, the first attached board that is on a network
+        #[arg(long, value_name = "SERIAL")]
+        board: Option<String>,
     },
 }
 
@@ -368,9 +370,9 @@ async fn main() -> Result<()> {
             let image = firmware::Image::read(&image)?;
             firmware::update(target.board().await?, &image).await
         }
-        Command::Firmware(FirmwareCommand::Push { image, target }) => {
+        Command::Firmware(FirmwareCommand::Push { image, board }) => {
             let image = firmware::Image::read(&image)?;
-            firmware::push(target.board().await?, &image).await
+            firmware::push(firmware::gateway(board.as_deref()).await?, &image).await
         }
         Command::Network(NetworkCommand::Addresses(target)) => {
             let board = target.board().await?;

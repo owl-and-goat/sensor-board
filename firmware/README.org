@@ -10,13 +10,15 @@ update (see below) and starts the firmware. from the top of the repository:
   just flash                  # both, through the st-link on the jtag port
   just update                 # the firmware, over usb, through the running firmware
   just update-all             # the same for every attached board, one after the other
-  just push                   # the firmware, to every board on the network, through the attached one
+  just push                   # the firmware, to every board on the network, through an attached one
   just dfu-flash              # both, over usb, through the rom bootloader
   just dfu-flash-all          # the same for every attached board, one after the other
 #+end_src
 
-with several boards attached, =just update=, =just push= and =just dfu-flash=
-take =--board <serial>=. to flash only the firmware through the probe and
+with several boards attached, =just update= and =just dfu-flash= take
+=--board <serial>=. =just push= goes through the first attached board that is
+on a network, unless it is given =--board=. to flash only the firmware
+through the probe and
 watch the board's log (the bootloader has to be on the board already):
 
 #+begin_src sh
@@ -109,7 +111,7 @@ unambiguous prefix of it.
   cargo run -- bootloader --board 4d       # reboot into the rom bootloader
   cargo run -- firmware status --board 4d  # the running build, and the state of an update
   cargo run -- firmware update <image> --board 4d  # see "firmware updates" above
-  cargo run -- firmware push <image> --board 4d    # update every board on the network
+  cargo run -- firmware push <image>       # update every board on the network
   cargo run -- network addresses --board 4b  # that board's ipv6 addresses
   cargo run -- network registration --board 4b  # whether prometheus can find that board
   cargo run -- network show                # every sensor board on the network; see below

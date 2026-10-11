@@ -67,6 +67,21 @@ impl Board {
         }
     }
 
+    /// The first attached board that is on a network.
+    pub async fn first_on_network() -> Result<Option<Board>> {
+        for device in devices().await? {
+            let Ok(board) = Board::open(&device).await else {
+                continue;
+            };
+            if let Ok(NetworkStatus::Configured(link)) = board.network_status().await
+                && link.role.is_attached()
+            {
+                return Ok(Some(board));
+            }
+        }
+        Ok(None)
+    }
+
     pub async fn open(device: &nusb::DeviceInfo) -> Result<Board> {
         let serial = serial_of(device).to_owned();
 

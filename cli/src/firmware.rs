@@ -136,12 +136,25 @@ async fn restart_into_staged(board: Board, image: &Image) -> Result<()> {
     Ok(())
 }
 
+/// The attached board to push through: the one that `serial` selects, or
+/// without it the first that is on a network. Any board on the network can
+/// offer an image to the others.
+pub async fn gateway(serial: Option<&str>) -> Result<Board> {
+    if serial.is_none()
+        && let Some(board) = Board::first_on_network().await?
+    {
+        return Ok(board);
+    }
+    Board::select(serial).await
+}
+
 /// Update every board on the network to `image` through `gateway`. The
 /// gateway receives the image over USB and offers it to the other boards,
 /// which fetch it over the network and restart into it. The gateway itself
 /// is updated last, once every board that is heard from runs the image.
 pub async fn push(gateway: Board, image: &Image) -> Result<()> {
     let serial = gateway.serial().to_owned();
+    eprintln!("Pushing through board {serial}.");
     let status = gateway.firmware_status().await?;
     if status.update != UpdateStatus::Staged(image.describes) {
         stage(&gateway, image).await?;

@@ -16,7 +16,7 @@ use tokio::{
 };
 
 use crate::{
-    board::{self, Board},
+    board::Board,
     border_router::{BorderRouter, RouterLink},
     network,
 };
@@ -72,28 +72,13 @@ pub async fn show(serial: Option<&str>, border_router: Option<&str>) -> Result<(
     let found = match (border_router, serial) {
         (Some(address), _) => through_border_router(address).await?,
         (None, Some(serial)) => through_board(&Board::select(Some(serial)).await?).await?,
-        (None, None) => match attached_board().await? {
+        (None, None) => match Board::first_on_network().await? {
             Some(board) => through_board(&board).await?,
             None => through_border_router(DEFAULT_BORDER_ROUTER).await?,
         },
     };
     print!("{}", describe(&found));
     Ok(())
-}
-
-/// The first attached board that is on a network.
-async fn attached_board() -> Result<Option<Board>> {
-    for device in board::devices().await? {
-        let Ok(board) = Board::open(&device).await else {
-            continue;
-        };
-        if let Ok(NetworkStatus::Configured(link)) = board.network_status().await
-            && link.role.is_attached()
-        {
-            return Ok(Some(board));
-        }
-    }
-    Ok(None)
 }
 
 /// Find the boards on the network of `board`. Each link is as `board`
