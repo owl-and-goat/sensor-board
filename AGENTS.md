@@ -307,6 +307,20 @@ Things learned the hard way:
   sender's own socket if `mMulticastLoop` is set. That is how a collecting
   board receives its own report.
 
+Not understood yet, seen on 2026-10-11: two boards stopped receiving and
+sending on the radio, one and five minutes after they had come back from a
+restart into an image that they had fetched from the CLI through the border
+router. CPU2 still answered calls, so their neighbor and router tables could
+be read. But every neighbor's age kept growing, a multicast that the board
+sent was not delivered back to it (`network show` through the board listed
+nothing, not even the board), and its registration ran out. CPU1 kept
+running, so the watchdog did not reset the board. A restart brought each
+board back. One of the two, while it still answered pings and scrapes, did
+not answer UDP from outside the Thread network. Scrapes from two machines at
+once and discovery requests did not make a restarted board do it again. The
+three boards that had been updated through a board that morning kept
+working.
+
 ## Sensor reports
 
 `firmware/src/report.rs` multicasts a `protocol::Report` to every board
