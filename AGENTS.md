@@ -381,6 +381,13 @@ Things learned about the TCP API:
 - `otIp6GetUnicastAddresses` returns a pointer into CPU2's own memory, which
   CPU1 can read. The firmware follows the list only while its pointers stay
   in RAM.
+- The stack accepts a connection from a peer that the board cannot answer,
+  and does not report that the handshake never completes (not within four
+  minutes). The endpoint then refuses every other connection. So an `Accept`
+  request aborts a connection that has been opening for longer than
+  `TCP_TIMEOUT`. A machine on the LAN that connects from a global address is
+  such a peer: the border router's network data only has a route to
+  `fc00::/7`.
 
 Tested on a board on 2026-10-10: initializing the endpoint and the listener,
 listening, connections that are refused or never answered, aborting a

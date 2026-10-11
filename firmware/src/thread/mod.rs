@@ -39,7 +39,7 @@ use embassy_sync::{
     blocking_mutex::{Mutex, raw::ThreadModeRawMutex},
     channel::{self, Channel},
 };
-use embassy_time::Duration;
+use embassy_time::{Duration, Instant};
 use protocol::{
     Addresses, AddressesResult, DISCOVERY_PORT, Dataset, Link, NeighborTable, NeighborsResult,
     NetworkError, NetworkResult, NetworkStatus, OtError, Router, RouterId, RouterTable,
@@ -649,6 +649,8 @@ struct TcpEndpoint {
     /// The port the listener is listening on.
     listening: Option<u16>,
     connection: Connection,
+    /// When the connection started being established.
+    opening_since: Instant,
     /// Whether the last chunk sent is still unacknowledged, in which case
     /// the stack is still reading the send buffer.
     sending: bool,
@@ -701,6 +703,7 @@ impl Service {
                 ready: false,
                 listening: None,
                 connection: Connection::Closed,
+                opening_since: Instant::now(),
                 sending: false,
                 end_of_stream: false,
                 waiting: None,
@@ -894,19 +897,30 @@ impl Network<'_, '_> {
                 }
                 done
             }
-            TcpRequest::Accept => match self.tcp.connection {
-                Connection::Open => done,
-                Connection::Closed | Connection::Opening if self.tcp.listening.is_some() => {
-                    Ok(TcpStep::Wait(TcpWait::Accepted))
+            TcpRequest::Accept => {
+                // A peer that the board cannot answer never completes the
+                // handshake, and the stack does not report that. Free the
+                // endpoint, or it would refuse every later connection.
+                if self.tcp.connection == Connection::Opening
+                    && self.tcp.opening_since.elapsed() > TCP_TIMEOUT
+                {
+                    self.tcp_close().await?;
                 }
-                _ => Err(TcpError::OutOfSequence),
-            },
+                match self.tcp.connection {
+                    Connection::Open => done,
+                    Connection::Closed | Connection::Opening if self.tcp.listening.is_some() => {
+                        Ok(TcpStep::Wait(TcpWait::Accepted))
+                    }
+                    _ => Err(TcpError::OutOfSequence),
+                }
+            }
             TcpRequest::Connect(peer) => {
                 if self.tcp.connection != Connection::Closed {
                     return Err(TcpError::OutOfSequence);
                 }
                 self.ot.tcp_connect(buffer, peer).await?;
                 self.tcp.connection = Connection::Opening;
+                self.tcp.opening_since = Instant::now();
                 Ok(TcpStep::Wait(TcpWait::Connected))
             }
             TcpRequest::Send(chunk) => {
@@ -943,20 +957,26 @@ impl Network<'_, '_> {
                 done
             }
             TcpRequest::Close => {
-                if self.tcp.connection != Connection::Closed {
-                    let (aborted, state_changed) =
-                        ot::tcp_abort(&mut self.notif_rx, &mut self.ot, buffer).await;
-                    if state_changed {
-                        self.publish_status().await;
-                    }
-                    aborted?;
-                }
-                self.tcp.connection = Connection::Closed;
-                self.tcp.sending = false;
-                self.tcp.end_of_stream = false;
+                self.tcp_close().await?;
                 done
             }
         }
+    }
+
+    /// Abort the endpoint's connection, whatever state it is in.
+    async fn tcp_close(&mut self) -> ot::Result<()> {
+        if self.tcp.connection != Connection::Closed {
+            let (aborted, state_changed) =
+                ot::tcp_abort(&mut self.notif_rx, &mut self.ot, &self.buffers.tcp).await;
+            if state_changed {
+                self.publish_status().await;
+            }
+            aborted?;
+        }
+        self.tcp.connection = Connection::Closed;
+        self.tcp.sending = false;
+        self.tcp.end_of_stream = false;
+        Ok(())
     }
 
     /// Handle a TCP callback from the stack.
@@ -964,7 +984,10 @@ impl Network<'_, '_> {
         use ot::{TcpDisconnected, TcpEvent};
 
         match event {
-            TcpEvent::Incoming { accepted: true } => self.tcp.connection = Connection::Opening,
+            TcpEvent::Incoming { accepted: true } => {
+                self.tcp.connection = Connection::Opening;
+                self.tcp.opening_since = Instant::now();
+            }
             TcpEvent::Incoming { accepted: false } => {}
             TcpEvent::Established => {
                 // The stack may report an accepted connection twice.
