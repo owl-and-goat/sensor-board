@@ -1,14 +1,34 @@
 //! The `config` commands: show or change a board's configuration, which sets
 //! the sensors it reads, how often, and how it is powered. The target is an
-//! attached board, or a board on its network.
+//! attached board, or a board on a network that an attached board or a
+//! border router reaches.
 
-use std::{net::SocketAddrV6, time::Duration};
+use std::{
+    net::{Ipv6Addr, SocketAddrV6},
+    time::Duration,
+};
 
-use anyhow::{Result, bail};
+use anyhow::{Context, Result, bail};
 use clap::{Args, ValueEnum};
-use protocol::{BoardConfig, BoardId, PowerMode, Sensor, SensorConfig, SensorsConfig};
+use protocol::{
+    BoardConfig, BoardId, CONFIG_PORT, ConfigMessage, PowerMode, Sensor, SensorConfig,
+    SensorsConfig,
+};
+use tokio::{
+    net::UdpSocket,
+    time::{Instant, timeout_at},
+};
 
-use crate::board::Board;
+use crate::{
+    board::Board,
+    border_router::{self, BorderRouter},
+};
+
+/// How long to wait for a board's reply to a request sent through a border
+/// router, and how often to resend the request in that time. A board that
+/// relays a request for the host uses the same times.
+const REPLY_TIMEOUT: Duration = Duration::from_secs(6);
+const RESEND_INTERVAL: Duration = Duration::from_secs(2);
 
 /// The changes to make to a board's configuration.
 #[derive(Args)]
@@ -81,39 +101,183 @@ impl Changes {
     }
 }
 
-/// Print the configuration of `remote`, which `board` asks over the network,
-/// or with `None` of `board` itself.
-pub async fn show(board: &Board, remote: Option<BoardId>) -> Result<()> {
-    let target = target(board, remote)?;
-    match board.board_config(target).await? {
+/// How a `config` command reaches the board it applies to.
+pub enum Route {
+    /// Through an attached board: over USB for that board itself, and
+    /// relayed over its network for another board.
+    Attached(Board),
+    /// Through a border router: this machine sends the [`ConfigMessage`]s
+    /// itself.
+    BorderRouter(Devices),
+}
+
+impl Route {
+    /// The board a command applies to: `remote`, or without it the attached
+    /// board.
+    fn target(&self, remote: Option<BoardId>) -> Result<BoardId> {
+        match (remote, self) {
+            (Some(remote), _) => Ok(remote),
+            (None, Route::Attached(board)) => board.id(),
+            (None, Route::BorderRouter(_)) => {
+                bail!("through the border router, --remote <serial> has to name the board")
+            }
+        }
+    }
+
+    async fn get(&mut self, target: BoardId) -> Result<Option<BoardConfig>> {
+        match self {
+            Route::Attached(board) => board.board_config(target).await,
+            Route::BorderRouter(devices) => devices.ask(target, None).await,
+        }
+    }
+
+    async fn set(&mut self, target: BoardId, config: &BoardConfig) -> Result<()> {
+        match self {
+            Route::Attached(board) => board.set_board_config(target, config).await,
+            Route::BorderRouter(devices) => {
+                // The reply is what the board has stored after the request.
+                let stored = devices.ask(target, Some(config)).await?;
+                if stored.as_ref() != Some(config) {
+                    bail!("board {target} could not store the configuration");
+                }
+                Ok(())
+            }
+        }
+    }
+}
+
+/// The devices on a border router's network, and the socket that this
+/// machine sends them [`ConfigMessage`]s from.
+pub struct Devices {
+    socket: UdpSocket,
+    addresses: Vec<Ipv6Addr>,
+    /// The number for the next request. A reply carries the number of the
+    /// request it answers.
+    next_question: u32,
+}
+
+impl Devices {
+    /// The devices on the network of the border router whose REST API is at
+    /// `address`.
+    pub async fn of(address: &str) -> Result<Devices> {
+        eprintln!("Asking through the border router at {address}.");
+        let (node, devices) = BorderRouter::at(address).network().await?;
+        let addresses = border_router::routable_addresses(&node, &devices);
+        if addresses.is_empty() {
+            bail!("the border router lists no other device with a routable address");
+        }
+        // A board replies to the configuration port, whatever port the
+        // request came from.
+        let socket = UdpSocket::bind((Ipv6Addr::UNSPECIFIED, CONFIG_PORT))
+            .await
+            .with_context(|| format!("could not bind UDP port {CONFIG_PORT}"))?;
+        Ok(Devices {
+            socket,
+            addresses,
+            // Not the number of a request from an earlier run, whose reply
+            // could still arrive.
+            next_question: rand::random(),
+        })
+    }
+
+    /// Ask `board` to store `config`, or with `None` only for its
+    /// configuration. Returns the configuration it then has. The request
+    /// goes to every device, because the address of `board` is not known.
+    async fn ask(
+        &mut self,
+        board: BoardId,
+        config: Option<&BoardConfig>,
+    ) -> Result<Option<BoardConfig>> {
+        let question = self.next_question;
+        self.next_question = question.wrapping_add(1);
+        let request = match config {
+            Some(config) => ConfigMessage::Set {
+                board,
+                question,
+                config: config.clone(),
+            },
+            None => ConfigMessage::Get { board, question },
+        };
+        let mut encoded = [0; ConfigMessage::MAX_LEN];
+        let request = request
+            .encode(&mut encoded)
+            .expect("the buffer has room for the longest message");
+
+        let mut datagram = [0; 2 * ConfigMessage::MAX_LEN];
+        let deadline = Instant::now() + REPLY_TIMEOUT;
+        while Instant::now() < deadline {
+            let mut sent = Ok(());
+            let mut any_sent = false;
+            for address in &self.addresses {
+                match self.socket.send_to(request, (*address, CONFIG_PORT)).await {
+                    Ok(_) => any_sent = true,
+                    Err(e) => sent = Err(e),
+                }
+            }
+            if !any_sent {
+                sent.context("could not send to any device on the Thread network")?;
+            }
+
+            // Neither the request nor the reply is retransmitted when it is
+            // lost, so the request is sent again.
+            let resend_at = deadline.min(Instant::now() + RESEND_INTERVAL);
+            while let Ok(received) =
+                timeout_at(resend_at, self.socket.recv_from(&mut datagram)).await
+            {
+                let (len, _) = received.context("could not receive replies")?;
+                if let Some(stored) = reply(&datagram[..len], board, question) {
+                    return Ok(stored);
+                }
+            }
+        }
+        bail!(
+            "board {board} did not reply. A board replies if it is on the border router's \
+             network, its firmware has the same configuration layout as this CLI, and this \
+             machine has a route to the Thread network"
+        )
+    }
+}
+
+/// The configuration in `datagram`, if that is the reply of `board` to
+/// request number `question`.
+fn reply(datagram: &[u8], board: BoardId, question: u32) -> Option<Option<BoardConfig>> {
+    match ConfigMessage::decode(datagram)? {
+        ConfigMessage::Has {
+            board: from,
+            question: answered,
+            config,
+        } if (from, answered) == (board, question) => Some(config),
+        // A reply to an earlier request, or not a reply at all.
+        _ => None,
+    }
+}
+
+/// Print the configuration of `remote`, which `route` reaches over the
+/// network, or with `None` of the attached board.
+pub async fn show(mut route: Route, remote: Option<BoardId>) -> Result<()> {
+    let target = route.target(remote)?;
+    match route.get(target).await? {
         Some(config) => print!("Board {target}\n{}", describe(&config)),
         None => println!("Board {target} has no configuration."),
     }
     Ok(())
 }
 
-/// Apply `changes` to the configuration of `remote`, which `board` reaches
-/// over the network, or with `None` to that of `board` itself.
-pub async fn set(board: &Board, remote: Option<BoardId>, changes: &Changes) -> Result<()> {
+/// Apply `changes` to the configuration of `remote`, which `route` reaches
+/// over the network, or with `None` to that of the attached board.
+pub async fn set(mut route: Route, remote: Option<BoardId>, changes: &Changes) -> Result<()> {
     if changes.is_empty() {
         bail!("nothing to change: give --id, --power-mode, --sensor or --pushgateway");
     }
-    let target = target(board, remote)?;
-    let current = board.board_config(target).await?;
+    let target = route.target(remote)?;
+    let current = route.get(target).await?;
     let config = match changes.apply(current) {
         Ok(config) => config,
         Err(e) => bail!("board {target}: {e}"),
     };
-    board.set_board_config(target, &config).await?;
+    route.set(target, &config).await?;
     print!("Board {target} now has\n{}", describe(&config));
     Ok(())
-}
-
-fn target(board: &Board, remote: Option<BoardId>) -> Result<BoardId> {
-    match remote {
-        Some(remote) => Ok(remote),
-        None => board.id(),
-    }
 }
 
 /// Format the configuration as text, one setting per line.
@@ -339,6 +503,31 @@ mod tests {
         assert!(lines.contains(&"  capacitance1  off"), "{text}");
         assert!(lines.contains(&"  temperature   every 5m"), "{text}");
         assert_eq!(lines.len(), 3 + Sensor::value_variants().len());
+    }
+
+    #[test]
+    fn reply_has_to_match_the_board_and_the_question() {
+        let board = BoardId([0x4C; 12]);
+        let mut buffer = [0; ConfigMessage::MAX_LEN];
+        let mut encode = |message: ConfigMessage| message.encode(&mut buffer).unwrap().to_vec();
+        let has = |board, question, config| ConfigMessage::Has {
+            board,
+            question,
+            config,
+        };
+
+        let stored = encode(has(board, 7, Some(config())));
+        assert_eq!(reply(&stored, board, 7), Some(Some(config())));
+        // A board without a configuration.
+        assert_eq!(reply(&encode(has(board, 7, None)), board, 7), Some(None));
+
+        // A late reply to another request, another board's reply, a request,
+        // and a datagram that is no message.
+        assert_eq!(reply(&stored, board, 8), None);
+        assert_eq!(reply(&stored, BoardId([0x4D; 12]), 7), None);
+        let get = encode(ConfigMessage::Get { board, question: 7 });
+        assert_eq!(reply(&get, board, 7), None);
+        assert_eq!(reply(b"not a message", board, 7), None);
     }
 
     #[test]

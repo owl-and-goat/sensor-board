@@ -514,6 +514,12 @@ configuration it then has stored, which after a `Set` shows whether it
 stored the new one. The attached board resends the request every two
 seconds, and gives up after six.
 
+With no board attached, or with `--border-router`, the CLI sends the request
+itself (`Devices` in `cli/src/config.rs`): from UDP port 61622, to the
+routable address of every device that the border router's REST API lists,
+with the same two times. The firmware has nothing for this. A board replies
+to port 61622 at whatever address a request came from.
+
 - Changing `BoardConfig` (a new sensor, a new field) changes both keys: the
   one in flash and the one that `ConfigMessage` starts with. A board then
   has no configuration until it is set again. Boards on different sides of
@@ -534,3 +540,6 @@ Tested on boards on 2026-10-07: setting a configuration over USB, and on
 another board through the attached one. Both configurations survived a
 firmware update, and the attached board's survived leaving its network and
 joining it again.
+Tested on 2026-10-11, through the border router: reading the
+configurations of five boards, and changing one on an attached board, as
+seen over USB. Not tested: the commands with no board attached.

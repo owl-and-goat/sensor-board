@@ -42,8 +42,8 @@ use embassy_sync::{
 };
 use embassy_time::{Duration, Instant};
 use protocol::{
-    Addresses, AddressesResult, BoardId, DISCOVERY_PORT, Dataset, HOST_NAME_PREFIX, Link,
-    NeighborTable, NeighborsResult, NetworkError, NetworkResult, NetworkStatus, OtError,
+    Addresses, AddressesResult, BoardId, CONFIG_PORT, DISCOVERY_PORT, Dataset, HOST_NAME_PREFIX,
+    Link, NeighborTable, NeighborsResult, NetworkError, NetworkResult, NetworkStatus, OtError,
     Registration, RegistrationError, Router, RouterId, RouterTable, RoutersResult, UPDATE_PORT,
 };
 use static_cell::StaticCell;
@@ -76,10 +76,10 @@ impl Port {
     const fn number(self) -> u16 {
         match self {
             Port::Reports => 61620,
-            // The CLI also sends to this port and to the discovery port,
-            // through a border router.
+            // The CLI also sends to the other three ports, through a border
+            // router.
             Port::Updates => UPDATE_PORT,
-            Port::Configs => 61622,
+            Port::Configs => CONFIG_PORT,
             Port::Discovery => DISCOVERY_PORT,
         }
     }

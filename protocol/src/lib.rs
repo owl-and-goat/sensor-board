@@ -1153,9 +1153,16 @@ impl fmt::Display for ConfigError {
     }
 }
 
+/// The UDP port of [`ConfigMessage`]. A board replies to this port at the
+/// address a request came from, so a host that sends a request has to send
+/// it from this port.
+pub const CONFIG_PORT: u16 = 61622;
+
 /// The messages boards exchange over the network to read and set each
 /// other's configurations. The attached board uses them to forward
-/// [`GetBoardConfig`] and [`SetBoardConfig`] requests for other boards.
+/// [`GetBoardConfig`] and [`SetBoardConfig`] requests for other boards. A
+/// host can also send the requests itself, to each board's routable address
+/// through a border router.
 ///
 /// An encoded message starts with a key derived from the layout of this
 /// type, which includes [`BoardConfig`]. Boards whose firmwares disagree on

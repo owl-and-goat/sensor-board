@@ -290,13 +290,20 @@ selects how the board exports its metrics (see "metrics" above):
 #+end_src
 
 with =--remote <serial>=, both commands apply to a board that is not
-attached. the attached board asks it over their network, and gives up after
-six seconds. =--remote= takes the board's full serial number, as =reports
-watch= prints it.
+attached. an attached board asks it over their network, and gives up after
+six seconds. with no board attached, or with =--border-router=, this machine
+asks it instead: it sends the request to every device that the border router
+lists, as =network show= does, and waits as long. =--remote= takes the
+board's full serial number, as =network show= prints it.
 
 #+begin_src sh
   cargo run -- config set --remote 4D0021000350475532303120 --sensor temperature=30s
+  cargo run -- config show --remote 4D0021000350475532303120 --border-router
 #+end_src
+
+tested through the border router on 2026-10-11: reading the configurations
+of five boards, and changing one on an attached board, as seen over usb. not
+tested: the commands with no board attached.
 
 a firmware that changes the layout of the configuration (by adding a sensor,
 for example) cannot read a configuration that the previous firmware stored.

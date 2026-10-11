@@ -255,17 +255,56 @@ impl Target {
     }
 }
 
-/// The board that a `config` command applies to: an attached board, or a board that the attached
-/// one reaches over its network.
+/// The board that a `config` command applies to: an attached board, or a board on a network that
+/// an attached board or the border router reaches.
 #[derive(Args)]
 struct ConfigTarget {
-    /// The full serial number of a board on the attached board's network. The attached board
-    /// relays the command to it
+    /// The full serial number of a board that is not attached. An attached board relays the
+    /// command to it over their network. With no board attached, this machine sends it through
+    /// the border router
     #[arg(long, value_name = "SERIAL")]
     remote: Option<BoardId>,
 
+    /// Go through the border router whose REST API is at this address, or at cerberus:8081 if
+    /// no address is given, even if a board is attached. Needs --remote
+    #[arg(
+        long,
+        value_name = "HOST:PORT",
+        num_args = 0..=1,
+        default_missing_value = border_router::DEFAULT_ADDRESS,
+        conflicts_with = "board"
+    )]
+    border_router: Option<String>,
+
     #[command(flatten)]
     attached: Target,
+}
+
+impl ConfigTarget {
+    async fn route(&self) -> Result<config::Route> {
+        match border_router_for(&self.border_router, &self.attached.board).await? {
+            Some(address) => Ok(config::Route::BorderRouter(
+                config::Devices::of(&address).await?,
+            )),
+            None => Ok(config::Route::Attached(self.attached.board().await?)),
+        }
+    }
+}
+
+/// The border router to go through instead of an attached board, if any: the one that the
+/// command names, or the default one if the command names no board either and none is attached.
+async fn border_router_for(
+    border_router: &Option<String>,
+    board: &Option<String>,
+) -> Result<Option<String>> {
+    Ok(match border_router {
+        Some(address) => Some(address.clone()),
+        // With nothing attached, the border router is the only way.
+        None if board.is_none() && board::devices().await?.is_empty() => {
+            Some(border_router::DEFAULT_ADDRESS.to_owned())
+        }
+        None => None,
+    })
 }
 
 async fn list() -> Result<()> {
@@ -391,15 +430,7 @@ async fn main() -> Result<()> {
             border_router,
         }) => {
             let image = firmware::Image::read(&image)?;
-            let border_router = match border_router {
-                Some(address) => Some(address),
-                // With nothing attached, the border router is the only way.
-                None if board.is_none() && board::devices().await?.is_empty() => {
-                    Some(border_router::DEFAULT_ADDRESS.to_owned())
-                }
-                None => None,
-            };
-            match border_router {
+            match border_router_for(&border_router, &board).await? {
                 Some(address) => firmware::push_through_border_router(&address, &image).await,
                 None => firmware::push(firmware::gateway(board.as_deref()).await?, &image).await,
             }
@@ -442,12 +473,10 @@ async fn main() -> Result<()> {
             Ok(())
         }
         Command::Config(ConfigCommand::Show(target)) => {
-            let board = target.attached.board().await?;
-            config::show(&board, target.remote).await
+            config::show(target.route().await?, target.remote).await
         }
         Command::Config(ConfigCommand::Set { changes, target }) => {
-            let board = target.attached.board().await?;
-            config::set(&board, target.remote, &changes).await
+            config::set(target.route().await?, target.remote, &changes).await
         }
         Command::Sensor(SensorCommand::TempRh {
             precision,
