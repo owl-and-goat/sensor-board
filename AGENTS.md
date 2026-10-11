@@ -89,9 +89,15 @@ resetting it, run this from `firmware/`:
 probe-rs attach --chip STM32WB55CG --no-catch-reset target/thumbv7em-none-eabihf/release/sensor-board-firmware
 ```
 
-panic-probe handles a panic: it logs the message over defmt and raises a
-HardFault. What happens next depends on the probe. The first and the last
-case were measured on 2026-10-03, with the firmware of that day:
+panic-probe handles a panic: it raises a HardFault. It does not log the
+panic message, because its `print-defmt` feature is off. With the feature,
+every panic message and source location stays in the image, which took 27 K
+of flash (measured on 2026-10-11). To find a panic, read the backtrace that
+probe-rs prints. That has not been tried on a board since the feature was
+turned off.
+
+What happens next depends on the probe. The first and the last case were
+measured on 2026-10-03, with the firmware of that day:
 
 - Under `cargo run`: probe-rs stops on the fault, prints a backtrace and
   exits, leaving the core halted.
