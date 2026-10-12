@@ -716,16 +716,6 @@ pub unsafe trait OpenThread {
         }
     }
 
-    /// Set how long the device's parent keeps it as a child without hearing
-    /// from it, in seconds. The stack limits it to eight hours.
-    async fn thread_set_child_timeout(&mut self, secs: u32) {
-        unsafe {
-            // SAFETY: expects one argument, the timeout. Returns nothing.
-            self.ffi_call(ffi_command::MSG_M4TOM0_OT_THREAD_SET_CHILD_TIMEOUT, &[secs])
-                .await;
-        }
-    }
-
     /// Set how often a sleepy end device asks its parent for queued
     /// messages, in milliseconds. Zero selects the stack's own period,
     /// which is just short of the child timeout. A longer period than that
@@ -734,18 +724,6 @@ pub unsafe trait OpenThread {
         unsafe {
             // SAFETY: expects one argument, the period.
             self.ffi_try(ffi_command::MSG_M4TOM0_OT_LINK_SET_POLL_PERIOD, &[millis])
-                .await
-        }
-    }
-
-    /// Set the period of coordinated sampled listening, in microseconds: a
-    /// multiple of 160, and at least 10 ms. Zero turns it off. With a
-    /// period, a sleepy end device listens that often, in windows it agrees
-    /// with its parent, if the parent supports that.
-    async fn link_set_csl_period(&mut self, micros: u32) -> Result<()> {
-        unsafe {
-            // SAFETY: expects one argument, the period.
-            self.ffi_try(ffi_command::MSG_M4TOM0_OT_LINK_CSL_SET_PERIOD, &[micros])
                 .await
         }
     }

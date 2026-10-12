@@ -25,7 +25,7 @@
 //! The board's configuration selects its [`DeviceMode`]. A board on aux power
 //! is a full Thread device. A board on battery is a sleepy end device: its
 //! receiver is off, and its parent keeps the messages for it until the board
-//! listens ([`device_mode`]).
+//! asks for them ([`device_mode`]).
 
 use core::cell::{Cell, RefCell};
 use core::fmt::Write as _;
@@ -150,19 +150,6 @@ const SLEEPY_END_DEVICE: ot::LinkMode = ot::LinkMode {
     full_network_data: true,
 };
 
-/// The unit of a CSL period: 802.15.4 counts it in tens of symbols.
-const CSL_PERIOD_UNIT: time::Duration = time::Duration::from_micros(160);
-
-/// The shortest CSL period that the stack accepts, just under 10 ms, and the
-/// longest one that 802.15.4 has, about 10.5 s: the count of units is
-/// sixteen bits.
-const MIN_CSL_PERIOD: time::Duration = time::Duration::from_micros(62 * 160);
-const MAX_CSL_PERIOD: time::Duration = time::Duration::from_micros(0xffff * 160);
-
-/// How long a parent keeps a child that it does not hear from, unless the
-/// child polls so rarely that it needs longer: the stack's default.
-const CHILD_TIMEOUT: time::Duration = time::Duration::from_secs(240);
-
 /// The data poll period of a sleepy board while it may get an answer: while
 /// it has a TCP connection, and for [`ANSWER_TIME`] after it has sent a
 /// datagram. An answer arrives at the parent after the board has stopped
@@ -170,34 +157,16 @@ const CHILD_TIMEOUT: time::Duration = time::Duration::from_secs(240);
 const FAST_POLL_PERIOD: time::Duration = time::Duration::from_millis(100);
 const ANSWER_TIME: Duration = Duration::from_secs(2);
 
-/// The mode of a board with this configuration.
-///
-/// A board on battery wakes to read a sensor and to push its metrics, so it
-/// uses its radio once in the shortest poll interval of its sensors anyway.
-/// If that interval is short enough to be a CSL period, the board listens at
-/// the same interval, as a synchronized sleepy end device. Otherwise it
-/// polls its parent every [`SLEEPY_POLL_PERIOD`]. That is more often than
-/// its sensors need, so that a request reaches the board within a known
-/// time: a board on battery is not on USB, and can only be configured and
-/// updated over the network.
+/// The mode of a board with this configuration. A board on battery is a
+/// sleepy end device. It asks its parent for its messages every
+/// [`SLEEPY_POLL_PERIOD`], whatever the intervals of its sensors, so that a
+/// request reaches it within a known time: a board on battery is not on USB,
+/// and can only be configured and updated over the network.
 fn device_mode(config: Option<&BoardConfig>) -> DeviceMode {
-    // A board without a configuration is taken to be on aux power.
-    let Some(config) = config.filter(|config| config.power_mode == PowerMode::Battery) else {
-        return DeviceMode::Full;
-    };
-    match config.sensor_config.shortest_interval() {
-        Some(interval) if interval <= MAX_CSL_PERIOD => {
-            // A CSL period is a whole number of units. The interval is short
-            // enough for its microseconds to fit in 32 bits.
-            let units = interval.as_micros() as u32 / CSL_PERIOD_UNIT.as_micros() as u32;
-            let period = CSL_PERIOD_UNIT * units;
-            DeviceMode::SynchronizedSleepy {
-                csl_period: period.max(MIN_CSL_PERIOD),
-            }
-        }
-        _ => DeviceMode::Sleepy {
-            poll_period: SLEEPY_POLL_PERIOD,
-        },
+    match config {
+        Some(config) if config.power_mode == PowerMode::Battery => DeviceMode::Sleepy,
+        // A board without a configuration is taken to be on aux power.
+        _ => DeviceMode::Full,
     }
 }
 
@@ -991,28 +960,11 @@ impl Network<'_, '_> {
     /// Switch the stack to `mode`. If the board is attached and the change
     /// needs it, the stack detaches and attaches again by itself.
     async fn set_device_mode(&mut self, mode: DeviceMode) {
-        let (link_mode, child_timeout, csl_period) = match mode {
-            DeviceMode::Full => (FULL_DEVICE, CHILD_TIMEOUT, time::Duration::ZERO),
-            DeviceMode::Sleepy { poll_period } => (
-                SLEEPY_END_DEVICE,
-                CHILD_TIMEOUT.max(2 * poll_period),
-                time::Duration::ZERO,
-            ),
-            DeviceMode::SynchronizedSleepy { csl_period } => {
-                (SLEEPY_END_DEVICE, CHILD_TIMEOUT, csl_period)
-            }
+        let link_mode = match mode {
+            DeviceMode::Full => FULL_DEVICE,
+            DeviceMode::Sleepy => SLEEPY_END_DEVICE,
         };
-
-        // The link mode comes last: with it the board attaches again, and
-        // tells its new parent the child timeout and the CSL period.
-        let switched = async {
-            let timeout = child_timeout.as_secs() as u32;
-            self.ot.thread_set_child_timeout(timeout).await;
-            let csl_period = csl_period.as_micros() as u32;
-            self.ot.link_set_csl_period(csl_period).await?;
-            self.ot.thread_set_link_mode(link_mode).await
-        };
-        let switched = switched.await;
+        let switched = self.ot.thread_set_link_mode(link_mode).await;
         if switched.is_ok() {
             self.mode = mode;
             // A full Thread device listens all the time. Only a sleepy
@@ -1045,10 +997,8 @@ impl Network<'_, '_> {
             self.tcp.connection != Connection::Closed || Instant::now() < self.answer_until;
         let period = match self.mode {
             DeviceMode::Full => None,
-            _ if answer_expected => Some(FAST_POLL_PERIOD),
-            DeviceMode::Sleepy { poll_period } => Some(poll_period),
-            // The stack polls by itself as often as CSL needs.
-            DeviceMode::SynchronizedSleepy { .. } => None,
+            DeviceMode::Sleepy if answer_expected => Some(FAST_POLL_PERIOD),
+            DeviceMode::Sleepy => Some(SLEEPY_POLL_PERIOD),
         };
         if period == self.poll_period {
             return;

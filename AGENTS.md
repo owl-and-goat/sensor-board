@@ -568,15 +568,9 @@ first attaches, and again when the configuration changes. `network mode`
 prints the mode the service last switched to (`GetDeviceMode`).
 
 - Aux power, or no configuration: a full Thread device, as before.
-- Battery: a sleepy end device.
-  - If the shortest poll interval of its enabled sensors is at most
-    10.4856 s, that interval is the CSL period, and the board is a
-    synchronized sleepy end device. It wakes that often anyway, to read a
-    sensor and push. The limit is 802.15.4's: a CSL period is a 16-bit count
-    of 160 µs.
-  - Otherwise the board polls its parent every 10 s
-    (`protocol::SLEEPY_POLL_PERIOD`), whatever the intervals of its sensors.
-    That bounds how long a request to it waits at its parent.
+- Battery: a sleepy end device. It polls its parent every 10 s
+  (`protocol::SLEEPY_POLL_PERIOD`), whatever the intervals of its sensors.
+  That bounds how long a request to it waits at its parent.
 
 A board on battery is never on USB. JP2 connects the cell straight to the
 3 V rail, and USB power would then put 5 V on that rail (see `TODO.org`). So
@@ -599,8 +593,7 @@ such a board is configured and updated over the network only:
 A sleepy board polls every 100 ms while it has a TCP connection, and for two
 seconds after it sends a UDP datagram (`update_poll_period`). An answer
 reaches the parent after the board has stopped listening. Without the fast
-polls it would wait there until the next poll or CSL window, and a push
-would time out.
+polls it would wait there until the next poll, and a push would time out.
 
 For a sleepy board the firmware also sends `SHCI_C2_RADIO_AllowLowPower`, as
 ST's sleepy end device example does. CPU2 accepts it. What it saves has not
@@ -634,13 +627,10 @@ Things learned:
   child again within ten seconds of a change to battery, and a router again
   about a minute after a change to aux.
 - The stack's data poll period is the shorter of the period it is given and
-  the child timeout less four seconds. So a long poll period needs a long
-  child timeout. The firmware sets the timeout to twice the poll period, and
-  at least to the default 240 s. The stack limits it to eight hours.
-- With a CSL period set, the stack also polls every 99 s by itself, to stay
-  synchronized (the CSL timeout of 100 s).
-- `otLinkSetCslPeriod` takes microseconds: a multiple of 160, and at least
-  62 of them (from the stack's source, as are the two points above).
+  the child timeout less four seconds (from the stack's source). The
+  firmware's 10 s is far below the default child timeout of 240 s. A poll
+  period above that would also need a longer child timeout, which the stack
+  limits to eight hours.
 - A multicast to `ff03::1` does not reach a sleepy child. A parent forwards
   only the groups that the child registered with it, and the link-local and
   realm-local all-Thread-nodes addresses (`mesh_forwarder_ftd.cpp` in the
@@ -659,20 +649,24 @@ Things learned:
   a way for the CLI to learn the address.
 - `network show` collects replies for three seconds. A board on battery can
   take ten to reply, so it is often missing from the list.
-- CSL delivery has gaps. With the board silent (no Pushgateway), pings from
-  the border router's machine arrived in batches 10 s apart, but with
-  stretches of 30 to 60 s in which none arrived. That happened with a
-  sensor board as the parent and with the border router, and with the
-  radio's low-power mode allowed or not. A message that misses its windows
-  is delivered at the next data poll. With pushes every interval, that is
-  within the interval anyway, so CSL adds little here.
+- The firmware does not use CSL, which would make the board a synchronized
+  sleepy end device. It was tried on 2026-10-11 with a CSL period of 10 s
+  (`otLinkSetCslPeriod`, in microseconds, a multiple of 160). With the
+  board silent (no Pushgateway), pings from the border router's machine
+  arrived in batches 10 s apart, but with stretches of 30 to 60 s in which
+  none arrived. That happened with a sensor board as the parent and with
+  the border router, and with the radio's low-power mode allowed or not. A
+  message that misses its windows waits for the next data poll, and with a
+  CSL period set the stack only polls every 99 s by itself. A CSL window is
+  also at least 6 ms of receiving (the stack's minimums). Polling every
+  10 s delivered every ping within 11 s.
 
 Tested on a board on 2026-10-11 (battery, sound every 10 s, a Pushgateway on
 the LAN), with a sensor board and with the border router as the parent: the
 board attaching as a sleepy child, which the border router's diagnostics
 show as receiver off; pushes that the Pushgateway accepted, about one every
-10 s; CSL delivery as described above; an interval of 30 s, with a push
-every 30 s; the change to aux and back while attached; a
+10 s; CSL delivery, since removed, as described above; an interval of
+30 s, with a push every 30 s; the change to aux and back while attached; a
 scrape while on aux; and `network show` and `config show` for another board
 through the sleepy board, which got the replies.
 

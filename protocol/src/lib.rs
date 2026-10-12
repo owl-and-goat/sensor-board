@@ -1316,8 +1316,7 @@ impl fmt::Display for RegistrationError {
 
 /// How a board takes part in its Thread network. The board's power mode
 /// selects it: [`PowerMode::Aux`] is a full device, and
-/// [`PowerMode::Battery`] one of the two sleepy end devices, depending on
-/// the shortest poll interval of the board's sensors.
+/// [`PowerMode::Battery`] a sleepy end device.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Schema)]
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]
 pub enum DeviceMode {
@@ -1326,16 +1325,11 @@ pub enum DeviceMode {
     Full,
     /// A sleepy end device. Its receiver is off. Its parent queues the
     /// messages for it, and the board asks for them with a data poll every
-    /// `poll_period`, which is [`SLEEPY_POLL_PERIOD`] at most.
-    Sleepy { poll_period: Duration },
-    /// A synchronized sleepy end device. Its receiver is off except for a
-    /// short window every `csl_period`, at times it has agreed with its
-    /// parent (coordinated sampled listening). The parent sends to it in
-    /// those windows.
-    SynchronizedSleepy { csl_period: Duration },
+    /// [`SLEEPY_POLL_PERIOD`].
+    Sleepy,
 }
 
-/// A board that polls its parent does it at least this often, whatever the
+/// How often a sleepy board asks its parent for its messages, whatever the
 /// intervals of its sensors. A message to a board on battery waits at the
 /// board's parent for up to this long, so a request to one has to allow that
 /// long for the reply.

@@ -13,7 +13,7 @@ use std::{
 use anyhow::{Context, Result, bail};
 use protocol::{
     Address, Addresses, Dataset, DeviceMode, HOST_NAME_PREFIX, Link, NetworkStatus, Registration,
-    SCRAPE_SERVICE,
+    SCRAPE_SERVICE, SLEEPY_POLL_PERIOD,
 };
 use rand::RngExt;
 
@@ -343,13 +343,9 @@ pub fn describe_registration(serial: &str, registration: &Registration) -> Strin
 pub fn describe_device_mode(mode: DeviceMode) -> String {
     match mode {
         DeviceMode::Full => "full Thread device: its receiver is always on".into(),
-        DeviceMode::Sleepy { poll_period } => format!(
+        DeviceMode::Sleepy => format!(
             "sleepy end device: polls its parent every {}",
-            describe_interval(poll_period)
-        ),
-        DeviceMode::SynchronizedSleepy { csl_period } => format!(
-            "synchronized sleepy end device: listens every {}",
-            describe_interval(csl_period)
+            describe_interval(SLEEPY_POLL_PERIOD)
         ),
     }
 }
@@ -497,16 +493,8 @@ mod tests {
             "full Thread device: its receiver is always on"
         );
         assert_eq!(
-            describe_device_mode(DeviceMode::Sleepy {
-                poll_period: Duration::from_secs(300)
-            }),
-            "sleepy end device: polls its parent every 5m"
-        );
-        assert_eq!(
-            describe_device_mode(DeviceMode::SynchronizedSleepy {
-                csl_period: Duration::from_secs(10)
-            }),
-            "synchronized sleepy end device: listens every 10s"
+            describe_device_mode(DeviceMode::Sleepy),
+            "sleepy end device: polls its parent every 10s"
         );
     }
 }
