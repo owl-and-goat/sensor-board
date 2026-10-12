@@ -15,7 +15,7 @@ use core::net::SocketAddrV6;
 
 use embassy_futures::select::{Either, select};
 use embassy_sync::blocking_mutex::{Mutex, raw::ThreadModeRawMutex};
-use embassy_time::{Duration, Instant, Timer};
+use embassy_time::{Duration, Instant, Timer, with_timeout};
 use protocol::{
     BoardConfig, BoardId, MetricsChunk, PowerMode, Precision, Sensor, TempRh, TempRhReq,
 };
@@ -63,6 +63,11 @@ const JOB: &str = "sensor_board";
 
 /// Delay before the next push after a failed one.
 const PUSH_RETRY: Duration = Duration::from_secs(60);
+
+/// How long a board that pushes waits for its network before it measures.
+/// After that it goes on without, and the push fails if the network is not
+/// there.
+const NETWORK_WAIT: Duration = Duration::from_secs(30);
 
 /// Delay before trying to listen or to register again. Both fail until
 /// Thread has started.
@@ -488,6 +493,14 @@ impl Exporter {
                     Either::Second(()) => continue,
                 }
             };
+            // A reading that cannot be pushed is of no use, so wait for the
+            // network first. That matters when the board starts: a sensor is
+            // due at once, a few seconds before the board has attached.
+            let gateway = gateway.filter(|_| Instant::now() >= not_before);
+            if let Some(gateway) = gateway {
+                let _ = with_timeout(NETWORK_WAIT, self.tcp.ready(*gateway.ip())).await;
+            }
+
             self.read(sensor).await;
             // Also read every other sensor that is due, so that one push
             // covers them all.
@@ -499,7 +512,6 @@ impl Exporter {
             }
 
             if let Some(gateway) = gateway
-                && Instant::now() >= not_before
                 && !self.push_to(gateway).await
             {
                 not_before = Instant::now() + PUSH_RETRY;

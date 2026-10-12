@@ -44,6 +44,7 @@ use embassy_stm32_wpan::{
 use embassy_sync::{
     blocking_mutex::{Mutex, raw::ThreadModeRawMutex},
     channel::{self, Channel},
+    signal::Signal,
 };
 use embassy_time::{Duration, Instant, Timer};
 use protocol::{
@@ -256,6 +257,8 @@ impl SocketShared {
 /// device mode.
 struct Status {
     network: Mutex<ThreadModeRawMutex, RefCell<(NetworkStatus, Addresses)>>,
+    /// Signalled when `network` is published, for [`Tcp::ready`].
+    published: Signal<ThreadModeRawMutex, ()>,
     registration: Mutex<ThreadModeRawMutex, Cell<Registration>>,
     mode: Mutex<ThreadModeRawMutex, Cell<DeviceModeResult>>,
 }
@@ -280,6 +283,24 @@ impl Status {
     fn publish(&self, status: NetworkStatus, addresses: Addresses) {
         info!("thread: {}", status);
         self.network.lock(|s| s.replace((status, addresses)));
+        self.published.signal(());
+    }
+
+    /// Whether `peer` can answer the board: the board has attached, and it
+    /// has an address in `peer`'s own prefix, or one that is reachable from
+    /// outside the Thread network.
+    fn reaches(&self, peer: Ipv6Addr) -> bool {
+        self.network.lock(|s| {
+            let (status, addresses) = &*s.borrow();
+            let attached =
+                matches!(status, NetworkStatus::Configured(link) if link.role.is_attached());
+            let mut addresses = addresses.addresses.iter();
+            attached
+                && addresses.any(|own| {
+                    own.kind == AddressKind::Routable
+                        || own.address.segments()[..4] == peer.segments()[..4]
+                })
+        })
     }
 
     fn publish_registration(&self, registration: Registration) {
@@ -340,6 +361,7 @@ pub fn init(power: PowerMode) -> (Handle, Sockets, Tcp, Service) {
                 NetworkStatus::Starting,
                 Addresses::default(),
             ))),
+            published: Signal::new(),
             registration: Mutex::new(Cell::new(Registration::Off)),
             // The stack starts as a full Thread device.
             mode: Mutex::new(Cell::new(Ok(DeviceMode::Full))),
@@ -409,6 +431,7 @@ pub fn init(power: PowerMode) -> (Handle, Sockets, Tcp, Service) {
     };
     let tcp = Tcp {
         requests: tcp_client,
+        status: &shared.status,
     };
     (handle, sockets, tcp, service)
 }
@@ -478,9 +501,19 @@ const ACCEPT_INTERVAL: Duration = Duration::from_secs(60);
 /// [`Tcp::connect`] or accepted with [`Tcp::accept`].
 pub struct Tcp {
     requests: request::Client<TcpRequest, TcpResult>,
+    status: &'static Status,
 }
 
 impl Tcp {
+    /// Wait until `peer` can answer the board: until the board has attached
+    /// and has an address that `peer` can send to. The stack takes a
+    /// [`Tcp::connect`] before that too, and the connection then times out.
+    pub async fn ready(&mut self, peer: Ipv6Addr) {
+        while !self.status.reaches(peer) {
+            self.status.published.wait().await;
+        }
+    }
+
     /// Listen for connections on `port`, or with `None` stop listening.
     pub async fn listen(&mut self, port: Option<u16>) -> Result<(), TcpError> {
         self.request(TcpRequest::Listen(port), REQUEST_TIMEOUT)
