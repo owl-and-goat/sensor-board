@@ -373,11 +373,13 @@ send to a few addresses that no longer answer.
 
 - =network show= through an attached board only listens for three seconds,
   so it often misses a board on battery.
-- not solved yet: a board that stops hangs when it writes its flash, and
-  restarts about 30 s later. so =config set=, the button and =firmware push=
-  do not work on it, and a push can leave it in the rom bootloader. a board
-  that a probe has been attached to is not affected, because it does not
-  stop.
+- not solved yet: on 2026-10-11 a board that stopped hung twice when it was
+  to write its flash (the button, then a =config set=), and restarted about
+  30 s later with nothing written. it did not happen again the next day in
+  17 tries with the probe connected. until it is understood, a
+  =firmware push= to a board that stops may hang it, and three hangs in a
+  row leave it in the rom bootloader. a board that a probe session has
+  touched does not stop, and has not shown this.
 - measured on 2026-10-11 at 3.0 V, with sound every 10 s: about 20 µA
   while the chip is stopped, and 6 to 10 mA for about two seconds at every
   measurement and push. so the interval decides how long a cell lasts: that

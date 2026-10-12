@@ -165,9 +165,10 @@ CLOSED: [2026-09-03 Thu 22:37]
 Mostly the Y1 ring; also water1/water2, hp2/hp3, sda/scl, JP1 pairs.
 
 * Firmware
-** TODO find why a board that stops hangs when it writes flash
-see "Stop mode" in =AGENTS.md=. until then a board on battery that stops
-cannot be configured, reset with the button or updated.
+** TODO find why a board that stops hung when it wrote flash
+see "Stop mode" in =AGENTS.md=. seen twice with the probe off the board and
+a meter in the supply lead, not again in 17 tries with the probe connected.
+next: the same tries with the probe off, and the button.
 ** TODO bring down what a board on battery draws while it is awake
 stopped, it draws about 20 µA. awake, 6 to 10 mA for about two seconds
 per measurement and push (see "The current" in =AGENTS.md=). what is left:

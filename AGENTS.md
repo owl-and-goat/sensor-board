@@ -408,6 +408,10 @@ Prometheus. The power mode in the configuration selects how:
 - `Aux`: the board serves a scrape endpoint at `/metrics` on TCP port 9469.
 - `Battery`: the board pushes to its configured Pushgateway after every
   sensor read. It is also a sleepy end device (see "Boards on battery").
+  Before it reads a sensor it waits for the network, for up to 30 s
+  (`Tcp::ready`): until it has attached and has an address that the
+  Pushgateway can answer to. A sensor is due as soon as the board starts,
+  a few seconds before that.
 
 A board without a configuration is taken to be on aux power. It reads no
 sensors, so it serves only the firmware build and the scrape counter, and it
@@ -447,6 +451,9 @@ Things learned about the TCP API:
 - `otIp6GetUnicastAddresses` returns a pointer into CPU2's own memory, which
   CPU1 can read. The firmware follows the list only while its pointers stay
   in RAM.
+- The stack takes `otTcpConnect` before the board has attached, and the
+  connection then times out. A push made 1.2 s after a start, 0.2 s before
+  the board became a child, did that every time.
 - The stack accepts a connection from a peer that the board cannot answer,
   and does not report that the handshake never completes (not within four
   minutes). The endpoint then refuses every other connection. So an `Accept`
@@ -674,14 +681,33 @@ It finds them with `avahi-browse`, so it needs avahi.
 
 ### Stop mode
 
-Not solved yet, found on 2026-10-11: a board that really stops hangs when it
-writes its flash, and the watchdog resets it about 30 s later with nothing
-written. A `config set` through the border router did that (no reply, the
-old configuration still stored), and so did holding the button. Reading the
-configuration and pushing work. So such a board cannot be configured, reset
-with the button or updated, and an update would hang it at every attempt:
-three in a row put it in the ROM bootloader. A board whose debug port is
-enabled does not show this, which is why the tests below did not.
+Not solved yet, seen twice on 2026-10-11: a board that stopped hung when it
+was to write its flash, and the watchdog reset it about 30 s later with
+nothing written. Holding the button did that, and then a `config set`
+through the border router (no reply, the old configuration still stored).
+The board had been power-cycled with the probe taken off, and had a
+multimeter in its supply lead. Reading the configuration and pushing
+worked, for nine hours that night. If this happens on every write, such a
+board cannot be configured, reset with the button or updated, and an update
+would hang it at every attempt: three in a row put it in the ROM
+bootloader.
+
+It did not happen again on 2026-10-12, with the probe connected and not
+used: 17 `config set` through the border router were all stored and
+answered, ten of them while discovery requests kept arriving. The board
+stopped for real meanwhile: in a temporary build that counted them, 33 of
+its first 1124 wake-ups found HSE turned off. So it is not every write on a
+board that stops. What differed on the 11th is the probe being off the
+board, and perhaps the meter. One suspect in the code: `guarded` in
+`radio_flash.rs` waits in a loop for CPU2 to end its suspension of flash
+operations (`PESD`), and while it does, nothing acknowledges CPU2's
+notifications.
+
+To give a board back a disabled debug port without a power cycle, a
+temporary build entered Standby mode at the start of `main` (CPU2 not yet
+booted and allowed Shutdown, `DBGMCU_CR` cleared, the independent watchdog
+started to reset the chip out of it). Standby powers the core down, and the
+board came back with `C_DEBUGEN` clear.
 
 A board on battery puts the chip in Stop mode whenever every task waits and
 no peripheral is busy. The executor is embassy-stm32's (the `low-power`
@@ -773,8 +799,6 @@ seconds is also a lot for a coin cell.
 - The sensors are not put in a low-power state when they are not polled.
   Only the microphone is: it powers down when its clock stops.
 - The SMPS is off.
-- The first push after a start is made before the board has attached, and
-  times out. The next one is a minute later.
 - After three failed boots in a row a board enters the ROM bootloader (see
   "Logs and panics"). A board on battery cannot be reached there, and stays
   in it until its cell is taken out.
@@ -888,6 +912,10 @@ ignored that.
 - The same build after a power cycle with the probe taken off: the board
   stopped by itself (see "The current"), and the Pushgateway accepted its
   pushes meanwhile.
+
+Tested on 2026-10-12, on the same board: with the wait for the network, no
+push failed after a start (four pushes accepted in the first 45 s, where
+the first used to time out and the next came a minute later).
 
 Not tested: a board that runs from a cell, a board with I2C sensors that
 stops, and USB on a board on aux power with this build (none was attached).
