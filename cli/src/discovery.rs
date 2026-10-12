@@ -2,14 +2,17 @@
 //!
 //! Boards are found with [`DiscoveryMessage`]. An attached board multicasts
 //! the request and forwards the replies. Without one, this machine sends the
-//! request to every device that a border router lists, through that border
-//! router.
+//! request to every device that a border router lists and to every board
+//! that is advertised over mDNS, through that border router.
 
 use std::{collections::BTreeMap, net::Ipv6Addr, time::Duration};
 
 use anyhow::{Context, Result, bail};
 use postcard_rpc::host_client::MultiSubRxError;
-use protocol::{AddressKind, DISCOVERY_PORT, DiscoveryMessage, Member, NetworkStatus, RouterId};
+use protocol::{
+    AddressKind, BoardId, DISCOVERY_PORT, DiscoveryMessage, Member, NetworkStatus, RouterId,
+    SLEEPY_POLL_PERIOD,
+};
 use tokio::{
     net::UdpSocket,
     time::{Instant, timeout_at},
@@ -129,7 +132,10 @@ async fn through_board(board: &Board) -> Result<Vec<Found>> {
 async fn through_border_router(address: &str) -> Result<Vec<Found>> {
     eprintln!("Asking through the border router at {address}.");
     let (node, devices) = BorderRouter::at(address).network().await?;
-    let targets = border_router::targets(&node, &devices).await;
+    let border_router::Targets {
+        addresses: targets,
+        on_battery,
+    } = border_router::targets(&node, &devices).await;
     if targets.is_empty() {
         bail!("found no other device with a routable address on the Thread network");
     }
@@ -146,6 +152,7 @@ async fn through_border_router(address: &str) -> Result<Vec<Found>> {
 
     let mut members = BTreeMap::new();
     let mut datagram = [0; 2 * DiscoveryMessage::MAX_LEN];
+    let started = Instant::now();
     for _ in 0..ROUNDS {
         let mut sent = Ok(());
         let mut any_sent = false;
@@ -167,6 +174,22 @@ async fn through_border_router(address: &str) -> Result<Vec<Found>> {
             {
                 members.insert(member.board, member);
             }
+        }
+    }
+
+    // A board on battery only gets the request when it next polls its
+    // parent. Wait that long for the ones that are advertised.
+    let deadline = started + SLEEPY_POLL_PERIOD + ROUND;
+    let replied = |members: &BTreeMap<BoardId, Member>, serial: &String| {
+        members.keys().any(|board| board.to_string() == *serial)
+    };
+    while !on_battery.iter().all(|serial| replied(&members, serial)) {
+        let Ok(received) = timeout_at(deadline, socket.recv_from(&mut datagram)).await else {
+            break;
+        };
+        let (len, _) = received.context("could not receive replies")?;
+        if let Some(DiscoveryMessage::Reply(member)) = DiscoveryMessage::decode(&datagram[..len]) {
+            members.insert(member.board, member);
         }
     }
     if members.is_empty() {

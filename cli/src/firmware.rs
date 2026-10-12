@@ -328,7 +328,7 @@ async fn wait_for_boards(
 pub async fn push_through_border_router(address: &str, image: &Image) -> Result<()> {
     eprintln!("Pushing through the border router at {address}.");
     let (node, devices) = BorderRouter::at(address).network().await?;
-    let targets = border_router::targets(&node, &devices).await;
+    let targets = border_router::targets(&node, &devices).await.addresses;
     if targets.is_empty() {
         bail!("found no other device with a routable address on the Thread network");
     }

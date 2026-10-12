@@ -176,7 +176,8 @@ terminal and `TERM` is not `dumb`.
 (`push_through_border_router` in `cli/src/firmware.rs`). The CLI then does
 what an offering board does. It sends the offer from UDP port 61621 to the
 routable address of every device that the border router's REST API lists,
-and it answers the chunk requests. A board sends its requests to port 61621
+and of every board it finds over mDNS (see "Boards on battery"), and it
+answers the chunk requests. A board sends its requests to port 61621
 at the address the offer came from, which is why the CLI binds that port.
 
 - The offers are unicast. A multicast to `ff03::1` does not leave or enter
@@ -192,9 +193,9 @@ at the address the offer came from, which is why the CLI binds that port.
 
 Tested on boards on 2026-10-11, with the two attached boards as the only
 targets: both fetched from the CLI at the same time (about 2 KiB/s each, a
-single board about 2.9 KiB/s), restarted and kept the image. Not tested: a
-push to every device that the border router lists, and a push with no board
-attached.
+single board about 2.9 KiB/s), restarted and kept the image. Tested later
+that day: a push with no board attached, to every device that the border
+router lists and every board found over mDNS (see "Boards on battery").
 
 The encoding of `UpdateMessage` is frozen, and tests in `protocol` pin its
 bytes, because a board on an old firmware has to understand the offer of the
@@ -356,7 +357,8 @@ ways:
   gets into the list.
 - Through a border router. The CLI reads the device list from the border
   router's REST API (`/node` and `/diagnostics`, `cli/src/border_router.rs`)
-  and sends the request to each routable address itself.
+  and sends the request to each routable address itself. It also sends to
+  the boards it finds over mDNS, which include those on battery.
 
 Details:
 
@@ -378,9 +380,9 @@ Details:
 Tested on a board on 2026-10-10: the board listing itself through USB, a
 reply to a request from the CLI through the border router, the RLOC16 in the
 reply changing when the board became a router, and the border router's link
-quality for it. Only that one board had the firmware. Not tested: a second
-board's reply forwarded by the attached board, and link columns from the
-attached board's neighbor table.
+quality for it. Only that one board had the firmware. Tested on 2026-10-11:
+the replies of two other boards forwarded by the attached board, with the
+link columns from its neighbor table.
 
 ## Metrics
 
@@ -457,7 +459,8 @@ on a host of the same name that has the board's routable address. Prometheus
 gets its targets from there. On cerberus that is
 `nixos/modules/cerberus/prometheus-mdns-sd.nix` in the universe repository,
 which writes what avahi sees to a `file_sd` file. A board that pushes
-registers nothing.
+registers another service, for the CLI to find it by (see "Boards on
+battery").
 
 The SRP client is OpenThread's, on CPU2 (`otSrpClient*`, wrapped in
 `thread/ot.rs`). The firmware gives it a host name and one service. The
@@ -472,9 +475,10 @@ Things learned about the SRP client:
   starts, and the board gets new mesh-local and routable addresses. The
   server reserves a name for the key that registered it. So after a reset it
   rejects the board (`RegistrationError::NameTaken`) until the previous
-  registration has run out. For that reason the lease and the key lease are
-  both two minutes (`REGISTRATION_LEASE`), and the client renews every
-  minute. The client retries by itself, with a growing delay.
+  registration has run out. For that reason the lease and the key lease of
+  the scrape endpoint are both two minutes (`SCRAPE_SERVICE` in
+  `metrics.rs`), and the client renews every minute. The client retries by
+  itself, with a growing delay.
 - The lease intervals have to be set on the client, not in the service. An
   update that only changes the host uses the client's intervals, which
   default to two hours and fourteen days.
@@ -527,8 +531,8 @@ the board is attached or not (`route` in `cli/src/config.rs`). An attached
 board is asked over USB, and any other board through an attached board that
 is on a network. Without such a board, or with `--border-router`, the CLI
 sends the request itself (`Devices`): from UDP port 61622, to the routable
-address of every device that the border router's REST API lists, with the
-same two times. The firmware has nothing for this. A board replies to port
+address of every device that the border router's REST API lists and of
+every board it finds over mDNS, with the same two times. The firmware has nothing for this. A board replies to port
 61622 at whatever address a request came from.
 
 - Changing `BoardConfig` (a new sensor, a new field) changes both keys: the
@@ -542,9 +546,9 @@ same two times. The firmware has nothing for this. A board replies to port
   records.
 - When the dataset is written, a configuration record that the firmware
   cannot decode is copied over unchanged.
-- The metrics, the Thread service and the reports use the configuration.
-  Each has its own `Monitor` (`board_config.rs`), which notifies it of a
-  change.
+- The metrics, the reports and `power.rs` use the configuration. Each has
+  its own `Monitor` (`board_config.rs`), which notifies it of a change. The
+  Thread service is given the power mode that the board started with.
 - A request goes to the realm-local all-Thread-nodes address, so that it
   also reaches a board on battery (see "Boards on battery").
 
@@ -560,21 +564,55 @@ commands with no board attached.
 
 ## Boards on battery
 
-A board whose power mode is `Battery` is a Thread sleepy end device: its
-receiver is off, and its parent keeps the messages for it. `device_mode` in
-`firmware/src/thread/mod.rs` maps the configuration to a
+A board whose power mode is `Battery` is never on USB. JP2 connects its cell
+straight to the 3 V rail, and USB power on top of that would destroy the
+board (see `TODO.org`). So the firmware treats such a board differently in
+four ways, and it has to be configured and updated over the network.
+
+### No USB
+
+`power.rs` reads the power mode once, when the board starts. A board on
+battery does not start the USB device or the RPC server (`main.rs`). When
+the power mode changes later, the board restarts after two seconds, which
+leaves time for the reply to the request that changed it. So a `config set`
+that makes a board a board on battery takes it off USB. The restart also
+ends an update that is still on trial: the bootloader swaps the older
+firmware back.
+
+There are two ways back to USB. Both make the board a board on aux power:
+
+- `config set --power-mode aux` over the network.
+- Holding the button for five seconds (`button.rs`). That erases the
+  configuration and keeps the dataset, so the board stays on its network.
+  The LED blinks fast five times to confirm.
+
+The 48 MHz PLL still runs on a board on battery.
+
+### A sleepy end device
+
+`device_mode` in `firmware/src/thread/mod.rs` maps the configuration to a
 `protocol::DeviceMode`. The Thread service switches to it before the board
-first attaches, and again when the configuration changes. `network mode`
-prints the mode the service last switched to (`GetDeviceMode`).
+first attaches. `network mode` prints the mode the service last switched to
+(`GetDeviceMode`), for a board that is on USB.
 
 - Aux power, or no configuration: a full Thread device, as before.
-- Battery: a sleepy end device. It polls its parent every 10 s
+- Battery: a sleepy end device. Its receiver is off, and its parent keeps
+  the messages for it. It polls its parent every 10 s
   (`protocol::SLEEPY_POLL_PERIOD`), whatever the intervals of its sensors.
   That bounds how long a request to it waits at its parent.
 
-A board on battery is never on USB. JP2 connects the cell straight to the
-3 V rail, and USB power would then put 5 V on that rail (see `TODO.org`). So
-such a board is configured and updated over the network only:
+A sleepy board polls every 100 ms while it has a TCP connection, and for two
+seconds after it sends a UDP datagram (`update_poll_period`). An answer
+reaches the parent after the board has stopped listening. Without the fast
+polls it would wait there until the next poll, and a push would time out.
+
+For a sleepy board the firmware also sends `SHCI_C2_RADIO_AllowLowPower`, as
+ST's sleepy end device example does. CPU2 accepts it. What it saves has not
+been measured.
+
+A board on battery sends no sensor reports.
+
+### Reaching it
 
 - The requests that a board multicasts (configuration, discovery, update
   offers) go to the realm-local all-Thread-nodes address
@@ -588,26 +626,45 @@ such a board is configured and updated over the network only:
   fetch the image without ever reporting, which is how a board on battery
   shows up. It cannot see which build such a board runs afterwards.
 - A fetch needs no change of mode. The board polls fast for two seconds
-  after every chunk request (see below), which carries the whole fetch.
+  after every chunk request, which carries the whole fetch.
+- `network show` through an attached board collects replies for three
+  seconds. A board on battery can take ten to reply, so it is often missing
+  from that list. Through the border router, `network show` waits a poll
+  period for the boards that are advertised as on battery (see below).
 
-A sleepy board polls every 100 ms while it has a TCP connection, and for two
-seconds after it sends a UDP datagram (`update_poll_period`). An answer
-reaches the parent after the board has stopped listening. Without the fast
-polls it would wait there until the next poll, and a push would time out.
+### Finding it without an attached board
 
-For a sleepy board the firmware also sends `SHCI_C2_RADIO_AllowLowPower`, as
-ST's sleepy end device example does. CPU2 accepts it. What it saves has not
-been measured.
+The border router's `/diagnostics` has an entry for each router. A child is
+only in its parent's child table there, without its addresses. So the CLI
+cannot learn the address of a board on battery from the border router.
 
-A board on battery sends no sensor reports.
+A board on battery therefore registers a service with the SRP server, as a
+board on aux power registers its scrape endpoint (see "Service
+registration"): `_sensor-board._udp` (`protocol::BOARD_SERVICE`), on the
+configuration port. With `--border-router`, or with no board attached, the
+CLI sends to the devices that the border router lists and to every board it
+finds over mDNS (`targets` in `cli/src/border_router.rs`, `cli/src/mdns.rs`).
+It finds them with `avahi-browse`, so it needs avahi.
 
-Only the radio sleeps. CPU1 still runs all the time, with the crystal, both
-PLLs and USB on. The board's current has not been measured in either mode.
+- The service's lease is an hour, because every renewal costs the battery
+  an exchange with the border router, and a signature on CPU2.
+- With a long lease the name has to differ at every start
+  (`SrpName::BoardAndStart`): `sensor-board-<serial>-<number>`, where the
+  number is the end of the board's mesh-local address, which CPU2 makes up
+  when it starts. With the board's name alone, the registration from before
+  a restart blocks the new one for the whole lease, and longer: the client
+  waits longer after every rejection. A board on battery that was off USB
+  could not be found for that time.
+- The registrations from before a restart stay for up to an hour, with
+  addresses that the board no longer has. The CLI sends to those too, and
+  gets no answer from them.
+
+### Not done
+
+Only the radio sleeps. CPU1 still runs all the time, with the crystal and
+both PLLs on. The board's current has not been measured in either mode.
 Putting CPU1 in Stop mode is not done:
 
-- The board cannot tell whether a USB host is attached: VBUS and the battery
-  share the regulator's input, and no pin senses VBUS. USB needs the PLL, so
-  something has to decide when a board on battery may drop USB.
 - embassy-stm32 0.6.0 has a low-power executor (`low-power` feature). For
   this chip it does the semaphore handshake with CPU2 before Stop, but it
   does not restore the clocks afterwards (`exit_stop` in `low_power.rs`
@@ -616,7 +673,11 @@ Putting CPU1 in Stop mode is not done:
 - The `watchdog` task wakes CPU1 every 20 ms.
 - It needs a debug probe for the log and a meter for the current.
 
-Things learned:
+After three failed boots in a row a board enters the ROM bootloader (see
+"Logs and panics"). A board on battery cannot be reached there, and stays in
+it until its cell is taken out.
+
+### Things learned
 
 - ST's FTD image can be a sleepy end device and a CSL receiver. Its build
   sets `OPENTHREAD_CONFIG_MAC_CSL_RECEIVER_ENABLE`
@@ -640,15 +701,6 @@ Things learned:
   them.
 - `otThreadGetRealmLocalAllThreadNodesMulticastAddress` returns a pointer
   into CPU2's memory, like `otIp6GetUnicastAddresses`.
-- The border router's `/diagnostics` has an entry for each router. A child
-  is only in its parent's child table there, without its addresses. So with
-  `--border-router`, or with no board attached, the CLI does not find a
-  board on battery: `network show` does not list it, and `config` and
-  `firmware push` do not reach it. They need an attached board. A board
-  answers a request that is sent to its address, so what is missing is only
-  a way for the CLI to learn the address.
-- `network show` collects replies for three seconds. A board on battery can
-  take ten to reply, so it is often missing from the list.
 - The firmware does not use CSL, which would make the board a synchronized
   sleepy end device. It was tried on 2026-10-11 with a CSL period of 10 s
   (`otLinkSetCslPeriod`, in microseconds, a multiple of 160). With the
@@ -660,33 +712,52 @@ Things learned:
   CSL period set the stack only polls every 99 s by itself. A CSL window is
   also at least 6 ms of receiving (the stack's minimums). Polling every
   10 s delivered every ping within 11 s.
+- A change of the configuration that makes the board attach again can delay
+  the reply to the request that made it: a `config set` from aux to battery
+  through another board was answered after 13 s.
 
-Tested on a board on 2026-10-11 (battery, sound every 10 s, a Pushgateway on
-the LAN), with a sensor board and with the border router as the parent: the
-board attaching as a sleepy child, which the border router's diagnostics
-show as receiver off; pushes that the Pushgateway accepted, about one every
-10 s; CSL delivery, since removed, as described above; an interval of
-30 s, with a push every 30 s; the change to aux and back while attached; a
-scrape while on aux; and `network show` and `config show` for another board
-through the sleepy board, which got the replies.
+### Tested
 
-Also tested that day, on the same board:
+All of this was on 2026-10-11, on board 4B002E (battery, sound every 10 s, a
+Pushgateway on the LAN), with a sensor board and with the border router as
+its parent. The board ran from USB power throughout, also while its firmware
+was off USB.
 
-- With the sound sensor at 30 s, the board polled every 10 s: 45 of 45
-  pings, one a second, came back in batches 8 to 11 s apart.
-- Requests sent to the all-Thread-nodes address by the board were answered
-  by two boards on the firmware from before this change (`network show`,
-  and `config show` for one of them).
-- Requests sent from this machine to the board's routable address, through
-  the border router, with the address given to the CLI by a temporary
-  change: three `config show`, answered after 4, 7 and 12 s, and a `config
-  set`, which the board stored.
-- A firmware update the same way: the CLI offered an image of 195,088 bytes
-  to that address only. The board fetched it in about three minutes while a
-  sleepy end device, restarted into it, and confirmed it.
+- The board attaching as a sleepy child, which the border router's
+  diagnostics show as receiver off, and pushes that the Pushgateway
+  accepted, about one every 10 s.
+- With the sound sensor at 30 s, a data poll every 10 s: 45 of 45 pings,
+  one a second, came back in batches 8 to 11 s apart.
+- Requests sent to the all-Thread-nodes address were answered by two boards
+  on the firmware from before that change.
+- Through the board, attached and on aux power, to board 4C0045, which was
+  configured as on battery for the test and had the border router as its
+  parent: the `config set` that made it sleepy, seven `config show`
+  (answered after about 9 s when the board had been idle, and within a
+  second right after another request), `network show`, which listed it, and
+  the `config set` back to aux.
+- `firmware push` through the board to the two other boards, which were on
+  aux power and on the firmware from before this work: both fetched the
+  image and reported the new build.
+- The registration of the board service, its advertisement over mDNS, and
+  `config show` and `network show` through the border router, which found
+  the board that way.
+- Erasing the configuration, with a temporary timer in place of the button:
+  the board kept its network, and was a full Thread device afterwards.
+- Off USB: the board left USB two seconds after a `config set` to battery,
+  pushed to the Pushgateway, registered under a new name five seconds after
+  the restart, answered a `config show` through the border router after 3 s,
+  and came back on USB after a `config set --power-mode aux` through the
+  border router, which it answered.
+- `just push` with no board attached, while the board was off USB: the CLI
+  offered an image of 198,352 bytes to five addresses (the two other boards
+  from the border router's list, and this board's registrations over mDNS).
+  All three boards fetched it in about three minutes and restarted. The
+  board on battery then pushed its metrics as the new build, registered
+  under a new name, and answered a `config show` through the border router.
+- `network show` through the border router, after it was made to wait for
+  the boards on battery: it listed all three boards, three times out of
+  three.
 
-Not tested: a request that a board multicasts reaching a board on battery
-through its parent, which is how `config` and `firmware push` reach one
-through an attached board. That needs two boards on this firmware, one of
-them on aux power and on USB. Also not tested: a board on battery that is
-not on USB, and what any of this does to the current.
+Not tested: the button itself and the LED, a board that runs from a cell,
+and what any of this does to the current.

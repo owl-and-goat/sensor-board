@@ -19,6 +19,8 @@ use protocol::{BOARD_SERVICE, HOST_NAME_PREFIX, SCRAPE_SERVICE};
 pub struct Advertised {
     pub serial: String,
     pub address: Ipv6Addr,
+    /// Whether it advertises the service of a board on battery.
+    pub on_battery: bool,
 }
 
 /// The boards that are advertised on this machine's network. A board on
@@ -41,7 +43,7 @@ pub async fn boards() -> Result<Vec<Advertised>> {
 
 /// The boards that advertise a service of type `kind`. Blocks for about a
 /// second, until avahi has no more answers.
-fn browse(kind: &str) -> Result<Vec<Advertised>> {
+fn browse(kind: &'static str) -> Result<Vec<Advertised>> {
     let output = Command::new("avahi-browse")
         .args(["--resolve", "--parsable", "--terminate", kind])
         .output()
@@ -50,15 +52,16 @@ fn browse(kind: &str) -> Result<Vec<Advertised>> {
         let error = String::from_utf8_lossy(&output.stderr);
         bail!("avahi-browse failed: {}", error.trim());
     }
-    Ok(parse(&String::from_utf8_lossy(&output.stdout)))
+    Ok(parse(&String::from_utf8_lossy(&output.stdout), kind))
 }
 
-/// The boards in the output of `avahi-browse --resolve --parsable`. A line
-/// that starts with `=` is a resolved service. Its fields are separated by
+/// The boards in the output of `avahi-browse --resolve --parsable` for
+/// services of type `kind`. A line that starts with `=` is a resolved
+/// service. Its fields are separated by
 /// semicolons: the interface, the protocol, the service's name, type and
 /// domain, the host's name, its address, the port and the TXT record. The
 /// same service appears once per interface and protocol it was found on.
-fn parse(output: &str) -> Vec<Advertised> {
+fn parse(output: &str, kind: &str) -> Vec<Advertised> {
     let mut boards = Vec::new();
     for line in output.lines() {
         let fields: Vec<&str> = line.split(';').collect();
@@ -77,6 +80,7 @@ fn parse(output: &str) -> Vec<Advertised> {
         let board = Advertised {
             serial: serial.to_owned(),
             address,
+            on_battery: kind == BOARD_SERVICE,
         };
         if !boards.contains(&board) {
             boards.push(board);
@@ -105,9 +109,10 @@ sensor-board-4B0041000350475532303120-0a1b2c3d.local;fdf7:2e7f:cbf2:1:1dd5:1769:
         let board = |serial: &str, address: &str| Advertised {
             serial: serial.to_owned(),
             address: address.parse().unwrap(),
+            on_battery: false,
         };
         assert_eq!(
-            parse(output),
+            parse(output, SCRAPE_SERVICE),
             [
                 board(
                     "4C0045000350475532303120",

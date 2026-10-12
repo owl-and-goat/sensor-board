@@ -70,18 +70,33 @@ pub fn routable_addresses(node: &Node, devices: &[Diagnostics]) -> Vec<Ipv6Addr>
         .collect()
 }
 
-/// The addresses to send to from this machine, to reach every board on the
-/// border router's network: those of the devices that the border router
-/// lists, and those of the boards that are advertised over mDNS. A board on
-/// battery is only among the second, because the border router lists
-/// routers.
-pub async fn targets(node: &Node, devices: &[Diagnostics]) -> Vec<Ipv6Addr> {
-    let mut targets = routable_addresses(node, devices);
+/// What this machine sends to, to reach every board on a border router's
+/// network.
+pub struct Targets {
+    /// The addresses of the devices that the border router lists, and of the
+    /// boards that are advertised over mDNS. A board on battery is only
+    /// among the second, because the border router lists routers.
+    pub addresses: Vec<Ipv6Addr>,
+    /// The serial numbers of the boards that are advertised as on battery.
+    /// Such a board can take a poll period to answer.
+    pub on_battery: Vec<String>,
+}
+
+/// The targets on the network of the border router with this `node` and
+/// these `devices`.
+pub async fn targets(node: &Node, devices: &[Diagnostics]) -> Targets {
+    let mut targets = Targets {
+        addresses: routable_addresses(node, devices),
+        on_battery: Vec::new(),
+    };
     match mdns::boards().await {
         Ok(boards) => {
             for board in boards {
-                if !targets.contains(&board.address) {
-                    targets.push(board.address);
+                if !targets.addresses.contains(&board.address) {
+                    targets.addresses.push(board.address);
+                }
+                if board.on_battery && !targets.on_battery.contains(&board.serial) {
+                    targets.on_battery.push(board.serial);
                 }
             }
         }

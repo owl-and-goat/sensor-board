@@ -230,7 +230,7 @@ impl Devices {
     pub async fn of(address: &str) -> Result<Devices> {
         eprintln!("Asking through the border router at {address}.");
         let (node, devices) = BorderRouter::at(address).network().await?;
-        let addresses = border_router::targets(&node, &devices).await;
+        let addresses = border_router::targets(&node, &devices).await.addresses;
         if addresses.is_empty() {
             bail!("found no other device with a routable address on the Thread network");
         }

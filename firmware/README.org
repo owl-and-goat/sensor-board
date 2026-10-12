@@ -83,13 +83,14 @@ can answer (see "metrics").
   show what a board runs afterwards.
 - a board that runs the image already, or on which the image failed before,
   does not ask for it.
-- the offer goes to every device that the border router lists. a device that
-  is not a sensor board ignores it.
+- the offer goes to every device that the border router lists, and to every
+  board that is advertised over mdns (see "boards on battery"). a device
+  that is not a sensor board ignores it.
 
 tested on 2026-10-11 with the two attached boards as the only targets: both
 fetched from this machine at the same time, at about 2 KiB/s each, restarted
-and kept the image. not tested: a push to every device that the border router
-lists, and a push with no board attached.
+and kept the image. tested later that day: a push with no board attached, to
+every device that the border router lists and every board found over mdns.
 
 a board stays on its network through all of this: its stored configuration
 is in a separate page that neither firmware slot covers.
@@ -171,8 +172,8 @@ rloc16, ipv6 address, and the link to each board.
 through an attached board, that board multicasts a discovery request, and
 every board that receives it replies with its serial number, rloc16 and
 addresses. through a border router, the cli reads the list of devices from
-the border router's rest api and sends the request to each device's routable
-address itself, from udp port 61623. this machine needs a route to the thread
+the border router's rest api, adds the boards that are advertised over mdns,
+and sends the request to each routable address itself, from udp port 61623. this machine needs a route to the thread
 network for that.
 
 - a board is listed only if its firmware has discovery. boards on an older
@@ -190,9 +191,9 @@ network for that.
 
 tested on 2026-10-10 with one board on a firmware that has discovery: through
 that board, which lists itself, and through the border router, with the
-quality once the board was a router. not tested: a second board's reply
-arriving through the attached board, and the link columns filled from the
-attached board's neighbor table.
+quality once the board was a router. tested on 2026-10-11: the replies of
+two other boards arriving through the attached board, with the link columns
+filled from its neighbor table.
 
 ** sensor reports
 
@@ -297,8 +298,8 @@ over usb. a board that is not attached needs its whole serial number, as
 =network show= prints it. an attached board that is on a network asks it
 over that network, and gives up after fourteen seconds. with no such board
 attached, or with =--border-router=, this machine asks it instead: it sends
-the request to every device that the border router lists, as =network show=
-does, and waits as long.
+the request to every device that the border router lists and to every board
+that is advertised over mdns, as =network show= does, and waits as long.
 
 #+begin_src sh
   cargo run -- config show --board 4d    # an attached board
@@ -317,49 +318,65 @@ the board then has no configuration until it is set again. two boards whose
 firmwares have different layouts do not answer each other's requests either.
 
 the metrics use the power mode, the pushgateway, and the intervals of the
-sensors that have a driver. the power mode and the intervals also decide how
-the board takes part in its network (see "boards on battery"). the board's
-number is not used yet.
+sensors that have a driver. the power mode also decides how the board takes
+part in its network, and whether it uses usb (see "boards on battery"). the
+board's number is not used yet.
 
 ** boards on battery
 
-a board whose power mode is =battery= turns its radio receiver off between
-uses: it becomes a thread sleepy end device. its parent (a router, or the
-border router) keeps the messages for it. the board asks its parent for
-them every 10 seconds, whatever the intervals of its sensors, so that a
-command reaches it within that time.
+a board whose power mode is =battery= is never on usb: with JP2 shorted for
+the cell, usb power would destroy it (see =TODO.org=). so it is set up over
+usb first, and configured and updated over the network from then on.
+
+- it does not start usb. setting the power mode to =battery= takes a board
+  off usb two seconds later: it restarts, and comes back without usb.
+- to get it back on usb, make it a board on aux power again. either set its
+  power mode over the network (=config set --power-mode aux=), or hold the
+  button for five seconds. the button erases the whole configuration and
+  keeps the network, and the led blinks fast five times.
+- it turns its radio receiver off between uses: it is a thread sleepy end
+  device. its parent (a router, or the border router) keeps the messages for
+  it, and the board asks for them every 10 seconds, whatever the intervals
+  of its sensors.
+- it sends no sensor reports, so =reports watch= does not show it.
+
+=config show=, =config set= and =firmware push= reach a board on battery like
+any other board: through an attached board on aux power, or with no board
+attached through the border router. a command for it can take up to 14
+seconds, because the board only hears it when it next asks its parent.
+=firmware push= shows a board on battery while it fetches, and says when it
+has the image, but cannot tell which build it runs afterwards.
+
+with no board attached, this machine has to find the board's address. the
+border router only lists routers, so a board on battery registers itself
+with the border router, which advertises it over mdns as a
+=_sensor-board._udp= service. the cli looks those up with =avahi-browse=, so
+it needs avahi. a board on battery registers under a new name every time it
+starts, and its earlier registrations stay for up to an hour, so the cli may
+send to a few addresses that no longer answer.
 
 #+begin_src sh
-  cargo run -- network mode --board 4b    # the mode a board is in
+  avahi-browse -rt _sensor-board._udp     # the boards on battery, and their addresses
+  cargo run -- network mode --board 4b    # full thread device, or sleepy (a board on usb)
 #+end_src
 
-the mode follows the configuration: a change of the power mode takes effect
-within seconds, without a restart.
+- =network show= through an attached board only listens for three seconds,
+  so it often misses a board on battery.
+- only the radio sleeps so far. the processor and the clocks stay on. the
+  board's current has not been measured.
+- a board that fails to start three times in a row enters the rom bootloader
+  (see "getting into the bootloader"). a board on battery cannot be reached
+  there, and stays in it until its cell is taken out.
 
-- a board on battery sends no sensor reports, so =reports watch= does not
-  show it, and =firmware push= does not wait for it.
-- a board on battery is never on usb (see =TODO.org=: with JP2 shorted, usb
-  power would destroy it), so it is configured and updated over the network,
-  through an attached board on aux power. =config show=, =config set= and
-  =firmware push= reach it like any other board. a command for it can take
-  up to 14 seconds, because the board only hears it when it next asks its
-  parent. =firmware push= shows a board on battery while it fetches, and
-  says when it has the image, but cannot tell which build it runs
-  afterwards.
-- with =--border-router=, or with no board attached, the cli does not find a
-  board on battery: the border router only lists routers. =network show=
-  often misses one too, because it only listens for three seconds.
-- only the radio sleeps so far. the processor, the usb port and the clocks
-  stay on. the board's current has not been measured.
-
-tested on a board on 2026-10-11, with a pushgateway on the lan: the board
-attaching as a sleepy child, pushes accepted about every 10 s, messages to
-it delivered within 11 s, and the change to =aux= and back. also, with
-requests sent from this machine
-straight to the board's address: reading and setting its configuration, and
-a firmware update that it fetched in about three minutes while sleepy. not
-tested: any of that through an attached board, which needs a second board
-on this firmware.
+tested on a board on 2026-10-11, which ran from usb power throughout: the
+board as a sleepy child, with its pushes accepted about every 10 s and
+messages to it delivered within 11 s. =config show= and =config set= for a
+sleepy board through an attached board, and through the border router.
+leaving usb on the change to battery, and coming back after =config set
+--power-mode aux= through the border router. =just push= with no board attached, which updated two boards on aux power
+and a board on battery that was off usb, in about three minutes. erasing the
+configuration, with a timer in place of the button. not tested: the button
+itself and the led, and a board that runs from a cell.
 
 * getting into the bootloader
 
