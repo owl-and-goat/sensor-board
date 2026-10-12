@@ -3,7 +3,7 @@
 //! the two.
 
 use std::{
-    collections::BTreeMap,
+    collections::{BTreeMap, BTreeSet},
     net::{Ipv6Addr, SocketAddr},
     path::Path,
     time::{Duration, Instant},
@@ -14,7 +14,7 @@ use indicatif::{MultiProgress, ProgressBar, ProgressDrawTarget, ProgressStyle};
 use postcard_rpc::host_client::{MultiSubRxError, MultiSubscription};
 use protocol::{
     BoardId, BuildId, BuildMarker, Fetcher, ImageChunk, ImageDigest, ImageSize, Report,
-    UPDATE_PORT, UpdateImage, UpdateMessage, UpdateStatus,
+    SLEEPY_POLL_PERIOD, UPDATE_PORT, UpdateImage, UpdateMessage, UpdateStatus,
 };
 use sha2::{Digest, Sha256};
 use tokio::net::UdpSocket;
@@ -29,9 +29,11 @@ use crate::{
 const RESTART_TIMEOUT: Duration = Duration::from_secs(90);
 const POLL_INTERVAL: Duration = Duration::from_millis(500);
 
-/// Boards report every ten seconds. A board that has not been heard from
-/// after this long is treated as absent.
-const ALL_HEARD_AFTER: Duration = Duration::from_secs(25);
+/// Boards on aux power report every ten seconds. A board on battery does not
+/// report, but it starts to fetch within two offers and one poll period. A
+/// board that has done neither after this long is treated as absent.
+const ALL_HEARD_AFTER: Duration =
+    Duration::from_secs(2 * OFFER_INTERVAL.as_secs() + SLEEPY_POLL_PERIOD.as_secs() + 5);
 
 /// Timeout for the boards on the network to fetch an image and restart.
 const PUSH_TIMEOUT: Duration = Duration::from_secs(900);
@@ -174,7 +176,8 @@ pub async fn gateway(serial: Option<&str>) -> Result<Board> {
 /// Update every board on the network to `image` through `gateway`. The
 /// gateway receives the image over USB and offers it to the other boards,
 /// which fetch it over the network and restart into it. The gateway itself
-/// is updated last, once every board that is heard from runs the image.
+/// is updated last, once every board that is heard from runs the image and
+/// no board is still fetching it.
 pub async fn push(gateway: Board, image: &Image) -> Result<()> {
     let serial = gateway.serial().to_owned();
     eprintln!("Pushing through board {serial}.");
@@ -210,7 +213,8 @@ pub async fn push(gateway: Board, image: &Image) -> Result<()> {
 
 /// Watch the reports that `gateway` forwards until every board except the
 /// gateway runs `image`, and show the progress of the boards that are
-/// fetching it. Returns `false` if interrupted before that.
+/// fetching it. A board on battery does not report, so it is only seen while
+/// it fetches. Returns `false` if interrupted before every board is done.
 async fn wait_for_boards(
     gateway: &Board,
     reports: &mut MultiSubscription<Report>,
@@ -219,6 +223,10 @@ async fn wait_for_boards(
     let build = image.build();
     let started = Instant::now();
     let mut builds = BTreeMap::new();
+    // The boards that the gateway last listed as fetching, and those among
+    // them that have the whole image and do not report.
+    let mut fetchers: Vec<Fetcher> = Vec::new();
+    let mut fetched = BTreeSet::new();
 
     let mut progress = PushProgress::new(image.describes.size);
     progress.summarize(&builds, build);
@@ -234,10 +242,11 @@ async fn wait_for_boards(
         // Every board reports within this time, so after it no board is
         // still waiting to be heard from.
         let all_heard = started.elapsed() > ALL_HEARD_AFTER;
-        if all_heard && builds.values().all(|&running| running == build) {
-            progress.println(&match builds.len() {
+        let fetching = fetchers.iter().any(|f| f.received < image.describes.size.0);
+        if all_heard && !fetching && builds.values().all(|&running| running == build) {
+            progress.println(&match builds.len() + fetched.len() {
                 0 => "No other board was heard from.".into(),
-                n => format!("All {n} other boards run build {build}."),
+                n => format!("All {n} other boards run build {build}, or have fetched it."),
             });
             return Ok(true);
         }
@@ -255,7 +264,23 @@ async fn wait_for_boards(
             () = tokio::time::sleep(POLL_INTERVAL) => continue,
             _ = progress_due.tick(), if reports_progress => {
                 match gateway.offer_progress().await {
-                    Ok(Some(fetching)) => progress.show(&fetching.fetchers),
+                    Ok(Some(fetching)) => {
+                        progress.show(&fetching.fetchers);
+                        fetchers = fetching.fetchers.to_vec();
+                        for fetcher in &fetchers {
+                            // A board that reports is listed as updated at
+                            // its next report instead.
+                            if let Some(board) = fetcher.board
+                                && fetcher.received == image.describes.size.0
+                                && !builds.contains_key(&board)
+                                && fetched.insert(board)
+                            {
+                                progress.println(&format!(
+                                    "{board}  has build {build}, and restarts into it"
+                                ));
+                            }
+                        }
+                    }
                     Ok(None) => {
                         reports_progress = false;
                         progress.println(&format!(

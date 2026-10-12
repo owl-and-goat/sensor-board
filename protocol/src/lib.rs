@@ -1326,7 +1326,7 @@ pub enum DeviceMode {
     Full,
     /// A sleepy end device. Its receiver is off. Its parent queues the
     /// messages for it, and the board asks for them with a data poll every
-    /// `poll_period`.
+    /// `poll_period`, which is [`SLEEPY_POLL_PERIOD`] at most.
     Sleepy { poll_period: Duration },
     /// A synchronized sleepy end device. Its receiver is off except for a
     /// short window every `csl_period`, at times it has agreed with its
@@ -1334,6 +1334,12 @@ pub enum DeviceMode {
     /// those windows.
     SynchronizedSleepy { csl_period: Duration },
 }
+
+/// A board that polls its parent does it at least this often, whatever the
+/// intervals of its sensors. A message to a board on battery waits at the
+/// board's parent for up to this long, so a request to one has to allow that
+/// long for the reply.
+pub const SLEEPY_POLL_PERIOD: Duration = Duration::from_secs(10);
 
 /// The response to [`GetDeviceMode`]: the mode the board last switched to,
 /// or why it could not.

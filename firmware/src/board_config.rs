@@ -19,7 +19,7 @@ use embassy_sync::{
 use embassy_time::{Duration, Instant, Timer};
 use protocol::{
     BoardConfig, BoardConfigResult, BoardId, ConfigError, ConfigFor, ConfigMessage, ConfigResult,
-    NetworkResult,
+    NetworkResult, SLEEPY_POLL_PERIOD,
 };
 use static_cell::StaticCell;
 
@@ -29,13 +29,14 @@ const _: () = assert!(ConfigMessage::MAX_LEN <= thread::MAX_DATAGRAM_LEN);
 
 /// How long to wait for another board's reply, and how often to resend the
 /// request in that time. A request is multicast, so nothing retransmits it if
-/// it is lost.
-const REPLY_TIMEOUT: Duration = Duration::from_secs(6);
-const RESEND_INTERVAL: Duration = Duration::from_secs(2);
+/// it is lost. A board on battery only gets the request at its next poll, so
+/// the wait is longer than a poll period.
+const REPLY_TIMEOUT: Duration = Duration::from_secs(SLEEPY_POLL_PERIOD.as_secs() + 4);
+const RESEND_INTERVAL: Duration = Duration::from_secs(5);
 
 /// Timeout for a request through the [`Handle`]. Longer than
 /// [`REPLY_TIMEOUT`], and shorter than the host's own timeout.
-const REQUEST_TIMEOUT: Duration = Duration::from_secs(8);
+const REQUEST_TIMEOUT: Duration = Duration::from_secs(REPLY_TIMEOUT.as_secs() + 2);
 
 enum Request {
     Get(BoardId),

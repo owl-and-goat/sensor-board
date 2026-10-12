@@ -50,7 +50,7 @@ use protocol::{
     Addresses, AddressesResult, BoardConfig, BoardId, CONFIG_PORT, DISCOVERY_PORT, Dataset,
     DeviceMode, DeviceModeResult, HOST_NAME_PREFIX, Link, NeighborTable, NeighborsResult,
     NetworkError, NetworkResult, NetworkStatus, OtError, PowerMode, Registration,
-    RegistrationError, UPDATE_PORT,
+    RegistrationError, SLEEPY_POLL_PERIOD, UPDATE_PORT,
 };
 use static_cell::StaticCell;
 
@@ -62,9 +62,10 @@ mod ot;
 use ot::OpenThread as _;
 pub use ot::{Datagram, MAX_DATAGRAM_LEN, TCP_CHUNK_LEN, TcpChunk};
 
-/// The destination of a datagram to every board: the realm-local all-nodes
-/// multicast address. It reaches devices any number of hops away.
-const ALL_BOARDS: Ipv6Addr = Ipv6Addr::new(0xff03, 0, 0, 0, 0, 0, 0, 1);
+/// The realm-local all-nodes multicast address. A datagram sent there
+/// reaches every device whose receiver is on, any number of hops away. A
+/// sleepy board does not get it: its parent does not forward it.
+const ALL_NODES: Ipv6Addr = Ipv6Addr::new(0xff03, 0, 0, 0, 0, 0, 0, 1);
 
 /// The kinds of message that boards exchange, each on its own UDP port. The
 /// ports are in the range of sixteen that 6LoWPAN compresses to four bits.
@@ -162,15 +163,6 @@ const MAX_CSL_PERIOD: time::Duration = time::Duration::from_micros(0xffff * 160)
 /// child polls so rarely that it needs longer: the stack's default.
 const CHILD_TIMEOUT: time::Duration = time::Duration::from_secs(240);
 
-/// The longest data poll period. The child timeout is twice the poll period,
-/// so that one missed poll does not cost the board its parent, and the stack
-/// limits the child timeout to eight hours.
-const MAX_POLL_PERIOD: time::Duration = time::Duration::from_secs(4 * 60 * 60);
-
-/// The data poll period of a board on battery that has no sensor enabled.
-/// Such a board has nothing to send, and polls only to stay on its network.
-const IDLE_POLL_PERIOD: time::Duration = time::Duration::from_secs(120);
-
 /// The data poll period of a sleepy board while it may get an answer: while
 /// it has a TCP connection, and for [`ANSWER_TIME`] after it has sent a
 /// datagram. An answer arrives at the parent after the board has stopped
@@ -182,9 +174,12 @@ const ANSWER_TIME: Duration = Duration::from_secs(2);
 ///
 /// A board on battery wakes to read a sensor and to push its metrics, so it
 /// uses its radio once in the shortest poll interval of its sensors anyway.
-/// It listens for messages at that same interval, and not more often. If the
-/// interval is short enough to be a CSL period, the board is a synchronized
-/// sleepy end device. Otherwise it polls its parent.
+/// If that interval is short enough to be a CSL period, the board listens at
+/// the same interval, as a synchronized sleepy end device. Otherwise it
+/// polls its parent every [`SLEEPY_POLL_PERIOD`]. That is more often than
+/// its sensors need, so that a request reaches the board within a known
+/// time: a board on battery is not on USB, and can only be configured and
+/// updated over the network.
 fn device_mode(config: Option<&BoardConfig>) -> DeviceMode {
     // A board without a configuration is taken to be on aux power.
     let Some(config) = config.filter(|config| config.power_mode == PowerMode::Battery) else {
@@ -200,11 +195,8 @@ fn device_mode(config: Option<&BoardConfig>) -> DeviceMode {
                 csl_period: period.max(MIN_CSL_PERIOD),
             }
         }
-        Some(interval) => DeviceMode::Sleepy {
-            poll_period: interval.min(MAX_POLL_PERIOD),
-        },
-        None => DeviceMode::Sleepy {
-            poll_period: IDLE_POLL_PERIOD,
+        _ => DeviceMode::Sleepy {
+            poll_period: SLEEPY_POLL_PERIOD,
         },
     }
 }
@@ -1103,7 +1095,8 @@ impl Network<'_, '_> {
                 let outcome = match request {
                     SocketRequest::Listen(on) => self.listen(port, on).await,
                     SocketRequest::Broadcast(datagram) => {
-                        self.send(port, ALL_BOARDS, &datagram).await
+                        let everyone = self.broadcast_address(port).await;
+                        self.send(port, everyone, &datagram).await
                     }
                     SocketRequest::Send(Peer(address), datagram) => {
                         self.send(port, address, &datagram).await
@@ -1408,6 +1401,24 @@ impl Network<'_, '_> {
             *listening = true;
         }
         Ok(())
+    }
+
+    /// The multicast address that reaches every board that a datagram on
+    /// `port` is for.
+    async fn broadcast_address(&mut self, port: Port) -> Ipv6Addr {
+        match port {
+            // A report is for the boards that are awake. It must not wake a
+            // board on battery.
+            Port::Reports => ALL_NODES,
+            // A request is for every board. A parent forwards this address
+            // to its sleepy children.
+            Port::Updates | Port::Configs | Port::Discovery => {
+                let address = self
+                    .ot
+                    .thread_get_realm_local_all_thread_nodes_multicast_address();
+                address.await.unwrap_or(ALL_NODES)
+            }
+        }
     }
 
     /// Send `datagram` from the socket of `port` to the same port at

@@ -518,8 +518,9 @@ coprocessor task because it writes flash. For a board that is not attached,
 the attached board multicasts a request (`ConfigMessage`, UDP port 61622,
 which every board listens on). The target board replies with the
 configuration it then has stored, which after a `Set` shows whether it
-stored the new one. The attached board resends the request every two
-seconds, and gives up after six.
+stored the new one. The attached board resends the request every five
+seconds, and gives up after fourteen: a board on battery only gets the
+request at its next poll, up to ten seconds later.
 
 The `config` commands take the board's serial number in `--board`, whether
 the board is attached or not (`route` in `cli/src/config.rs`). An attached
@@ -544,8 +545,8 @@ same two times. The firmware has nothing for this. A board replies to port
 - The metrics, the Thread service and the reports use the configuration.
   Each has its own `Monitor` (`board_config.rs`), which notifies it of a
   change.
-- A request goes to `ff03::1`, which does not reach a sleepy end device. So
-  it does not reach a board on battery (see "Boards on battery").
+- A request goes to the realm-local all-Thread-nodes address, so that it
+  also reaches a board on battery (see "Boards on battery").
 
 Tested on boards on 2026-10-07: setting a configuration over USB, and on
 another board through the attached one. Both configurations survived a
@@ -567,14 +568,33 @@ first attaches, and again when the configuration changes. `network mode`
 prints the mode the service last switched to (`GetDeviceMode`).
 
 - Aux power, or no configuration: a full Thread device, as before.
-- Battery: the board listens once in the shortest poll interval of its
-  enabled sensors. It wakes that often anyway, to read a sensor and push.
-  - Up to 10.4856 s, the interval is the CSL period, and the board is a
-    synchronized sleepy end device. The limit is 802.15.4's: a CSL period is
-    a 16-bit count of 160 µs.
-  - Above that, the board polls its parent at the interval, up to four
-    hours.
-  - With no sensor enabled, it polls every two minutes.
+- Battery: a sleepy end device.
+  - If the shortest poll interval of its enabled sensors is at most
+    10.4856 s, that interval is the CSL period, and the board is a
+    synchronized sleepy end device. It wakes that often anyway, to read a
+    sensor and push. The limit is 802.15.4's: a CSL period is a 16-bit count
+    of 160 µs.
+  - Otherwise the board polls its parent every 10 s
+    (`protocol::SLEEPY_POLL_PERIOD`), whatever the intervals of its sensors.
+    That bounds how long a request to it waits at its parent.
+
+A board on battery is never on USB. JP2 connects the cell straight to the
+3 V rail, and USB power would then put 5 V on that rail (see `TODO.org`). So
+such a board is configured and updated over the network only:
+
+- The requests that a board multicasts (configuration, discovery, update
+  offers) go to the realm-local all-Thread-nodes address
+  (`broadcast_address` in `thread/mod.rs`). A parent forwards that address
+  to its sleepy children. It does not forward `ff03::1`, which only the
+  reports still use, so that they do not wake a board on battery.
+- Everything that waits for a reply allows for the poll period: the board
+  that relays a configuration request, the CLI's own requests through a
+  border router, and the CLI's timeout for a call to a board.
+- `firmware push` through an attached board also waits for the boards that
+  fetch the image without ever reporting, which is how a board on battery
+  shows up. It cannot see which build such a board runs afterwards.
+- A fetch needs no change of mode. The board polls fast for two seconds
+  after every chunk request (see below), which carries the whole fetch.
 
 A sleepy board polls every 100 ms while it has a TCP connection, and for two
 seconds after it sends a UDP datagram (`update_poll_period`). An answer
@@ -622,14 +642,23 @@ Things learned:
 - `otLinkSetCslPeriod` takes microseconds: a multiple of 160, and at least
   62 of them (from the stack's source, as are the two points above).
 - A multicast to `ff03::1` does not reach a sleepy child. A parent forwards
-  only the groups that the child registered with it, and the realm-local
-  all-Thread-nodes address. So the requests that an attached board
-  multicasts (configuration, discovery, update offers) do not reach a board
-  on battery.
+  only the groups that the child registered with it, and the link-local and
+  realm-local all-Thread-nodes addresses (`mesh_forwarder_ftd.cpp` in the
+  stack's source). Every Thread device is subscribed to those two, so
+  boards on a firmware from before this change get the requests too. So do
+  the other sleepy devices on the network, which have to receive and drop
+  them.
+- `otThreadGetRealmLocalAllThreadNodesMulticastAddress` returns a pointer
+  into CPU2's memory, like `otIp6GetUnicastAddresses`.
 - The border router's `/diagnostics` has an entry for each router. A child
-  is only in its parent's child table there, without its addresses. So the
-  CLI's border-router commands do not find a board on battery either. Such
-  a board has to be configured and updated over USB.
+  is only in its parent's child table there, without its addresses. So with
+  `--border-router`, or with no board attached, the CLI does not find a
+  board on battery: `network show` does not list it, and `config` and
+  `firmware push` do not reach it. They need an attached board. A board
+  answers a request that is sent to its address, so what is missing is only
+  a way for the CLI to learn the address.
+- `network show` collects replies for three seconds. A board on battery can
+  take ten to reply, so it is often missing from the list.
 - CSL delivery has gaps. With the board silent (no Pushgateway), pings from
   the border router's machine arrived in batches 10 s apart, but with
   stretches of 30 to 60 s in which none arrived. That happened with a
@@ -642,9 +671,28 @@ Tested on a board on 2026-10-11 (battery, sound every 10 s, a Pushgateway on
 the LAN), with a sensor board and with the border router as the parent: the
 board attaching as a sleepy child, which the border router's diagnostics
 show as receiver off; pushes that the Pushgateway accepted, about one every
-10 s; CSL delivery as described above; an interval of 30 s, with pushes and
-pings delivered every 30 s; the change to aux and back while attached; a
+10 s; CSL delivery as described above; an interval of 30 s, with a push
+every 30 s; the change to aux and back while attached; a
 scrape while on aux; and `network show` and `config show` for another board
-through the sleepy board, which got the replies. Not tested: a board on
-battery that is not on USB, a poll period longer than 30 s, and what any of
-this does to the current.
+through the sleepy board, which got the replies.
+
+Also tested that day, on the same board:
+
+- With the sound sensor at 30 s, the board polled every 10 s: 45 of 45
+  pings, one a second, came back in batches 8 to 11 s apart.
+- Requests sent to the all-Thread-nodes address by the board were answered
+  by two boards on the firmware from before this change (`network show`,
+  and `config show` for one of them).
+- Requests sent from this machine to the board's routable address, through
+  the border router, with the address given to the CLI by a temporary
+  change: three `config show`, answered after 4, 7 and 12 s, and a `config
+  set`, which the board stored.
+- A firmware update the same way: the CLI offered an image of 195,088 bytes
+  to that address only. The board fetched it in about three minutes while a
+  sleepy end device, restarted into it, and confirmed it.
+
+Not tested: a request that a board multicasts reaching a board on battery
+through its parent, which is how `config` and `firmware push` reach one
+through an attached board. That needs two boards on this firmware, one of
+them on aux power and on USB. Also not tested: a board on battery that is
+not on USB, and what any of this does to the current.

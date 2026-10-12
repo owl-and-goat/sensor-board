@@ -11,8 +11,8 @@ use std::{
 use anyhow::{Context, Result, bail};
 use clap::{Args, ValueEnum};
 use protocol::{
-    BoardConfig, BoardId, CONFIG_PORT, ConfigMessage, PowerMode, Sensor, SensorConfig,
-    SensorsConfig,
+    BoardConfig, BoardId, CONFIG_PORT, ConfigMessage, PowerMode, SLEEPY_POLL_PERIOD, Sensor,
+    SensorConfig, SensorsConfig,
 };
 use tokio::{
     net::UdpSocket,
@@ -26,9 +26,11 @@ use crate::{
 
 /// How long to wait for a board's reply to a request sent through a border
 /// router, and how often to resend the request in that time. A board that
-/// relays a request for the host uses the same times.
-const REPLY_TIMEOUT: Duration = Duration::from_secs(6);
-const RESEND_INTERVAL: Duration = Duration::from_secs(2);
+/// relays a request for the host uses the same times. A board on battery
+/// only gets the request at its next poll, so the wait is longer than a poll
+/// period.
+const REPLY_TIMEOUT: Duration = Duration::from_secs(SLEEPY_POLL_PERIOD.as_secs() + 4);
+const RESEND_INTERVAL: Duration = Duration::from_secs(5);
 
 /// The changes to make to a board's configuration.
 #[derive(Args)]

@@ -17,15 +17,16 @@ use protocol::{
     GetNetworkAddresses, GetNetworkDataset, GetNetworkNeighbors, GetNetworkStatus,
     GetOfferProgress, GetRegistration, ImageChunk, ImageSize, JoinNetwork, LeaveNetwork,
     MeasureTempRh, Member, NeighborTable, NetworkError, NetworkStatus, OfferProgress,
-    ReadSensorValue, Registration, Report, ReportReceived, Sensor, SensorReadReq, SensorReadResult,
-    SetBoardConfig, StartCollecting, StartOffering, StopCollecting, StopOffering, TempRhReq,
-    TempRhResult, USB_PID, USB_VID, UninstallStack, UpdateImage, UpdateResult, WriteInstall,
-    WriteUpdate,
+    ReadSensorValue, Registration, Report, ReportReceived, SLEEPY_POLL_PERIOD, Sensor,
+    SensorReadReq, SensorReadResult, SetBoardConfig, StartCollecting, StartOffering,
+    StopCollecting, StopOffering, TempRhReq, TempRhResult, USB_PID, USB_VID, UninstallStack,
+    UpdateImage, UpdateResult, WriteInstall, WriteUpdate,
 };
 
-/// Timeout for a call to a board. The slowest call is a join or leave that
-/// hits the firmware's own five-second timeout on its radio coprocessor.
-const TIMEOUT: Duration = Duration::from_secs(10);
+/// Timeout for a call to a board. The slowest call is a configuration
+/// request that the board relays to a board on battery: the firmware waits
+/// a poll period and six seconds for the reply.
+const TIMEOUT: Duration = Duration::from_secs(SLEEPY_POLL_PERIOD.as_secs() + 10);
 
 pub struct Board {
     serial: String,

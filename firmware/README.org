@@ -295,7 +295,7 @@ selects how the board exports its metrics (see "metrics" above):
 attached board the start of the serial number is enough, and the commands go
 over usb. a board that is not attached needs its whole serial number, as
 =network show= prints it. an attached board that is on a network asks it
-over that network, and gives up after six seconds. with no such board
+over that network, and gives up after fourteen seconds. with no such board
 attached, or with =--border-router=, this machine asks it instead: it sends
 the request to every device that the border router lists, as =network show=
 does, and waits as long.
@@ -332,9 +332,9 @@ how often it wakes to read a sensor and push anyway:
 - if that interval is at most about 10.5 seconds, the board is a
   synchronized sleepy end device: it listens in a short window every
   interval, at times it has agreed with its parent.
-- if it is longer, the board asks its parent for its messages every
-  interval, up to four hours.
-- with no sensor enabled, it asks every two minutes.
+- otherwise the board asks its parent for its messages every 10 seconds,
+  whatever the intervals of its sensors, so that a command reaches it within
+  that time.
 
 #+begin_src sh
   cargo run -- network mode --board 4b    # the mode a board is in
@@ -345,18 +345,29 @@ sensor's interval takes effect within seconds, without a restart.
 
 - a board on battery sends no sensor reports, so =reports watch= does not
   show it, and =firmware push= does not wait for it.
-- a board on battery that is not attached cannot be reached yet: not through
-  an attached board (the requests are multicast, which a sleepy board does
-  not get), and not through the border router (which only lists routers). it
-  has to be configured and updated over usb. attached, it works as before,
-  also as the board that other boards are asked through.
+- a board on battery is never on usb (see =TODO.org=: with JP2 shorted, usb
+  power would destroy it), so it is configured and updated over the network,
+  through an attached board on aux power. =config show=, =config set= and
+  =firmware push= reach it like any other board. a command for it can take
+  up to 14 seconds, because the board only hears it when it next asks its
+  parent. =firmware push= shows a board on battery while it fetches, and
+  says when it has the image, but cannot tell which build it runs
+  afterwards.
+- with =--border-router=, or with no board attached, the cli does not find a
+  board on battery: the border router only lists routers. =network show=
+  often misses one too, because it only listens for three seconds.
 - only the radio sleeps so far. the processor, the usb port and the clocks
   stay on. the board's current has not been measured.
 
 tested on a board on 2026-10-11, with a pushgateway on the lan: the board
 attaching as a sleepy child, pushes accepted about every 10 s, messages
 delivered in the listening windows (with gaps, in which they wait for the
-next push), an interval of 30 s, and the change to =aux= and back.
+next push), an interval of 30 s with the board asking every 10 s, and the
+change to =aux= and back. also, with requests sent from this machine
+straight to the board's address: reading and setting its configuration, and
+a firmware update that it fetched in about three minutes while sleepy. not
+tested: any of that through an attached board, which needs a second board
+on this firmware.
 
 * getting into the bootloader
 

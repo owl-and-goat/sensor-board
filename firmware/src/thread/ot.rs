@@ -514,15 +514,11 @@ pub async fn notification(
     notif_rx.receive_with(handle).await
 }
 
-/// Whether an otNetifAddress at `pointer` would be aligned and entirely in
-/// RAM.
-fn is_in_ram(pointer: *const ffi::otNetifAddress) -> bool {
+/// Whether a `T` at `pointer` would be aligned and entirely in RAM.
+fn is_in_ram<T>(pointer: *const T) -> bool {
     /// SRAM1 and SRAM2, which are contiguous.
     const RAM: core::ops::Range<usize> = 0x2000_0000..0x2004_0000;
-    let (from, to) = (
-        pointer as usize,
-        pointer as usize + size_of::<ffi::otNetifAddress>(),
-    );
+    let (from, to) = (pointer as usize, pointer as usize + size_of::<T>());
     pointer.is_aligned() && RAM.contains(&from) && RAM.contains(&to)
 }
 
@@ -1213,6 +1209,34 @@ pub unsafe trait OpenThread {
             )
             .await
         }
+    }
+
+    /// The realm-local all-Thread-nodes multicast address of the device's
+    /// network. A datagram sent there reaches every Thread device on the
+    /// network. Unlike one sent to the all-nodes address, a parent also
+    /// forwards it to its sleepy children. `None` if the stack returned no
+    /// address that can be read.
+    async fn thread_get_realm_local_all_thread_nodes_multicast_address(
+        &mut self,
+    ) -> Option<Ipv6Addr> {
+        let address = unsafe {
+            // SAFETY: expects no arguments. Returns a pointer to an
+            // otIp6Address.
+            self.ffi_call(
+                ffi_command::MSG_M4TOM0_OT_THREAD_GET_REALM_LOCAL_ALL_THREAD_NODES_MULTICAST_ADDRESS,
+                &[],
+            )
+            .await
+        } as *const ffi::otIp6Address;
+
+        // The address is in CPU2's own memory, which CPU1 can read.
+        if !is_in_ram(address) {
+            return None;
+        }
+        // SAFETY: `address` points to readable memory and is aligned for an
+        // otIp6Address, for which every bit pattern is valid.
+        let octets = unsafe { read_volatile(address).mFields.m8 };
+        Some(Ipv6Addr::from(octets))
     }
 
     /// The device's unicast addresses, as many as fit in [`Addresses`].
