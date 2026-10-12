@@ -185,12 +185,77 @@ stopped, it draws about 20 µA. awake, 6 to 10 mA for about two seconds
 per measurement and push, before the smps was on (see "The current" in
 =AGENTS.md=). what is left: a push that is shorter on the air, and the
 sensors between polls.
-** TODO get the embassy-stm32 patch into embassy
-=firmware/patches/embassy-stm32-stm32wb-stop.patch= is against the 0.6.0
-release. put it on a branch of the fork (from the =embassy-stm32-v0.6.0=
-tag), point =[patch.crates-io]= in =firmware/Cargo.toml= at that revision,
-and drop the =embassy-stm32= recipe from the =Justfile=. upstream's main has
-changed around it, so a pull request needs the patch redone on main.
+* Embassy: bugs to send upstream
+all of these are in embassy-stm32, for the stm32wb, and were found while
+making a board on battery stop (see "Stop mode" and "The SMPS" in
+=AGENTS.md=). our fixes are in
+=firmware/patches/embassy-stm32-stm32wb-stop.patch=, which is against the
+0.6.0 release. upstream's main was read on 2026-10-11: where an entry says
+"still on main", the code there had the same fault that day, but the code
+around it has changed, so each fix has to be redone on main. every fix was
+run on board 4B002E. one pull request per entry is probably easiest to
+review, and the first three belong together.
+** TODO the stop sequence locks the wrong hardware semaphores
+=get_hsem(3)= and =get_hsem(4)= in =src/hsem/mod.rs= go to
+=HardwareSemaphoreChannel::new(3)= and =new(4)=, which count from 1, so they
+are HSEM_R2 and HSEM_R3. st's firmware on cpu2 counts from 0, as the
+registers do: its rcc semaphore (=CFG_HW_RCC_SEMID=, 3) is HSEM_R3, and its
+stop-entry semaphore (=CFG_HW_ENTRY_STOP_MODE_SEMID=, 4) is HSEM_R4. HSEM_R2
+is st's flash semaphore. so the sequence in =src/low_power.rs= never holds
+the semaphores that cpu2 looks at. fix: map 3 and 4 to channels 4 and 5 on
+the stm32wb. still on main.
+** TODO the stop-entry semaphore is released before the chip stops
+=enter_stop= in =src/low_power.rs= drops semaphore 4 as soon as it has it.
+st's =EnterLowPower= (=stm32_lpm_if.c= in STM32CubeWB) keeps it while cpu2
+is running, and =ExitLowPower= releases it after the wake-up: it is what
+tells cpu2 that cpu1 has stopped, so that cpu2 switches the system clock to
+HSI16 before it stops too. fix: keep it (=mem::forget=) and unlock it in
+=exit_stop=. also take semaphore 3 with =blocking_lock=, as st does, in
+place of giving up when cpu2 has it. still on main.
+** TODO nothing restores the clocks after a stop
+=exit_stop= reinitializes rcc for the stm32wl, wba and others, and does
+nothing for the stm32wb. after a stop the system clock is HSI16 or MSI, and
+HSE and the plls are off. =reinit_saved= would not do here: it goes through
+MSI at 4 MHz and resets =CFGR=, and cpu2 is clocked from the system clock
+and may be using the radio. fix: remember =RCC_CR=, =SW= and =SMPSSEL= in
+=enter_stop=, and in =exit_stop= turn on what was on and switch back, under
+semaphore 3. also set =STOPWUCK=, so that the chip wakes on HSI16 as st's
+sequence expects. still on main.
+** TODO IpccRxChannel::receive keeps the chip out of stop mode
+=receive= in =src/ipcc.rs= takes a wake guard before it waits for the other
+core. a firmware that talks to cpu2 is always waiting on some channel, so it
+never stops. the channel-occupied interrupt wakes the chip from stop, so
+the guard is only needed while the data is read and acknowledged. fix: take
+it after the wait. still on main.
+** TODO the stm32wb's stop flags are never cleared
+=clear_flags= in =src/low_power.rs= has no branch for the stm32wb, so
+=C1STOPF= and =C2STOPF= in =PWR_EXTSCR= stay set after the first stop, and
+the "has been in STOP" messages say nothing after that. fix: set =C1CSSF=,
+as the stm32wl branch does. still on main.
+** TODO the smps is turned off before every stop and never on again
+=enter_stop= clears =SMPSEN= and sets the bypass bit in =PWR_CR5= ("off
+SMPS, on Bypass"), and nothing undoes that. the chip opens the smps by
+itself in stop 1 and stop 2 and closes it again afterwards
+(=LL_PWR_SMPS_GetEffectiveMode= in st's =stm32wbxx_ll_pwr.h= says so), and
+st's sequence does not touch it. fix: remove the block. still on main.
+** DONE stop mode is entered although the time driver could not be paused
+=configure_pwr= in =src/low_power.rs= only warned when =pause_time= or
+=enter_stop= failed, and then set =SLEEPDEEP= anyway. time then stood still
+while the chip was stopped. fixed on main: it returns without stopping.
+** TODO rcc init leaves MSI running
+=init= in =src/rcc/l.rs= switches to MSI first and never turns it off when
+the configuration has no MSI, so it runs until the first stop. small: our
+firmware turns it off itself (=stop_unused_clocks=). not checked on main.
+** not bugs, but worth raising
+- the chip only reaches stop 1 while the ipcc, an i2c or a dma controller is
+  in use at all, because embassy counts them against stop 2
+  (=enable_and_reset_without_stop= in =src/rcc/mod.rs=). st's applications
+  use stop 2 with the ipcc.
+** TODO afterwards: use the fork in place of the patch file
+once the fixes are on a branch of the fork (from the =embassy-stm32-v0.6.0=
+tag, because the fork's thread support uses released crates): point
+=[patch.crates-io]= in =firmware/Cargo.toml= at that revision, and drop the
+=embassy-stm32= recipe from the =Justfile= and the patch file.
 * Rev. 2
 ** TODO fix the pin numbering for the color sensor footprint
 half of them are the wrong way gdi
