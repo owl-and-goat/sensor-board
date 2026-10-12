@@ -181,3 +181,9 @@ either on usb or on battery, never both, and a board on battery can only be
 reached over the network. replace the jumper with a power path that keeps
 VBUS off the rail: for example the regulator on VBUS only, and the cell
 behind an ideal diode or a load switch.
+** TODO give the debug connector a footprint that holds the cable
+J4 is the Tag-Connect TC2030-NL footprint, which has no spots for the cable's
+clips. so the pogo pins have to be held in place by hand, and SWDIO/SWCLK
+lose contact (the probe then still reads the target voltage and can reset
+the board, because VCC, reset and GND are on the other row). use a footprint
+that the clips or the cable's legs can hold on to, or another connector.
