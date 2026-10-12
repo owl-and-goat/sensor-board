@@ -29,7 +29,6 @@ use embassy_stm32::{
     mode::Async,
     peripherals::{self, DMA1_CH1, DMA1_CH2, DMA2_CH1, I2C1},
     rcc,
-    rtc::{Rtc, RtcConfig},
     wdg::IndependentWatchdog,
 };
 use embassy_sync::{blocking_mutex::raw::ThreadModeRawMutex, mutex::Mutex};
@@ -55,31 +54,37 @@ bind_interrupts!(struct Irqs {
     DMA1_CHANNEL2 => dma::InterruptHandler<DMA1_CH2>;
 });
 
-fn configure_clocks() -> rcc::Config {
+/// The clocks of a board that starts with the power mode `power`.
+fn configure_clocks(power: PowerMode) -> rcc::Config {
     let mut clocks = rcc::WPAN_DEFAULT;
 
     clocks.sys = rcc::Sysclk::HSE;
     clocks.hsi = true;
     clocks.core2_ahb_pre = rcc::AHBPrescaler::DIV1;
 
-    // The PLL stays on only to give USB its 48 MHz from PLL Q. It is not the
-    // system clock. USB cannot use HSI48, because CPU2 can switch that off.
-    // TODO: disable this PLL and remove USB entirely so that we can go into
-    // proper low-power sleep!
+    // The 48 MHz clock. On aux power it is for USB, and comes from PLL Q:
+    // USB cannot use HSI48, because CPU2 can switch that off. A board on
+    // battery has no USB. Its 48 MHz clock is HSI48, which CPU2 turns on
+    // while it needs random numbers (see `coprocessor`).
+    let (usb_clock, clk48sel) = match power {
+        PowerMode::Aux => (Some(rcc::PllQDiv::DIV4), rcc::mux::Clk48sel::PLL1_Q),
+        PowerMode::Battery => (None, rcc::mux::Clk48sel::HSI48),
+    };
     clocks.hsi48 = None;
-    clocks.mux.clk48sel = rcc::mux::Clk48sel::PLL1_Q;
+    clocks.mux.clk48sel = clk48sel;
 
     // The microphone (SAI1) wants a PDM clock of 2.048 MHz, which decimated by
     // 128 is 16 kHz audio. From 32 MHz that takes a /125 somewhere, and the
     // only place for it is the PLL input divider (shared by both PLLs) times
     // PLLSAI1's P: 32 / 5 = 6.4 MHz in, then 6.4 * 32 / 25 = 8.192 MHz for
-    // SAI1, and 6.4 * 30 / 4 = 48 MHz for USB.
+    // SAI1, and 6.4 * 30 / 4 = 48 MHz for USB. The main PLL is not the
+    // system clock.
     clocks.pll = Some(rcc::Pll {
         source: rcc::PllSource::HSE,
         prediv: rcc::PllPreDiv::DIV5,
         mul: rcc::PllMul::MUL30,
         divp: None,
-        divq: Some(rcc::PllQDiv::DIV4),
+        divq: usb_clock,
         divr: None,
     });
     clocks.pllsai1 = Some(rcc::Pll {
@@ -93,6 +98,19 @@ fn configure_clocks() -> rcc::Config {
     clocks.mux.sai1sel = rcc::mux::Sai1sel::PLLSAI1_P;
 
     clocks
+}
+
+/// Turn off the clocks that `embassy_stm32::init` leaves running and that
+/// nothing uses. PLLSAI1 is the microphone's to turn on and off.
+fn stop_unused_clocks(power: PowerMode) {
+    let rcc = embassy_stm32::pac::RCC;
+    // MSI is the clock that the chip starts on.
+    rcc.cr().modify(|w| w.set_msion(false));
+    // Without USB the main PLL has no output. Its register still holds the
+    // input divider that PLLSAI1 uses.
+    if power == PowerMode::Battery {
+        rcc.cr().modify(|w| w.set_pllon(false));
+    }
 }
 
 #[embassy_executor::task]
@@ -148,8 +166,10 @@ async fn watchdog(iwdg: Peri<'static, peripherals::IWDG>) -> ! {
     let mut watchdog = IndependentWatchdog::new(iwdg, 32_000_000);
     watchdog.unleash();
 
+    // Often enough for the watchdog, and rarely enough for the chip to
+    // sleep in between.
     loop {
-        Timer::after_millis(20).await;
+        Timer::after_secs(8).await;
         watchdog.pet();
     }
 }
@@ -159,15 +179,32 @@ async fn button(task: button::Task) -> ! {
     task.run().await
 }
 
-#[embassy_executor::main]
+#[embassy_executor::main(
+    executor = "embassy_stm32::executor::Executor",
+    entry = "cortex_m_rt::entry"
+)]
 async fn main(spawner: Spawner) {
     // Must run before any clock or peripheral setup.
     dfu::enter_bootloader_if_requested();
     dfu::reset_if_launched_by_bootloader();
 
+    // The configuration is read first, because the clocks depend on the
+    // power mode.
+    let (
+        config_handle,
+        config_eraser,
+        config_service,
+        [metrics_config, report_config, power_config],
+    ) = board_config::init();
+    let (power_mode, power_task) = power::init(power_config);
+
     let mut config = Config::default();
-    config.rcc = configure_clocks();
+    config.rcc = configure_clocks(power_mode);
+    // Keeping the debug port clocked while the chip sleeps or stops costs
+    // most of what stopping saves.
+    config.enable_debug_during_sleep = !power::stops(power_mode);
     let p = embassy_stm32::init(config);
+    stop_unused_clocks(power_mode);
     defmt::info!("sensor-board (built {})", env!("BUILD_STAMP"));
 
     // Option-validity error is set after FUS/bootloader activity; ST clears it
@@ -176,21 +213,12 @@ async fn main(spawner: Spawner) {
         .sr()
         .write(|w| w.set_optverr(true));
 
-    let (_rtc, _rtc_time) = Rtc::new(p.RTC, RtcConfig::default());
-
     spawner.spawn(watchdog(p.IWDG).unwrap());
 
     let (bootloader_task, bootloader_handle) = dfu::init();
     spawner.spawn(bootloader(bootloader_task).unwrap());
 
     let (update_handle, update_service) = update::init();
-    let (
-        config_handle,
-        config_eraser,
-        config_service,
-        [metrics_config, report_config, power_config],
-    ) = board_config::init();
-    let (power_mode, power_task) = power::init(power_config);
     spawner.spawn(power(power_task).unwrap());
     let (coprocessor_task, coprocessor_handle, thread_handle, sockets, tcp) =
         coprocessor::Builder {

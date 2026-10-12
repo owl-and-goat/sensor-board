@@ -18,6 +18,28 @@ _image file sha256:
   @[ -f {{file}} ] || { echo "Fetching {{file_name(file)}}"; curl -fL --remove-on-error -o {{file}} {{coprocessor_url}}/{{file_name(file)}}; }
   @echo "{{sha256}}  {{file}}" | sha256sum --check --quiet
 
+# embassy-stm32 as released, with the patch that makes Stop mode work on this
+# chip. firmware/Cargo.toml takes the crate from this directory.
+embassy_stm32_crate := "embassy-stm32-0.6.0"
+embassy_stm32 := ".cache/embassy-stm32"
+embassy_stm32_patch := "firmware/patches/embassy-stm32-stm32wb-stop.patch"
+
+# Unpack embassy-stm32 and apply our patch to it, unless that has been done with the patch as it is now. The firmware does not build without this
+embassy-stm32:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    stamp={{embassy_stm32}}/.patch.sha256
+    if sha256sum --check --status "$stamp" 2>/dev/null; then exit 0; fi
+    crate=.cache/{{embassy_stm32_crate}}.crate
+    mkdir -p .cache
+    [ -f "$crate" ] || { echo "Fetching {{embassy_stm32_crate}}"; curl -fL --remove-on-error -o "$crate" https://static.crates.io/crates/embassy-stm32/{{embassy_stm32_crate}}.crate; }
+    echo "486c0622deb5a519fc4d2cb8e3ef324f7568fcdfff201ff8fcab46557d663ceb  $crate" | sha256sum --check --quiet
+    rm -rf {{embassy_stm32}}
+    mkdir {{embassy_stm32}}
+    tar -xzf "$crate" -C {{embassy_stm32}} --strip-components 1
+    patch --quiet -d {{embassy_stm32}} -p1 < {{embassy_stm32_patch}}
+    sha256sum {{embassy_stm32_patch}} > "$stamp"
+
 # Two images: the firmware alone, which is what an update sends to a board,
 # and the full flash image, with the bootloader, its blank state page, and
 # the firmware.
@@ -69,7 +91,7 @@ dfu-flash-all: _flash-image
     done
 
 # Build the firmware as a raw image. Every recipe that touches a board builds it first
-firmware-image:
+firmware-image: embassy-stm32
     ( cd firmware && cargo build --release && {{objcopy}} -O binary target/thumbv7em-none-eabihf/release/sensor-board-firmware ../{{firmware_image}} )
 
 # Build the full flash image: the bootloader, padded with 0xff up to where the firmware starts, then the firmware

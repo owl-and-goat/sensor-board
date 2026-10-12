@@ -5,8 +5,10 @@ edition = "2024"
 publish = false
 
 [dependencies]
-embassy-stm32 = { version = "0.6.0", features = ["defmt", "exti", "stm32wb55cg", "time-driver-any", "unstable-pac"] }
-embassy-executor = { version = "0.10.0", features = ["defmt", "platform-cortex-m", "executor-thread"] }
+# low-power and executor-thread: embassy-stm32's own executor, which puts the
+# chip in Stop mode when every task is waiting and no peripheral is busy.
+embassy-stm32 = { version = "0.6.0", features = ["defmt", "executor-thread", "exti", "low-power", "stm32wb55cg", "time-driver-any", "unstable-pac"] }
+embassy-executor = { version = "0.10.0", features = ["defmt"] }
 embassy-time = { version = "0.5.1", features = ["defmt", "defmt-timestamp-uptime", "tick-hz-1_000_000"] }
 embassy-usb = { version = "0.6.0", default-features = false, features = ["defmt"] }
 embassy-futures = "0.1.2"
@@ -63,6 +65,12 @@ features = ["embassy-usb-0_6-server"]
 git = "https://github.com/glittershark/embassy.git"
 rev = "ebbabe3b4c979d0c9815b663649c5b85c59dfd30"
 features = ["defmt", "stm32wb55cg", "wb55_thread"]
+
+# embassy-stm32 0.6.0 with the patch in patches/, which makes Stop mode work on
+# the STM32WB (see "Boards on battery" in AGENTS.md). `just embassy-stm32`
+# creates the directory, and every recipe that builds the firmware runs it.
+[patch.crates-io]
+embassy-stm32 = { path = "../.cache/embassy-stm32" }
 
 [profile.release]
 debug = 2

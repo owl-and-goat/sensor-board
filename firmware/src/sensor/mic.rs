@@ -61,9 +61,9 @@ impl<'d> Mic<'d> {
 
         let deadline = Instant::now() + (SETTLE + duration) * 2;
         self.filter.reset();
-        self.pdm.start();
+        let mut capture = self.pdm.start();
         while n < samples && Instant::now() < deadline {
-            if self.pdm.read(&mut pdm).await.is_err() {
+            if capture.read(&mut pdm).await.is_err() {
                 overruns += 1;
                 self.filter.reset();
                 skip = settle;
@@ -79,7 +79,7 @@ impl<'d> Mic<'d> {
                 }
             }
         }
-        self.pdm.stop();
+        drop(capture);
 
         if overruns > 0 {
             defmt::warn!("mic: {} overruns during a measurement", overruns);

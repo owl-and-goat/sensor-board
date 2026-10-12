@@ -10,7 +10,7 @@
 
 use embassy_stm32::{
     Peri,
-    dma::{self, ReadableRingBuffer, TransferOptions},
+    dma::{self, ReadableRingBuffer, Request, TransferOptions},
     gpio::{self, AfType, Flex, OutputType, Pull, Speed},
     interrupt,
     pac::{self, sai::vals},
@@ -83,18 +83,28 @@ pub struct Pdm<'d> {
     _sai: Peri<'d, SAI1>,
     _clock: Flex<'d>,
     _data: Flex<'d>,
-    ring: ReadableRingBuffer<'d, u8>,
+    dma: dma::Channel<'d>,
+    request: Request,
+    buf: &'d mut [u8],
     mckdiv: vals::Mckdiv,
     /// MICNBR: the pairs of microphones, less one.
     micnbr: u8,
     cken: usize,
     slot: usize,
-    running: bool,
+}
+
+/// The interface while it is on. Dropping it stops the clock, which puts the
+/// microphone in power-down, and turns SAI1 and PLLSAI1 off.
+///
+/// It holds the DMA ring buffer, which keeps the chip out of Stop mode for
+/// as long as it exists. That is why the buffer is not kept in [`Pdm`].
+pub struct Capture<'a> {
+    ring: ReadableRingBuffer<'a, u8>,
 }
 
 impl<'d> Pdm<'d> {
-    /// Sets the pins and DMA up, and leaves the interface off: `start` turns
-    /// it on.
+    /// Sets the pins and DMA up, and leaves the interface off, and PLLSAI1,
+    /// which clocks it: `start` turns both on.
     ///
     /// Panics unless SAI1's kernel clock divides down to `CLOCK_HZ`.
     pub fn new<C: ClockPin, D: DataPin, Ch: Dma<SAI1, sai::A>>(
@@ -122,35 +132,29 @@ impl<'d> Pdm<'d> {
         let mut data = Flex::new(data);
         data.set_as_af_unchecked(AF, AfType::input(Pull::None));
 
-        let request = dma.request();
-        // SAFETY: the data register of block A, which this owns through
-        // `sai`, read in bytes as `DS` makes them.
-        let ring = unsafe {
-            ReadableRingBuffer::new(
-                dma::Channel::new(dma, irq),
-                request,
-                pac::SAI1.ch(0).dr().as_ptr() as *mut u8,
-                buf,
-                TransferOptions::default(),
-            )
-        };
+        // `embassy_stm32::init` has started PLLSAI1.
+        pac::RCC.cr().modify(|w| w.set_pllsai1on(false));
 
+        let request = dma.request();
         Self {
             _sai: sai,
             _clock: clock,
             _data: data,
-            ring,
+            dma: dma::Channel::new(dma, irq),
+            request,
+            buf,
             mckdiv: vals::Mckdiv::from_bits(mckdiv as u8),
             micnbr,
             cken: C::CKEN,
             slot: 2 * micnbr as usize + channel as usize,
-            running: false,
         }
     }
 
     /// Clocks the microphone and starts taking its bitstream in. The
     /// microphone takes up to 10 ms to give valid data.
-    pub fn start(&mut self) {
+    pub fn start(&mut self) -> Capture<'_> {
+        pac::RCC.cr().modify(|w| w.set_pllsai1on(true));
+        while !pac::RCC.cr().read().pllsai1rdy() {}
         rcc::enable_and_reset::<SAI1>();
 
         let sai = pac::SAI1;
@@ -180,27 +184,25 @@ impl<'d> Pdm<'d> {
             w.set_pdmen(true);
         });
 
-        self.ring.clear();
-        self.ring.start();
+        // SAFETY: the data register of block A, which `self` owns through
+        // `_sai`, read in bytes as `DS` makes them.
+        let mut ring = unsafe {
+            ReadableRingBuffer::new(
+                self.dma.reborrow(),
+                self.request,
+                a.dr().as_ptr() as *mut u8,
+                self.buf,
+                TransferOptions::default(),
+            )
+        };
+        ring.clear();
+        ring.start();
         a.cr1().modify(|w| w.set_saien(true));
-        self.running = true;
+        Capture { ring }
     }
+}
 
-    /// Stops the clock, which puts the microphone in power-down, and turns
-    /// SAI1 off.
-    pub fn stop(&mut self) {
-        let a = pac::SAI1.ch(0);
-        a.cr1().modify(|w| w.set_saien(false));
-        // SAIEN reads back as set until the frame under way has ended.
-        while a.cr1().read().saien() {}
-        pac::SAI1.pdmcr().modify(|w| w.set_pdmen(false));
-
-        self.ring.request_pause();
-        while self.ring.is_running() {}
-        rcc::disable::<SAI1>();
-        self.running = false;
-    }
-
+impl Capture<'_> {
     /// Fills `buf` with the bitstream that follows what was last read, eight
     /// samples to a byte, the first in the MSB. After an overrun the next
     /// read starts from what arrives then.
@@ -213,10 +215,17 @@ impl<'d> Pdm<'d> {
     }
 }
 
-impl Drop for Pdm<'_> {
+impl Drop for Capture<'_> {
     fn drop(&mut self) {
-        if self.running {
-            self.stop();
-        }
+        let a = pac::SAI1.ch(0);
+        a.cr1().modify(|w| w.set_saien(false));
+        // SAIEN reads back as set until the frame under way has ended.
+        while a.cr1().read().saien() {}
+        pac::SAI1.pdmcr().modify(|w| w.set_pdmen(false));
+
+        self.ring.request_pause();
+        while self.ring.is_running() {}
+        rcc::disable::<SAI1>();
+        pac::RCC.cr().modify(|w| w.set_pllsai1on(false));
     }
 }

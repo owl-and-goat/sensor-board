@@ -85,7 +85,7 @@ pub struct Builder<'d> {
     /// reason.
     pub board_config: board_config::Service,
     /// The power mode that the board started with, which selects its Thread
-    /// device mode.
+    /// device mode and who manages the 48 MHz clock.
     pub power: PowerMode,
 }
 
@@ -112,6 +112,7 @@ impl<'d> Builder<'d> {
         let task = Task {
             ipcc: self.ipcc,
             flash: self.flash,
+            power: self.power,
             requests: server,
             status: &shared.status,
             thread,
@@ -177,6 +178,7 @@ impl Handle {
 pub struct Task<'d> {
     ipcc: Peri<'d, IPCC>,
     flash: Peri<'d, FLASH>,
+    power: PowerMode,
     requests: request::Server<fus::Request, CoprocessorResult>,
     status: &'static Status,
     thread: thread::Service,
@@ -188,7 +190,7 @@ pub struct Task<'d> {
 
 impl<'d> Task<'d> {
     pub async fn run(self) -> ! {
-        let mbox = ensure_booted(self.ipcc).await;
+        let mbox = ensure_booted(self.ipcc, self.power).await;
         let mut mm = mbox.mm_subsystem;
         let mut sys = mbox.sys_subsystem;
         let flash = Flash::new_blocking(self.flash);
@@ -277,6 +279,9 @@ type Ready = Option<Result<SchiSysEventReady, ()>>;
 /// Hardware semaphore 5 guards the 48 MHz clock (CLK48/HSI48). When a wireless stack starts,
 /// CPU2 takes it and switches that clock off unless CPU1 already holds it. USB needs the clock,
 /// so take it before C2BOOT and never release it (AN5289; same as ST's USB examples on WB).
+///
+/// A board on battery has no USB, and leaves the semaphore to CPU2. CPU2 then turns HSI48 on
+/// while its random number generator needs it, also while CPU1 is in Stop mode.
 const HSEM_CLK48: usize = 5;
 
 fn lock_clk48_semaphore() -> bool {
@@ -285,6 +290,18 @@ fn lock_clk48_semaphore() -> bool {
     // One-step lock: reading RLR locks the semaphore for this core if free.
     let r = HSEM.rlr(HSEM_CLK48).read();
     r.lock()
+}
+
+/// The chip only goes as deep into low power as both cores allow. CPU1 sets
+/// CPU2's limit, before CPU2 boots. As in ST's applications, it is the
+/// deepest mode (`LL_C2_PWR_SetPowerMode(LL_PWR_MODE_SHUTDOWN)`), so that CPU2
+/// never holds the chip back. At reset the limit is Stop 0.
+fn allow_cpu2_low_power() {
+    /// `LPMS` for Shutdown mode.
+    const SHUTDOWN: u8 = 0b100;
+    embassy_stm32::pac::PWR
+        .c2cr1()
+        .modify(|w| w.set_lpms(SHUTDOWN));
 }
 
 /// "Fake a C2BOOT when it has already been set" (ST's words): SHCI_C2_REINIT
@@ -300,8 +317,11 @@ async fn reinit(sys: &mut Sys<'_>) -> Ready {
     }
 }
 
-async fn ensure_booted<'d>(ipcc: Peri<'d, IPCC>) -> TlMbox<'d> {
-    lock_clk48_semaphore();
+async fn ensure_booted<'d>(ipcc: Peri<'d, IPCC>, power: PowerMode) -> TlMbox<'d> {
+    if power == PowerMode::Aux {
+        lock_clk48_semaphore();
+    }
+    allow_cpu2_low_power();
     let mut mbox = TlMbox::init_without_ready(ipcc, Irqs, ipcc::Config::default());
 
     // CPU2 sends its ready event once after it boots. A CPU1-only reset (our
