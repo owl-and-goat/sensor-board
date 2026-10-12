@@ -6,6 +6,7 @@ mod config;
 mod coprocessor;
 mod discovery;
 mod firmware;
+mod mdns;
 mod network;
 mod reports;
 

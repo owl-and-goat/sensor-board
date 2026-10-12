@@ -129,9 +129,9 @@ async fn through_board(board: &Board) -> Result<Vec<Found>> {
 async fn through_border_router(address: &str) -> Result<Vec<Found>> {
     eprintln!("Asking through the border router at {address}.");
     let (node, devices) = BorderRouter::at(address).network().await?;
-    let targets = border_router::routable_addresses(&node, &devices);
+    let targets = border_router::targets(&node, &devices).await;
     if targets.is_empty() {
-        bail!("the border router lists no other device with a routable address");
+        bail!("found no other device with a routable address on the Thread network");
     }
 
     // Boards reply to the discovery port, whatever port the request came

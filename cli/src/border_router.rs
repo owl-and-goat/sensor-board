@@ -6,6 +6,8 @@ use std::{net::Ipv6Addr, time::Duration};
 use anyhow::{Context, Result};
 use serde::{Deserialize, de::DeserializeOwned};
 
+use crate::mdns;
+
 /// The border router to ask when none is named: the host and port of its
 /// REST API.
 pub const DEFAULT_ADDRESS: &str = "cerberus:8081";
@@ -66,6 +68,27 @@ pub fn routable_addresses(node: &Node, devices: &[Diagnostics]) -> Vec<Ipv6Addr>
         .copied()
         .filter(|address| !address.is_unicast_link_local() && prefix(*address) != mesh_local_prefix)
         .collect()
+}
+
+/// The addresses to send to from this machine, to reach every board on the
+/// border router's network: those of the devices that the border router
+/// lists, and those of the boards that are advertised over mDNS. A board on
+/// battery is only among the second, because the border router lists
+/// routers.
+pub async fn targets(node: &Node, devices: &[Diagnostics]) -> Vec<Ipv6Addr> {
+    let mut targets = routable_addresses(node, devices);
+    match mdns::boards().await {
+        Ok(boards) => {
+            for board in boards {
+                if !targets.contains(&board.address) {
+                    targets.push(board.address);
+                }
+            }
+        }
+        // The boards that are routers can still be reached.
+        Err(e) => eprintln!("Could not look for boards over mDNS: {e:#}."),
+    }
+    targets
 }
 
 /// The first 64 bits of `address`.

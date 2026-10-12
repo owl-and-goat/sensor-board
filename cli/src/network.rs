@@ -13,7 +13,7 @@ use std::{
 use anyhow::{Context, Result, bail};
 use protocol::{
     Address, Addresses, Dataset, DeviceMode, HOST_NAME_PREFIX, Link, NetworkStatus, Registration,
-    SCRAPE_SERVICE, SLEEPY_POLL_PERIOD,
+    SLEEPY_POLL_PERIOD,
 };
 use rand::RngExt;
 
@@ -324,18 +324,20 @@ pub fn describe_addresses(addresses: &Addresses) -> String {
     text
 }
 
-/// Describe the registration of the board with this serial number.
+/// Describe the registration of the board with this serial number. A board
+/// registers its scrape endpoint on aux power, and the board service on
+/// battery, both under the same name.
 pub fn describe_registration(serial: &str, registration: &Registration) -> String {
     let name = format!("{HOST_NAME_PREFIX}{serial}");
     match registration {
-        Registration::Off => "not registered: the board does not serve its metrics".into(),
+        Registration::Off => "not registered: the board has not tried yet".into(),
         Registration::Pending { last_error: None } => {
-            format!("not registered yet, as {SCRAPE_SERVICE} {name}")
+            format!("not registered yet, as {name}")
         }
         Registration::Pending {
             last_error: Some(e),
-        } => format!("not registered yet, as {SCRAPE_SERVICE} {name}: {e}"),
-        Registration::Registered => format!("registered as {SCRAPE_SERVICE} {name}"),
+        } => format!("not registered yet, as {name}: {e}"),
+        Registration::Registered => format!("registered as {name}"),
     }
 }
 
@@ -465,24 +467,23 @@ mod tests {
     }
 
     #[test]
-    fn registration_names_the_service_and_the_last_error() {
+    fn registration_names_the_board_and_the_last_error() {
         let serial = "4C0032000350475532303120";
         let describe = |registration| describe_registration(serial, &registration);
 
         assert_eq!(
             describe(Registration::Registered),
-            "registered as _prometheus-http._tcp sensor-board-4C0032000350475532303120"
+            "registered as sensor-board-4C0032000350475532303120"
         );
         assert_eq!(
             describe(Registration::Pending {
                 last_error: Some(RegistrationError::NameTaken)
             }),
-            "not registered yet, as _prometheus-http._tcp sensor-board-4C0032000350475532303120: \
-             the name is taken"
+            "not registered yet, as sensor-board-4C0032000350475532303120: the name is taken"
         );
         assert_eq!(
             describe(Registration::Off),
-            "not registered: the board does not serve its metrics"
+            "not registered: the board has not tried yet"
         );
     }
 

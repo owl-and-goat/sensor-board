@@ -122,21 +122,21 @@ enum Request {
 struct NeighborsRequest;
 struct AddressesRequest;
 
-/// A TCP service to register with the network's SRP server, so that it can
-/// be found with DNS-SD.
+/// A service to register with the network's SRP server, so that it can be
+/// found with DNS-SD.
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub struct SrpService {
     /// The DNS-SD service type, such as `_http._tcp`.
     pub kind: &'static str,
     pub port: u16,
+    /// How long the SRP server keeps the registration, and reserves the
+    /// board's name for its key, without a renewal. The SRP client renews
+    /// the registration at half this interval. CPU2 makes a new key every
+    /// time it starts. So after a reset the board cannot register until its
+    /// previous registration has run out, and this is how long that takes at
+    /// most.
+    pub lease: Duration,
 }
-
-/// How long the SRP server keeps the board's registration, and reserves the
-/// board's name for its key, without a renewal. CPU2 makes a new key every
-/// time it starts. So after a reset the board cannot register until its
-/// previous registration has run out, and this is how long that takes at
-/// most. The SRP client renews the registration at half this interval.
-const REGISTRATION_LEASE: Duration = Duration::from_secs(120);
 
 /// The link mode of a full Thread device, and that of a sleepy end device.
 const FULL_DEVICE: ot::LinkMode = ot::LinkMode {
@@ -1294,12 +1294,12 @@ impl Network<'_, '_> {
             return Ok(());
         };
 
+        let lease = service.lease.as_secs() as u32;
+        self.ot.srp_client_set_lease_interval(lease).await;
+        self.ot.srp_client_set_key_lease_interval(lease).await;
         if !self.srp.named {
             // The name comes last: the calls before it can be repeated if
             // one of them fails, and the name can only be given once.
-            let lease = REGISTRATION_LEASE.as_secs() as u32;
-            self.ot.srp_client_set_lease_interval(lease).await;
-            self.ot.srp_client_set_key_lease_interval(lease).await;
             self.ot.srp_client_set_callback().await;
             self.ot.srp_client_enable_auto_host_address().await?;
 

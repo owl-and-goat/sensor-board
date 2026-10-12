@@ -1268,18 +1268,24 @@ impl DiscoveryMessage {
 /// Tools that find Prometheus scrape targets with DNS-SD look for this type.
 pub const SCRAPE_SERVICE: &str = "_prometheus-http._tcp";
 
-/// The start of the name that a board registers itself and its scrape
-/// endpoint under. The board's serial number follows.
+/// The DNS-SD service type that a board on battery registers. It has no
+/// scrape endpoint to register, and the CLI needs some service to find the
+/// board by. The service's port is [`CONFIG_PORT`].
+pub const BOARD_SERVICE: &str = "_sensor-board._udp";
+
+/// The start of the name that a board registers itself and its service
+/// under. The board's serial number follows.
 pub const HOST_NAME_PREFIX: &str = "sensor-board-";
 
-/// Whether a board has registered its scrape endpoint with the SRP server of
-/// its network, which runs on the border router. The border router
-/// advertises a registered endpoint over mDNS, as a [`SCRAPE_SERVICE`] named
-/// [`HOST_NAME_PREFIX`] and the board's serial number.
+/// Whether a board has registered its service with the SRP server of its
+/// network, which runs on the border router. The border router advertises a
+/// registered service over mDNS, named [`HOST_NAME_PREFIX`] and the board's
+/// serial number: a [`SCRAPE_SERVICE`] for a board on aux power, and a
+/// [`BOARD_SERVICE`] for a board on battery.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Schema)]
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]
 pub enum Registration {
-    /// The board has nothing to register: it does not serve its metrics.
+    /// The board has not been given a service to register yet.
     Off,
     /// The board has not registered yet, and keeps trying. `last_error` is
     /// why its last attempt failed, if one has.

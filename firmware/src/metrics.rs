@@ -3,7 +3,8 @@
 //!
 //! - `Aux`: it serves them at `GET /metrics` on [`SCRAPE_PORT`].
 //! - `Battery`: it pushes them to the configured Pushgateway after every
-//!   sensor read.
+//!   sensor read. It has no scrape endpoint, so it registers a service of
+//!   its own for the CLI to find it by.
 //!
 //! A board without a configuration is taken to be on aux power, and reads no
 //! sensors. The configuration also sets which sensors are read and how often.
@@ -37,9 +38,21 @@ use crate::{
 const SCRAPE_PORT: u16 = 9469;
 
 /// What the scrape endpoint is registered as, so that Prometheus can find it.
+/// The lease is short, so that the board is a scrape target again soon after
+/// a restart.
 const SCRAPE_SERVICE: thread::SrpService = thread::SrpService {
     kind: protocol::SCRAPE_SERVICE,
     port: SCRAPE_PORT,
+    lease: Duration::from_secs(120),
+};
+
+/// What a board that pushes registers, so that the CLI can find it. Each
+/// renewal costs a board on battery an exchange with the border router, so
+/// the lease is longer.
+const BOARD_SERVICE: thread::SrpService = thread::SrpService {
+    kind: protocol::BOARD_SERVICE,
+    port: protocol::CONFIG_PORT,
+    lease: Duration::from_secs(600),
 };
 
 /// The Pushgateway job name. The instance is the board's serial number.
@@ -48,8 +61,8 @@ const JOB: &str = "sensor_board";
 /// Delay before the next push after a failed one.
 const PUSH_RETRY: Duration = Duration::from_secs(60);
 
-/// Delay before trying to listen again. Listening fails until Thread has
-/// started.
+/// Delay before trying to listen or to register again. Both fail until
+/// Thread has started.
 const RETRY: Duration = Duration::from_secs(5);
 
 /// The shortest poll interval. A shorter configured interval is raised to it.
@@ -457,8 +470,21 @@ impl Exporter {
     async fn push(&mut self, gateway: Option<SocketAddrV6>) -> ! {
         // No push before this time. Set after a failed push.
         let mut not_before = Instant::now();
+        let mut registered = false;
         loop {
-            let sensor = Self::wait_until_due(&self.polls).await;
+            if !registered {
+                let outcome = self.tcp.register(Some(BOARD_SERVICE)).await;
+                registered = outcome.is_ok();
+            }
+            let due = Self::wait_until_due(&self.polls);
+            let sensor = if registered {
+                due.await
+            } else {
+                match select(due, Timer::after(RETRY)).await {
+                    Either::First(sensor) => sensor,
+                    Either::Second(()) => continue,
+                }
+            };
             self.read(sensor).await;
             // Also read every other sensor that is due, so that one push
             // covers them all.
