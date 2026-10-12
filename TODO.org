@@ -165,14 +165,26 @@ CLOSED: [2026-09-03 Thu 22:37]
 Mostly the Y1 ring; also water1/water2, hp2/hp3, sda/scl, JP1 pairs.
 
 * Firmware
-** TODO find why a board that stops hung when it wrote flash
-see "Stop mode" in =AGENTS.md=. seen twice with the probe off the board and
-a meter in the supply lead, not again in 17 tries with the probe connected.
-next: the same tries with the probe off, and the button.
+** TODO at the bench: try to make the stopping board hang again
+see "Stop mode" in =AGENTS.md=. a board that stopped hung twice when it was
+to write flash, with the probe off the board and a meter in the supply
+lead, and not again in 17 tries with the probe connected. what to do:
+- take the probe off, switch the supply off and on, wait two minutes
+- =config set --id 6= through the border router, a few times
+- hold the button for five seconds (it erases the configuration)
+- if the board hangs (no answer, no fast blink), put the probe on without
+  switching the supply off, and read where it is stuck within 25 s
+** TODO at the bench: measure the current with the smps on
+the same measurement as in "The current" in =AGENTS.md=, which was with the
+smps off. board 4B002E has run with it on since 2026-10-12.
+** TODO at the bench: restart board 4C0045
+it has been silent since 2026-10-11 22:27 (see "Not understood yet" under
+"CPU2" in =AGENTS.md=).
 ** TODO bring down what a board on battery draws while it is awake
 stopped, it draws about 20 µA. awake, 6 to 10 mA for about two seconds
-per measurement and push (see "The current" in =AGENTS.md=). what is left:
-a push that is shorter on the air, the smps, and the sensors between polls.
+per measurement and push, before the smps was on (see "The current" in
+=AGENTS.md=). what is left: a push that is shorter on the air, and the
+sensors between polls.
 ** TODO get the embassy-stm32 patch into embassy
 =firmware/patches/embassy-stm32-stm32wb-stop.patch= is against the 0.6.0
 release. put it on a branch of the fork (from the =embassy-stm32-v0.6.0=

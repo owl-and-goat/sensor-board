@@ -46,7 +46,7 @@ diff a/src/ipcc.rs b/src/ipcc.rs
 diff a/src/low_power.rs b/src/low_power.rs
 --- a/src/low_power.rs
 +++ b/src/low_power.rs
-@@ -79,71 +79,134 @@
+@@ -79,88 +79,134 @@
  
      use crate::rcc::StopMode;
  
@@ -204,16 +204,36 @@ diff a/src/low_power.rs b/src/low_power.rs
 +            sem3_mutex
          }
  
++        // The SMPS stays as the application set it. The chip opens it by itself in Stop 1 and
++        // Stop 2 and closes it again afterwards, and ST's sequence does not touch it. Turning
++        // it off here left it off for good after the first stop.
          #[cfg(stm32wb)]
-         let mutex = {
-             use crate::pac::{PWR, RCC};
- 
+-        let mutex = {
+-            use crate::pac::{PWR, RCC};
+-
 -            let mutex = enter_stop_stm32wb(_cs)?;
-+            let mutex = enter_stop_stm32wb(_cs);
+-
+-            // on PWR
+-            RCC.apb1enr1().modify(|r| r.0 |= 1 << 28);
+-            cortex_m::asm::dsb();
+-
+-            // off SMPS, on Bypass
+-            PWR.cr5().modify(|r| {
+-                let mut val = r.0;
+-                val &= !(1 << 15); // sdeb = 0 (off SMPS)
+-                val |= 1 << 14; // sdben = 1 (on Bypass)
+-                r.0 = val
+-            });
+-
+-            cortex_m::asm::delay(1000);
+-
+-            mutex
+-        };
++        let mutex = enter_stop_stm32wb(_cs);
  
-             // on PWR
-             RCC.apb1enr1().modify(|r| r.0 |= 1 << 28);
-@@ -204,6 +267,8 @@
+         #[cfg(any(stm32l4, stm32l5, stm32u5, stm32u3, stm32u0, stm32wb, stm32wba, stm32wl))]
+         {
+@@ -204,6 +250,8 @@
          });
          #[cfg(stm32wba)]
          crate::pac::PWR.sr().modify(|w| w.set_cssf(true));
@@ -222,7 +242,7 @@ diff a/src/low_power.rs b/src/low_power.rs
  
          #[cfg(stm32l0)]
          crate::pac::PWR.cr().modify(|w| w.set_cwuf(true));
-@@ -270,6 +335,12 @@
+@@ -270,6 +318,12 @@
                  crate::rcc::reinit_saved(_cs);
              }
  
@@ -235,7 +255,7 @@ diff a/src/low_power.rs b/src/low_power.rs
              #[cfg(stm32wba)]
              match (es.stopf(), es.stop2f()) {
                  (true, true) => debug!("low power: WBA woke from STOP2"),
-@@ -353,12 +424,18 @@
+@@ -353,12 +407,18 @@
          return;
      };
  

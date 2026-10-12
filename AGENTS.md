@@ -375,7 +375,9 @@ sent was not delivered back to it (`network show` through the board listed
 nothing, not even the board), and its registration ran out. CPU1 kept
 running, so the watchdog did not reset the board. A restart brought each
 board back. One of the two, while it still answered pings and scrapes, did
-not answer UDP from outside the Thread network. Scrapes from two machines at
+not answer UDP from outside the Thread network. It happened again that
+night: board 4C0045 was last scraped six minutes after it had restarted
+into an image from such a push, and was still silent the next morning. Scrapes from two machines at
 once and discovery requests did not make a restarted board do it again. The
 three boards that had been updated through a board that morning kept
 working.
@@ -827,12 +829,45 @@ for this. Each of these kept the firmware from working with Stop mode:
   entered Stop mode anyway. Time then stood still, and the watchdog reset
   the board.
 - The chip's stop flags were never cleared.
+- It turned the SMPS off before every stop, and never on again (see "The
+  SMPS").
 
 embassy's main branch, read on 2026-10-11, no longer stops with the time
-driver running. The other five are still as in 0.6.0. The patch is against
+driver running. The others are still as in 0.6.0. The patch is against
 the release, because the fork with the Thread support uses released crates.
 
-The firmware image grew by 10.9 K with this, to 209,280 bytes.
+The firmware image grew by 10.9 K with this, to 209,280 bytes. With the
+HTTP crate and the supply monitor merged in, it is 219,736 bytes, which
+leaves 9.6 K.
+
+### The SMPS
+
+The chip has a step-down converter that can feed its core and its radio
+from the 3 V rail in place of the linear regulator, at about half the
+current. The board has the parts for it: L1 (10 nH) and L2 (10 µH) between
+VLXSMPS and VFBSMPS. A board on battery starts it (`start_smps` in
+`main.rs`), as ST's applications do: output 1.40 V, corrected by the chip's
+production calibration, and 80 mA at its start.
+
+- It switches at 4 MHz, which is what 10 µH is for (AN5246; 8 MHz wants
+  2.2 µH). Its clock is set to HSI16 / 4. The status field read HSE as the
+  source in use all the same, and HSE / 8 is 4 MHz too.
+- At 1.40 V the radio sends with at most 3.7 dBm (ST's `app_entry.c`).
+- In Stop 1 and Stop 2 the chip takes the converter out of the circuit by
+  itself and puts it back afterwards. ST's stop sequence does not touch it.
+  embassy-stm32 turned it off before every stop and left it off, which the
+  patch removes.
+- Nothing switches it to bypass when the supply gets low. That takes a
+  higher brown-out level, which is an option byte.
+- Boards on aux power do not start it yet. It has only been tried on one
+  board.
+
+Tested on board 4B002E on 2026-10-12, at 3.0 V: `PWR_SR2` showed the
+converter in step-down mode after the start, and still at a push on a board
+that stopped in between. Pushes were accepted throughout. Turning it off
+and on through the probe, twice, made no difference to the sound level that
+the board measured (61 dB SPL either way). Not measured: what it does to
+the current.
 
 ### The current
 
@@ -847,10 +882,11 @@ taken off (sound every 10 s, a push after each measurement):
 
 So what a board on battery draws is set by how often it measures and
 pushes: about 2 mA on average with this configuration. What would bring
-that down: a longer interval, a push that takes less time on the air, and
-the SMPS, for the current while the chip runs. The 20 µA only matter once
-a board measures every few minutes. A current of several milliamps for
-seconds is also a lot for a coin cell.
+that down: a longer interval, and a push that takes less time on the air.
+The SMPS, which was off for this measurement, should lower the current
+while the chip runs. The 20 µA only matter once a board measures every few
+minutes. A current of several milliamps for seconds is also a lot for a
+coin cell.
 
 ### Not done
 
@@ -858,7 +894,6 @@ seconds is also a lot for a coin cell.
   IPCC, I2C1 and the DMA controllers are not in use at all.
 - The sensors are not put in a low-power state when they are not polled.
   Only the microphone is: it powers down when its clock stops.
-- The SMPS is off.
 - After three failed boots in a row a board enters the ROM bootloader (see
   "Logs and panics"). A board on battery cannot be reached there, and stays
   in it until its cell is taken out.

@@ -388,8 +388,9 @@ send to a few addresses that no longer answer.
   while the chip is stopped, and 6 to 10 mA for about two seconds at every
   measurement and push. so the interval decides how long a cell lasts: that
   configuration averages about 2 mA.
-- the sensors are not put to sleep between polls, and the chip's switching
-  regulator (smps) is off.
+- it runs the chip's switching regulator (smps), which should about halve
+  the current while the chip is awake. that has not been measured yet.
+- the sensors are not put to sleep between polls.
 - a board that fails to start three times in a row enters the rom bootloader
   (see "getting into the bootloader"). a board on battery cannot be reached
   there, and stays in it until its cell is taken out.

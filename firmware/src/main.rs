@@ -115,6 +115,42 @@ fn stop_unused_clocks(power: PowerMode) {
     }
 }
 
+/// Start the chip's step-down converter (SMPS). It then feeds the core and
+/// the radio from the 3 V rail through L1 and L2, at about half the current
+/// that the linear regulator takes for them. The chip takes the converter
+/// out of the circuit by itself in Stop mode.
+fn start_smps() {
+    use embassy_stm32::pac::{PWR, RCC, rcc::vals::Smps};
+
+    /// The output voltage is set in levels of 50 mV, from 1.20 V. At 1.40 V,
+    /// which ST's applications use, the radio sends with at most 3.7 dBm.
+    const LEVEL_1V40: i32 = 4;
+    const LEVEL_1V50: i32 = 6;
+    /// Where ST stores the level that gave 1.50 V on this chip in
+    /// production, or 0 (`SMPS_VOLTAGE_CAL_ADDR` in ST's drivers).
+    const CALIBRATION: *const u32 = 0x1FFF_7558 as *const u32;
+    // SAFETY: a word of the chip's read-only engineering bytes.
+    let calibrated = (unsafe { CALIBRATION.read_volatile() } >> 8 & 0xF) as i32;
+    let level = match calibrated {
+        0 => LEVEL_1V40,
+        calibrated => (LEVEL_1V40 + calibrated - LEVEL_1V50).clamp(0, 0xF),
+    };
+
+    // The converter switches at 4 MHz, which is what the 10 µH of L2 is for.
+    // Its clock is HSI16 / 4: HSI16 is the system clock around a stop, so
+    // the converter's clock never has to change.
+    RCC.smpscr().modify(|w| {
+        w.set_smpssel(Smps::HSI);
+        w.set_smpsdiv(1);
+    });
+    PWR.cr5().modify(|w| {
+        // The lowest limit for the current at its start, 80 mA.
+        w.set_sdsc(0);
+        w.set_sdvos(level as u8);
+    });
+    PWR.cr5().modify(|w| w.set_sdeb(true));
+}
+
 #[embassy_executor::task]
 async fn coprocessor(task: coprocessor::Task<'static>) -> ! {
     task.run().await
@@ -207,6 +243,10 @@ async fn main(spawner: Spawner) {
     config.enable_debug_during_sleep = !power::stops(power_mode);
     let p = embassy_stm32::init(config);
     stop_unused_clocks(power_mode);
+    // Only on battery so far: it has not been tried on any other board.
+    if power_mode == PowerMode::Battery {
+        start_smps();
+    }
     defmt::info!("sensor-board (built {})", env!("BUILD_STAMP"));
 
     // Option-validity error is set after FUS/bootloader activity; ST clears it
