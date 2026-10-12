@@ -674,6 +674,15 @@ It finds them with `avahi-browse`, so it needs avahi.
 
 ### Stop mode
 
+Not solved yet, found on 2026-10-11: a board that really stops hangs when it
+writes its flash, and the watchdog resets it about 30 s later with nothing
+written. A `config set` through the border router did that (no reply, the
+old configuration still stored), and so did holding the button. Reading the
+configuration and pushing work. So such a board cannot be configured, reset
+with the button or updated, and an update would hang it at every attempt:
+three in a row put it in the ROM bootloader. A board whose debug port is
+enabled does not show this, which is why the tests below did not.
+
 A board on battery puts the chip in Stop mode whenever every task waits and
 no peripheral is busy. The executor is embassy-stm32's (the `low-power`
 feature), which does this by itself: it pauses the time driver, has the RTC
@@ -745,18 +754,17 @@ Aspen measured it on 2026-10-11 with a multimeter in the positive lead, on
 its mA range, on board 4B002E at 3.0 V after a power cycle with the probe
 taken off (sound every 10 s, a push after each measurement):
 
-- About 0.002 mA while the chip is stopped. That is the last digit of the
-  range, so it only says that the current is a few microamps.
+- About 0.02 mA while the chip is stopped.
 - 6 to 10 mA for about two seconds, every ten seconds: one second of
   measuring sound, then the push, which takes a bit more than a second with
   the board polling its parent every 100 ms.
 
 So what a board on battery draws is set by how often it measures and
-pushes: about 2 mA on average with this configuration. Stopping deeper
-would change nothing that matters. What would: a longer interval, a push
-that takes less time on the air, and the SMPS, for the current while the
-chip runs. A current of several milliamps for seconds is also a lot for a
-coin cell.
+pushes: about 2 mA on average with this configuration. What would bring
+that down: a longer interval, a push that takes less time on the air, and
+the SMPS, for the current while the chip runs. The 20 µA only matter once
+a board measures every few minutes. A current of several milliamps for
+seconds is also a lot for a coin cell.
 
 ### Not done
 
@@ -881,6 +889,5 @@ ignored that.
   stopped by itself (see "The current"), and the Pushgateway accepted its
   pushes meanwhile.
 
-Not tested: a board that runs from a cell, the button on a board that
-stops, a board with I2C sensors that stops, and USB on a board on aux power
-with this build (none was attached).
+Not tested: a board that runs from a cell, a board with I2C sensors that
+stops, and USB on a board on aux power with this build (none was attached).

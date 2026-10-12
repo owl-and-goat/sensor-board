@@ -373,7 +373,12 @@ send to a few addresses that no longer answer.
 
 - =network show= through an attached board only listens for three seconds,
   so it often misses a board on battery.
-- measured on 2026-10-11 at 3.0 V, with sound every 10 s: a few microamps
+- not solved yet: a board that stops hangs when it writes its flash, and
+  restarts about 30 s later. so =config set=, the button and =firmware push=
+  do not work on it, and a push can leave it in the rom bootloader. a board
+  that a probe has been attached to is not affected, because it does not
+  stop.
+- measured on 2026-10-11 at 3.0 V, with sound every 10 s: about 20 µA
   while the chip is stopped, and 6 to 10 mA for about two seconds at every
   measurement and push. so the interval decides how long a cell lasts: that
   configuration averages about 2 mA.
@@ -399,8 +404,7 @@ with builds that stopped although a probe was connected: pushes accepted
 every 10 s, =config show= through the border router, and =just push= with no
 board attached, which updated the board while it stopped. then the board
 after a power cycle without the probe, which stopped by itself and kept
-pushing. not tested: a board that runs from a cell, and the button on a
-board that stops.
+pushing. not tested: a board that runs from a cell.
 
 * getting into the bootloader
 

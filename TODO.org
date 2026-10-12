@@ -165,14 +165,13 @@ CLOSED: [2026-09-03 Thu 22:37]
 Mostly the Y1 ring; also water1/water2, hp2/hp3, sda/scl, JP1 pairs.
 
 * Firmware
+** TODO find why a board that stops hangs when it writes flash
+see "Stop mode" in =AGENTS.md=. until then a board on battery that stops
+cannot be configured, reset with the button or updated.
 ** TODO bring down what a board on battery draws while it is awake
-stopped, it draws a few microamps. awake, 6 to 10 mA for about two seconds
+stopped, it draws about 20 µA. awake, 6 to 10 mA for about two seconds
 per measurement and push (see "The current" in =AGENTS.md=). what is left:
 a push that is shorter on the air, the smps, and the sensors between polls.
-** TODO test the button on a board that stops
-the button is the only way back to usb for a board on battery that cannot be
-reached over the network. it wakes the chip through EXTI line 7, which has
-not been tried.
 ** TODO get the embassy-stm32 patch into embassy
 =firmware/patches/embassy-stm32-stm32wb-stop.patch= is against the 0.6.0
 release. put it on a branch of the fork (from the =embassy-stm32-v0.6.0=
