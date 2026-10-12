@@ -373,8 +373,12 @@ send to a few addresses that no longer answer.
 
 - =network show= through an attached board only listens for three seconds,
   so it often misses a board on battery.
-- the board's current has not been measured. the sensors are not put to
-  sleep between polls, and the chip's switching regulator (smps) is off.
+- measured on 2026-10-11 at 3.0 V, with sound every 10 s: a few microamps
+  while the chip is stopped, and 6 to 10 mA for about two seconds at every
+  measurement and push. so the interval decides how long a cell lasts: that
+  configuration averages about 2 mA.
+- the sensors are not put to sleep between polls, and the chip's switching
+  regulator (smps) is off.
 - a board that fails to start three times in a row enters the rom bootloader
   (see "getting into the bootloader"). a board on battery cannot be reached
   there, and stays in it until its cell is taken out.
@@ -393,9 +397,10 @@ without a configuration and still on its network.
 stop mode was tested later that day on the same board, on a bench supply,
 with builds that stopped although a probe was connected: pushes accepted
 every 10 s, =config show= through the border router, and =just push= with no
-board attached, which updated the board while it stopped. not tested: a
-board that runs from a cell, a board that decides to stop by itself after a
-power cycle, the button on a board that stops, and the current.
+board attached, which updated the board while it stopped. then the board
+after a power cycle without the probe, which stopped by itself and kept
+pushing. not tested: a board that runs from a cell, and the button on a
+board that stops.
 
 * getting into the bootloader
 

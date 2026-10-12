@@ -739,11 +739,27 @@ the release, because the fork with the Thread support uses released crates.
 
 The firmware image grew by 10.9 K with this, to 209,280 bytes.
 
+### The current
+
+Aspen measured it on 2026-10-11 with a multimeter in the positive lead, on
+its mA range, on board 4B002E at 3.0 V after a power cycle with the probe
+taken off (sound every 10 s, a push after each measurement):
+
+- About 0.002 mA while the chip is stopped. That is the last digit of the
+  range, so it only says that the current is a few microamps.
+- 6 to 10 mA for about two seconds, every ten seconds: one second of
+  measuring sound, then the push, which takes a bit more than a second with
+  the board polling its parent every 100 ms.
+
+So what a board on battery draws is set by how often it measures and
+pushes: about 2 mA on average with this configuration. Stopping deeper
+would change nothing that matters. What would: a longer interval, a push
+that takes less time on the air, and the SMPS, for the current while the
+chip runs. A current of several milliamps for seconds is also a lot for a
+coin cell.
+
 ### Not done
 
-- The current has not been measured in any mode. That needs a meter in
-  series with the supply, and a board that has been powered up without a
-  probe session since.
 - The chip only reaches Stop 1. embassy-stm32 keeps Stop 2 for when the
   IPCC, I2C1 and the DMA controllers are not in use at all.
 - The sensors are not put in a low-power state when they are not polled.
@@ -861,9 +877,10 @@ ignored that.
   that included a sound level.
 - The build that honours the debug port: under `cargo run` the board logged
   that it does not stop, and its pushes were accepted.
+- The same build after a power cycle with the probe taken off: the board
+  stopped by itself (see "The current"), and the Pushgateway accepted its
+  pushes meanwhile.
 
-Not tested: a board that runs from a cell, the firmware's own decision to
-stop on a board that has been power-cycled, the button on a board that
-stops, a board with I2C sensors that stops, USB on a board on aux power
-with this build (none was attached), and what any of this does to the
-current.
+Not tested: a board that runs from a cell, the button on a board that
+stops, a board with I2C sensors that stops, and USB on a board on aux power
+with this build (none was attached).
