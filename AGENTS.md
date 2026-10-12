@@ -264,6 +264,43 @@ reset was measured about 32 s after the core stopped (2026-10-03). The IWDG
 keeps running in Stop mode unless the `IWDG_STOP` option bit is cleared. The
 task feeds it every 8 s, which wakes a chip that is in Stop mode.
 
+## Supply voltage
+
+Everything on the board runs from one 3.0 V rail. Its regulator (U3, an
+MCP1703A) takes its input from a net that USB VBUS, the aux power header and
+the coin cell share. Nothing on the board measures that input. The chip only
+sees the rail, which is its VDD, VDDA and VBAT.
+
+- On USB or aux power the rail is regulated. It says nothing about the
+  source until the source is almost gone.
+- A coin cell is at or below 3 V, so the regulator cannot regulate and passes
+  the cell through, and the rail follows the cell. This is read from the
+  schematic and the regulator's datasheet. It has not been measured.
+
+`firmware/src/supply.rs` runs the chip's programmable voltage detector (PVD)
+on the rail. The detector raises an interrupt when VDD falls below 2.64 V
+(level 4, 2.59 V to 2.69 V), which is just under the 2.7 V that the
+capacitance sensor needs. The metrics export the outcome as
+`sensor_board_battery_low`.
+
+- The metric goes from 0 to 1 and stays there until the board restarts. A
+  coin cell sags while the radio transmits and recovers afterwards, and the
+  metrics are rendered before a push is sent. The detector's output at that
+  moment would miss the sag.
+- The interrupt handler masks the detector's EXTI line (16) and leaves it
+  masked. The masked line is the record that the detector tripped, which is
+  also how embassy's EXTI code records an event. It keeps a supply that
+  hovers at the threshold from interrupting again.
+- The handler clears the line's pending bit, because a pending EXTI line
+  keeps the chip out of Stop mode (RM0434).
+- The interrupt reaches CPU1 without more setup. `PVDIM` in `SYSCFG_IMR2` is
+  0 after a reset, which forwards it.
+- The detector takes about 1 µA (datasheet).
+
+Not tested on a board: any of it. In particular, it is not known whether a
+fresh coin cell stays above the threshold while the radio transmits. If it
+does not, lower `LEVEL` in `supply.rs`.
+
 ## CPU2: FUS and the Thread stack
 
 ST's images are in STM32CubeWB, under

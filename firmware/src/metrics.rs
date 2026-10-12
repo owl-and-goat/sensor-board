@@ -32,7 +32,7 @@ use crate::{
         mic::Mic,
         temp_rh::TempRhSensor,
     },
-    thread, update,
+    supply, thread, update,
 };
 
 /// TCP port of the scrape endpoint.
@@ -142,6 +142,7 @@ type ColorFamily<M> = MetricFamily<'static, M, { COLOR.len() }, ChannelLabels<&'
 
 struct Metrics {
     firmware_build: BoardFamily<IntGauge>,
+    battery_low: BoardFamily<IntGauge>,
     capacitance: CapacitanceFamily<IntGauge>,
     capacitance_errors: CapacitanceFamily<Counter>,
     color: ColorFamily<IntGauge>,
@@ -162,6 +163,9 @@ impl Metrics {
         Metrics {
             firmware_build: MetricBuilder::new("sensor_board_firmware_build")
                 .with_help("Build time of the running firmware, as a Unix timestamp.")
+                .build_labeled(),
+            battery_low: MetricBuilder::new("sensor_board_battery_low")
+                .with_help("1 if the supply voltage has been low since the board started, else 0.")
                 .build_labeled(),
             capacitance: MetricBuilder::new("sensor_board_capacitance")
                 .with_help("Raw reading of a capacitance channel.")
@@ -210,6 +214,7 @@ impl Metrics {
     /// Write the metrics in Prometheus's text format.
     fn write(&self, text: &mut impl fmt::Write) -> fmt::Result {
         self.firmware_build.fmt_metric(text)?;
+        self.battery_low.fmt_metric(text)?;
         self.capacitance.fmt_metric(text)?;
         self.capacitance_errors.fmt_metric(text)?;
         self.color.fmt_metric(text)?;
@@ -223,6 +228,14 @@ impl Metrics {
         self.pushes.fmt_metric(text)?;
         self.push_failures.fmt_metric(text)?;
         self.push_status.fmt_metric(text)
+    }
+
+    /// Record whether the supply is low. Nothing reports when that changes,
+    /// so this is called before every `write`.
+    fn record_supply(&self, board: BoardId, supply: supply::Monitor) {
+        if let Some(low) = self.battery_low.register(BoardLabels(board)) {
+            low.set_value(usize::from(supply.is_low()));
+        }
     }
 }
 
@@ -256,11 +269,14 @@ impl SharedMetrics {
         });
     }
 
-    /// Render the current metrics into `text`. Fails if they do not fit, and
-    /// leaves the text empty.
-    fn render(&self, text: &mut Text) -> fmt::Result {
+    /// Render the current metrics into `text`, with the state of `board`'s
+    /// supply. Fails if they do not fit, and leaves the text empty.
+    fn render(&self, board: BoardId, supply: supply::Monitor, text: &mut Text) -> fmt::Result {
         text.clear();
-        let written = self.with(|metrics| metrics.write(text));
+        let written = self.with(|metrics| {
+            metrics.record_supply(board, supply);
+            metrics.write(text)
+        });
         if written.is_err() {
             defmt::error!("metrics: the text does not fit its buffer");
             text.clear();
@@ -273,6 +289,7 @@ pub struct Builder {
     /// The TCP connection, used for scrapes and for pushes.
     pub tcp: thread::Tcp,
     pub config: board_config::Monitor,
+    pub supply: supply::Monitor,
     pub capacitance: &'static sensor::Shared<CapacitanceSensor<'static>>,
     pub color: Option<&'static sensor::Shared<ColorSensor<'static>>>,
     pub temp_rh: Option<&'static sensor::Shared<TempRhSensor<'static>>>,
@@ -286,6 +303,7 @@ impl Builder {
         static TEXT: StaticCell<Text> = StaticCell::new();
         let shared: &'static SharedMetrics =
             METRICS.init(SharedMetrics(Mutex::new(RefCell::new(Metrics::new()))));
+        let board = BoardId(embassy_stm32::uid::uid());
 
         let task = Task {
             config: self.config,
@@ -295,19 +313,28 @@ impl Builder {
                 color: self.color,
                 temp_rh: self.temp_rh,
                 mic: self.mic,
-                board: BoardId(embassy_stm32::uid::uid()),
+                supply: self.supply,
+                board,
                 metrics: shared,
                 text: TEXT.init(Text::new()),
                 polls: [None; SENSORS.len()],
             },
         };
-        (task, Handle { metrics: shared })
+        let handle = Handle {
+            metrics: shared,
+            supply: self.supply,
+            board,
+        };
+        (task, handle)
     }
 }
 
 /// Gives the rest of the firmware read access to the metrics.
 pub struct Handle {
     metrics: &'static SharedMetrics,
+    supply: supply::Monitor,
+    /// This board's ID.
+    board: BoardId,
 }
 
 impl Handle {
@@ -321,7 +348,10 @@ impl Handle {
             },
         };
         // Cannot fail: `Window::write_str` always returns `Ok`.
-        let _ = self.metrics.with(|metrics| metrics.write(&mut window));
+        let _ = self.metrics.with(|metrics| {
+            metrics.record_supply(self.board, self.supply);
+            metrics.write(&mut window)
+        });
         window.chunk
     }
 }
@@ -381,6 +411,7 @@ struct Exporter {
     color: Option<&'static sensor::Shared<ColorSensor<'static>>>,
     temp_rh: Option<&'static sensor::Shared<TempRhSensor<'static>>>,
     mic: &'static sensor::Shared<Mic<'static>>,
+    supply: supply::Monitor,
     /// This board's ID.
     board: BoardId,
     metrics: &'static SharedMetrics,
@@ -480,6 +511,7 @@ impl Exporter {
     async fn handle_scrape(&mut self) {
         let mut scrape = Scrape {
             board: self.board,
+            supply: self.supply,
             metrics: self.metrics,
             text: self.text,
         };
@@ -540,7 +572,7 @@ impl Exporter {
         self.count(|metrics| &metrics.pushes, 1);
 
         let pushed = async {
-            let rendered = self.metrics.render(self.text);
+            let rendered = self.metrics.render(self.board, self.supply, self.text);
             rendered.map_err(|_| http::Error::Malformed)?;
             let mut path: heapless::String<64> = heapless::String::new();
             let written = write!(path, "/metrics/job/{JOB}/instance/{}", self.board);
@@ -704,6 +736,7 @@ impl Exporter {
 /// Answers the HTTP request of a scrape.
 struct Scrape<'a> {
     board: BoardId,
+    supply: supply::Monitor,
     metrics: &'static SharedMetrics,
     /// The rendered metrics text, for the response.
     text: &'a mut Text,
@@ -721,7 +754,7 @@ impl HttpHandler for Scrape<'_> {
         self.metrics
             .count(self.board, |metrics| &metrics.scrapes, 1);
         // nanofish answers an error with a 500.
-        let rendered = self.metrics.render(self.text);
+        let rendered = self.metrics.render(self.board, self.supply, self.text);
         rendered.map_err(|fmt::Error| nanofish::Error::BufferOverflow)?;
         Ok(http::response(StatusCode::Ok, self.text))
     }

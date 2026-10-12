@@ -234,6 +234,10 @@ each read at its own interval, plus counters for scrapes and pushes. every
 metric has a =board= label with the board's serial number. =metrics show=
 prints the current metrics over usb.
 
+=sensor_board_battery_low= goes from 0 to 1 when the board's 3 v rail falls
+below 2.64 v, and stays 1 until the board restarts. on a coin cell the rail
+follows the cell. on usb or aux power it stays at 3 v, so the metric stays 0.
+
 a board that serves its metrics registers the scrape endpoint with the srp
 server of its network, which runs on the border router. the border router
 advertises it over mdns on the lan, as a =_prometheus-http._tcp= service
