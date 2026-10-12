@@ -5,7 +5,7 @@ edition = "2024"
 publish = false
 
 [dependencies]
-embassy-stm32 = { version = "0.6.0", features = ["defmt", "stm32wb55cg", "time-driver-any", "unstable-pac"] }
+embassy-stm32 = { version = "0.6.0", features = ["defmt", "exti", "stm32wb55cg", "time-driver-any", "unstable-pac"] }
 embassy-executor = { version = "0.10.0", features = ["defmt", "platform-cortex-m", "executor-thread"] }
 embassy-time = { version = "0.5.1", features = ["defmt", "defmt-timestamp-uptime", "tick-hz-1_000_000"] }
 embassy-usb = { version = "0.6.0", default-features = false, features = ["defmt"] }

@@ -133,15 +133,19 @@ pub async fn set_dataset(
     write(flash, dataset.as_ref(), BoardRecord::load().as_ref()).await
 }
 
-/// Store `config`. The dataset record is preserved.
+/// Store `config`, or with `None` remove the stored one. The dataset record
+/// is preserved.
 pub async fn set_board_config(
     flash: &mut RadioFlash<'_>,
-    config: &BoardConfig,
+    config: Option<&BoardConfig>,
 ) -> Result<(), Error> {
-    // Unreachable, as the record has room for the longest configuration.
-    // `Error::Size` is the closest variant.
-    let config = BoardRecord::new(config).ok_or(Error::Size)?;
-    write(flash, DatasetRecord::load().as_ref(), Some(&config)).await
+    let config = match config {
+        // Unreachable, as the record has room for the longest configuration.
+        // `Error::Size` is the closest variant.
+        Some(config) => Some(BoardRecord::new(config).ok_or(Error::Size)?),
+        None => None,
+    };
+    write(flash, DatasetRecord::load().as_ref(), config.as_ref()).await
 }
 
 /// Erase the page and write the given records to it.

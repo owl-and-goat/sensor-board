@@ -7,11 +7,12 @@
 //! network: it multicasts a [`ConfigMessage`], and the target board replies.
 //!
 //! [`init`] returns the [`Handle`] for the rest of the firmware, the
-//! [`Service`], and a [`Monitor`] for each part of the firmware that depends
-//! on the configuration. The service runs inside the coprocessor task,
-//! because flash writes have to be coordinated with CPU2.
+//! [`Eraser`] for the button, the [`Service`], and a [`Monitor`] for each
+//! part of the firmware that depends on the configuration. The service runs
+//! inside the coprocessor task, because flash writes have to be coordinated
+//! with CPU2.
 
-use embassy_futures::select::{Either3, select3};
+use embassy_futures::select::{Either, Either4, select, select4};
 use embassy_sync::{
     blocking_mutex::raw::ThreadModeRawMutex,
     watch::{self, Watch},
@@ -43,6 +44,9 @@ enum Request {
     Set(ConfigFor),
 }
 
+/// A request from the [`Eraser`].
+struct Erase;
+
 /// How many [`Monitor`]s there are: one each for the metrics, Thread and
 /// the reports.
 const MONITORS: usize = 3;
@@ -52,21 +56,26 @@ type Current = Watch<ThreadModeRawMutex, Option<BoardConfig>, MONITORS>;
 
 struct Shared {
     requests: request::Channel<Request, BoardConfigResult>,
+    erasures: request::Channel<Erase, ConfigResult>,
     current: Current,
 }
 
 /// Create the [`Handle`] and [`Service`] that read and set the configuration,
-/// and the [`Monitor`]s that watch it. Panics if called a second time.
-pub fn init() -> (Handle, Service, [Monitor; MONITORS]) {
+/// the [`Eraser`], and the [`Monitor`]s that watch the configuration. Panics
+/// if called a second time.
+pub fn init() -> (Handle, Eraser, Service, [Monitor; MONITORS]) {
     static SHARED: StaticCell<Shared> = StaticCell::new();
     let shared: &'static Shared = SHARED.init(Shared {
         requests: request::Channel::new(),
+        erasures: request::Channel::new(),
         current: Watch::new_with(persistent_config::board_config()),
     });
 
     let (client, server) = shared.requests.split();
+    let (eraser, erasures) = shared.erasures.split();
     let service = Service {
         requests: server,
+        erasures,
         current: &shared.current,
     };
     let monitors = core::array::from_fn(|_| Monitor {
@@ -74,7 +83,8 @@ pub fn init() -> (Handle, Service, [Monitor; MONITORS]) {
         // monitors.
         current: shared.current.receiver().unwrap(),
     });
-    (Handle { requests: client }, service, monitors)
+    let handle = Handle { requests: client };
+    (handle, Eraser { requests: eraser }, service, monitors)
 }
 
 /// Watches the board's configuration for changes.
@@ -121,9 +131,26 @@ impl Handle {
     }
 }
 
-/// Serves requests from the [`Handle`] and from other boards.
+/// Erases this board's configuration. The board is then taken to be on aux
+/// power. Its dataset stays.
+pub struct Eraser {
+    requests: request::Client<Erase, ConfigResult>,
+}
+
+impl Eraser {
+    pub async fn erase(&mut self) -> ConfigResult {
+        self.requests
+            .call(Erase, REQUEST_TIMEOUT)
+            .await
+            .unwrap_or(Err(ConfigError::Unresponsive))
+    }
+}
+
+/// Serves requests from the [`Handle`], from the [`Eraser`] and from other
+/// boards.
 pub struct Service {
     requests: request::Server<Request, BoardConfigResult>,
+    erasures: request::Server<Erase, ConfigResult>,
     current: &'static Current,
 }
 
@@ -134,6 +161,7 @@ impl Service {
             flash,
             socket,
             requests: self.requests,
+            erasures: self.erasures,
             current: self.current,
             board: this_board(),
             forwarded: None,
@@ -148,7 +176,15 @@ impl Service {
     pub async fn unavailable(self) -> ! {
         let board = this_board();
         loop {
-            let (pending, request) = self.requests.receive().await;
+            let next = select(self.requests.receive(), self.erasures.receive());
+            let (pending, request) = match next.await {
+                Either::First(request) => request,
+                Either::Second((pending, Erase)) => {
+                    let unavailable = Err(ConfigError::Unavailable);
+                    self.erasures.respond(pending, unavailable);
+                    continue;
+                }
+            };
             let response = match request {
                 Request::Get(target) if target == board => Ok(persistent_config::board_config()),
                 _ => Err(ConfigError::Unavailable),
@@ -194,6 +230,7 @@ struct Configs<'a, 'd> {
     /// The UDP socket for [`ConfigMessage`]s.
     socket: thread::Socket,
     requests: request::Server<Request, BoardConfigResult>,
+    erasures: request::Server<Erase, ConfigResult>,
     current: &'static Current,
     /// This board's ID.
     board: BoardId,
@@ -215,16 +252,26 @@ impl Configs<'_, '_> {
                 .forwarded
                 .as_ref()
                 .map(|forwarded| forwarded.resend_at.min(forwarded.deadline));
-            let next = select3(self.requests.receive(), self.socket.receive(), async {
+            let resend_due = async {
                 match due {
                     Some(at) => Timer::at(at).await,
                     None => core::future::pending().await,
                 }
-            });
+            };
+            let next = select4(
+                self.requests.receive(),
+                self.socket.receive(),
+                resend_due,
+                self.erasures.receive(),
+            );
             match next.await {
-                Either3::First((pending, request)) => self.handle_request(pending, request).await,
-                Either3::Second(received) => self.handle_datagram(received).await,
-                Either3::Third(()) => self.resend().await,
+                Either4::First((pending, request)) => self.handle_request(pending, request).await,
+                Either4::Second(received) => self.handle_datagram(received).await,
+                Either4::Third(()) => self.resend().await,
+                Either4::Fourth((pending, Erase)) => {
+                    let erased = self.erase().await;
+                    self.erasures.respond(pending, erased);
+                }
             }
         }
     }
@@ -259,7 +306,7 @@ impl Configs<'_, '_> {
             return Ok(());
         }
         let mut flash = self.flash.lock().await;
-        let written = persistent_config::set_board_config(&mut flash, config).await;
+        let written = persistent_config::set_board_config(&mut flash, Some(config)).await;
         match written {
             Ok(()) => {
                 defmt::info!("config: stored a new configuration");
@@ -268,6 +315,20 @@ impl Configs<'_, '_> {
             Err(e) => defmt::error!("config: flash write failed: {}", e),
         }
         written.map_err(|_| ConfigError::Storage)
+    }
+
+    /// Erase this board's configuration.
+    async fn erase(&mut self) -> ConfigResult {
+        let mut flash = self.flash.lock().await;
+        let erased = persistent_config::set_board_config(&mut flash, None).await;
+        match erased {
+            Ok(()) => {
+                defmt::info!("config: erased the configuration");
+                self.current.sender().send(None);
+            }
+            Err(e) => defmt::error!("config: flash write failed: {}", e),
+        }
+        erased.map_err(|_| ConfigError::Storage)
     }
 
     /// Send a request to `board` over the network: a `Set` of `config`, or

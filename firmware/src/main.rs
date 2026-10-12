@@ -2,6 +2,7 @@
 #![no_main]
 
 mod board_config;
+mod button;
 mod coprocessor;
 mod dfu;
 mod discovery;
@@ -23,9 +24,7 @@ use defmt_rtt as _;
 use embassy_executor::Spawner;
 
 use embassy_stm32::{
-    Config, Peri, bind_interrupts, dma,
-    gpio::{self, Output},
-    i2c,
+    Config, Peri, bind_interrupts, dma, i2c,
     mode::Async,
     peripherals::{self, DMA1_CH1, DMA1_CH2, DMA2_CH1, I2C1},
     rcc,
@@ -149,13 +148,8 @@ async fn watchdog(iwdg: Peri<'static, peripherals::IWDG>) -> ! {
 }
 
 #[embassy_executor::task]
-async fn blink(mut led: Output<'static>) {
-    for _ in 0..=2 {
-        led.set_low();
-        Timer::after(Duration::from_millis(200)).await;
-        led.set_high();
-        Timer::after(Duration::from_millis(200)).await;
-    }
+async fn button(task: button::Task) -> ! {
+    task.run().await
 }
 
 #[embassy_executor::main]
@@ -177,17 +171,18 @@ async fn main(spawner: Spawner) {
 
     let (_rtc, _rtc_time) = Rtc::new(p.RTC, RtcConfig::default());
 
-    // let button = Input::new(p.PA7, Pull::Up); // SW1 to GND
-    //
-
     spawner.spawn(watchdog(p.IWDG).unwrap());
 
     let (bootloader_task, bootloader_handle) = dfu::init();
     spawner.spawn(bootloader(bootloader_task).unwrap());
 
     let (update_handle, update_service) = update::init();
-    let (config_handle, config_service, [metrics_config, thread_config, report_config]) =
-        board_config::init();
+    let (
+        config_handle,
+        config_eraser,
+        config_service,
+        [metrics_config, thread_config, report_config],
+    ) = board_config::init();
     let (coprocessor_task, coprocessor_handle, thread_handle, sockets, tcp) =
         coprocessor::Builder {
             ipcc: p.IPCC,
@@ -296,6 +291,12 @@ async fn main(spawner: Spawner) {
     spawner.spawn(reports(report_task, publisher.clone()).unwrap());
     spawner.spawn(discovery(discovery_task, publisher).unwrap());
 
-    let led = Output::new(p.PA6, gpio::Level::High, gpio::Speed::Low); // D1, active low
-    spawner.spawn(blink(led).unwrap());
+    let button_task = button::Builder {
+        button: p.PA7,
+        exti: p.EXTI7,
+        led: p.PA6,
+        config: config_eraser,
+    }
+    .init();
+    spawner.spawn(button(button_task).unwrap());
 }
