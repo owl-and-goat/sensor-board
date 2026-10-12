@@ -77,7 +77,9 @@ pub struct Task {
 }
 
 impl Task {
-    pub async fn run(mut self, mut publisher: rpc::Publisher) -> ! {
+    /// Without a `publisher` the board has no host, and received replies are
+    /// dropped.
+    pub async fn run(mut self, mut publisher: Option<rpc::Publisher>) -> ! {
         loop {
             // Every board replies to discovery requests, so every board
             // listens.
@@ -102,7 +104,9 @@ impl Task {
                 Either3::Second(received) => match DiscoveryMessage::decode(&received.datagram) {
                     Some(DiscoveryMessage::Request) => self.reply(received.from).await,
                     Some(DiscoveryMessage::Reply(member)) => {
-                        publisher.board_discovered(&member).await
+                        if let Some(publisher) = &mut publisher {
+                            publisher.board_discovered(&member).await
+                        }
                     }
                     None => debug!("discovery: a datagram with another layout"),
                 },

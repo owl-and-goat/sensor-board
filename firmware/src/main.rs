@@ -11,6 +11,7 @@ mod http;
 mod i2c_device;
 mod metrics;
 mod persistent_config;
+mod power;
 mod radio_flash;
 mod report;
 mod request;
@@ -33,6 +34,7 @@ use embassy_stm32::{
 };
 use embassy_sync::{blocking_mutex::raw::ThreadModeRawMutex, mutex::Mutex};
 use embassy_time::{Duration, Timer};
+use protocol::PowerMode;
 use static_cell::StaticCell;
 
 use crate::sensor::{
@@ -119,13 +121,18 @@ async fn bootloader(task: dfu::Task) -> ! {
 }
 
 #[embassy_executor::task]
-async fn reports(task: report::Task, publisher: rpc::Publisher) -> ! {
+async fn reports(task: report::Task, publisher: Option<rpc::Publisher>) -> ! {
     task.run(publisher).await
 }
 
 #[embassy_executor::task]
-async fn discovery(task: discovery::Task, publisher: rpc::Publisher) -> ! {
+async fn discovery(task: discovery::Task, publisher: Option<rpc::Publisher>) -> ! {
     task.run(publisher).await
+}
+
+#[embassy_executor::task]
+async fn power(task: power::Task) -> ! {
+    task.run().await
 }
 
 #[embassy_executor::task]
@@ -181,8 +188,10 @@ async fn main(spawner: Spawner) {
         config_handle,
         config_eraser,
         config_service,
-        [metrics_config, thread_config, report_config],
+        [metrics_config, thread_config, report_config, power_config],
     ) = board_config::init();
+    let (power_mode, power_task) = power::init(power_config);
+    spawner.spawn(power(power_task).unwrap());
     let (coprocessor_task, coprocessor_handle, thread_handle, sockets, tcp) =
         coprocessor::Builder {
             ipcc: p.IPCC,
@@ -194,13 +203,20 @@ async fn main(spawner: Spawner) {
         .init();
     spawner.spawn(coprocessor(coprocessor_task).unwrap());
 
-    let (usb_device, link) = usb::Builder {
-        usb: p.USB,
-        dp: p.PA12,
-        dm: p.PA11,
-    }
-    .init();
-    spawner.spawn(usb(usb_device).unwrap());
+    // A board on battery is never on USB, so it has no host to talk to.
+    let link = match power_mode {
+        PowerMode::Aux => {
+            let (usb_device, link) = usb::Builder {
+                usb: p.USB,
+                dp: p.PA12,
+                dm: p.PA11,
+            }
+            .init();
+            spawner.spawn(usb(usb_device).unwrap());
+            Some(link)
+        }
+        PowerMode::Battery => None,
+    };
 
     let scl = p.PB8;
     let sda = p.PB9;
@@ -286,8 +302,11 @@ async fn main(spawner: Spawner) {
         capacitance,
         temp_rh,
     };
-    let (server, publisher) = rpc::server(spawner, link, context);
-    spawner.spawn(rpc(server).unwrap());
+    let publisher = link.map(|link| {
+        let (server, publisher) = rpc::server(spawner, link, context);
+        spawner.spawn(rpc(server).unwrap());
+        publisher
+    });
     spawner.spawn(reports(report_task, publisher.clone()).unwrap());
     spawner.spawn(discovery(discovery_task, publisher).unwrap());
 

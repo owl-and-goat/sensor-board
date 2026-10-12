@@ -47,9 +47,9 @@ enum Request {
 /// A request from the [`Eraser`].
 struct Erase;
 
-/// How many [`Monitor`]s there are: one each for the metrics, Thread and
-/// the reports.
-const MONITORS: usize = 3;
+/// How many [`Monitor`]s there are: one each for the metrics, Thread, the
+/// reports and the power mode.
+const MONITORS: usize = 4;
 
 /// The board's current configuration, updated when a new one is stored.
 type Current = Watch<ThreadModeRawMutex, Option<BoardConfig>, MONITORS>;

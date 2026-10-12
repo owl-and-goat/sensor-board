@@ -102,7 +102,9 @@ pub struct Task {
 }
 
 impl Task {
-    pub async fn run(mut self, mut publisher: rpc::Publisher) -> ! {
+    /// Without a `publisher` the board has no host, and received reports
+    /// are dropped.
+    pub async fn run(mut self, mut publisher: Option<rpc::Publisher>) -> ! {
         let mut ticker = Ticker::every(INTERVAL);
         loop {
             let next = select3(
@@ -118,7 +120,11 @@ impl Task {
                     self.requests.respond(pending, outcome);
                 }
                 Either3::Third(received) => match Report::decode(&received.datagram) {
-                    Some(report) => publisher.report_received(&report).await,
+                    Some(report) => {
+                        if let Some(publisher) = &mut publisher {
+                            publisher.report_received(&report).await
+                        }
+                    }
                     None => debug!("report: a datagram that is no report of this firmware's"),
                 },
             }
