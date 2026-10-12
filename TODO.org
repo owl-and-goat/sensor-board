@@ -168,3 +168,16 @@ Mostly the Y1 ring; also water1/water2, hp2/hp3, sda/scl, JP1 pairs.
 * Rev. 2
 ** TODO fix the pin numbering for the color sensor footprint
 half of them are the wrong way gdi
+** TODO add a VBUS sense pin
+the mcu cannot tell whether a usb host is attached: VBUS only reaches the
+regulator's input, which it shares with BT1. route VBUS through a divider to
+a gpio, so that the firmware can keep usb up while a host is there and drop
+it (and its 48 MHz pll) otherwise.
+** TODO make usb and the battery safe together
+JP2 ("USB bypass") shorts the VBUS/BT1 net straight to +3V0, around the 3.0 V
+regulator, so that the cell feeds the rail directly. with JP2 shorted,
+plugging in usb puts 5 V on the 3 V rail and fries the board. so a board is
+either on usb or on battery, never both, and a board on battery can only be
+reached over the network. replace the jumper with a power path that keeps
+VBUS off the rail: for example the regulator on VBUS only, and the cell
+behind an ideal diode or a load switch.
