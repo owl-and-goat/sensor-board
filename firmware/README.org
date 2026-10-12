@@ -22,8 +22,14 @@ no board is attached. to flash only the firmware through the probe and
 watch the board's log (the bootloader has to be on the board already):
 
 #+begin_src sh
+  just embassy-stm32          # once per checkout: unpack embassy-stm32 and patch it
   cargo run --release         # flash, reset, stay attached (ctrl-c to leave)
 #+end_src
+
+the firmware builds against embassy-stm32 0.6.0 with
+=patches/embassy-stm32-stm32wb-stop.patch= applied, which =just
+embassy-stm32= puts in =../.cache/embassy-stm32=. the =just= recipes above do
+that themselves.
 
 ** firmware updates
 
@@ -339,6 +345,11 @@ usb first, and configured and updated over the network from then on.
   it, and the board asks for them every 10 seconds, whatever the intervals
   of its sensors.
 - it sends no sensor reports, so =reports watch= does not show it.
+- it puts the chip in stop mode whenever the firmware has nothing to do. the
+  chip wakes for a timer, for the radio processor, and for the button.
+- a board that a debug probe has been attached to does not stop, so that its
+  log can be read. it stops again once it has been without power: take the
+  cell out, or switch the supply off and on.
 
 =config show=, =config set= and =firmware push= reach a board on battery like
 any other board: through an attached board on aux power, or with no board
@@ -362,8 +373,8 @@ send to a few addresses that no longer answer.
 
 - =network show= through an attached board only listens for three seconds,
   so it often misses a board on battery.
-- only the radio sleeps so far. the processor and the clocks stay on. the
-  board's current has not been measured.
+- the board's current has not been measured. the sensors are not put to
+  sleep between polls, and the chip's switching regulator (smps) is off.
 - a board that fails to start three times in a row enters the rom bootloader
   (see "getting into the bootloader"). a board on battery cannot be reached
   there, and stays in it until its cell is taken out.
@@ -377,8 +388,14 @@ leaving usb on the change to battery, and coming back after =config set
 attached, which updated two boards on aux power and a board on battery that
 was off usb, in about three minutes. the button, held on a board that was on
 battery and off usb: the led blinked fast, and the board came back on usb
-without a configuration and still on its network. not tested: a board that
-runs from a cell.
+without a configuration and still on its network.
+
+stop mode was tested later that day on the same board, on a bench supply,
+with builds that stopped although a probe was connected: pushes accepted
+every 10 s, =config show= through the border router, and =just push= with no
+board attached, which updated the board while it stopped. not tested: a
+board that runs from a cell, a board that decides to stop by itself after a
+power cycle, the button on a board that stops, and the current.
 
 * getting into the bootloader
 

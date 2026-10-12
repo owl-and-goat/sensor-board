@@ -165,6 +165,20 @@ CLOSED: [2026-09-03 Thu 22:37]
 Mostly the Y1 ring; also water1/water2, hp2/hp3, sda/scl, JP1 pairs.
 
 * Firmware
+** TODO measure the current of a board on battery
+with a meter in series with the supply, on a board that has been powered up
+without a probe session since (see "Stop mode" in =AGENTS.md=). then look at
+what is left: the sensors between polls, the smps, stop 2.
+** TODO test the button on a board that stops
+the button is the only way back to usb for a board on battery that cannot be
+reached over the network. it wakes the chip through EXTI line 7, which has
+not been tried.
+** TODO get the embassy-stm32 patch into embassy
+=firmware/patches/embassy-stm32-stm32wb-stop.patch= is against the 0.6.0
+release. put it on a branch of the fork (from the =embassy-stm32-v0.6.0=
+tag), point =[patch.crates-io]= in =firmware/Cargo.toml= at that revision,
+and drop the =embassy-stm32= recipe from the =Justfile=. upstream's main has
+changed around it, so a pull request needs the patch redone on main.
 * Rev. 2
 ** TODO fix the pin numbering for the color sensor footprint
 half of them are the wrong way gdi

@@ -54,6 +54,14 @@ such a shell has `probe-rs`, but neither `just` nor `dfu-util`. In that case,
 run recipes from the top of the repository with
 `nix-shell --run 'just <recipe>'`.
 
+`firmware/Cargo.toml` takes embassy-stm32 from `.cache/embassy-stm32`, which
+is not in the repository. It is the released 0.6.0 with
+`firmware/patches/embassy-stm32-stm32wb-stop.patch` applied (see "Stop mode"
+under "Boards on battery"). `just embassy-stm32` downloads the crate, checks
+it and applies the patch, and every recipe that builds the firmware runs
+that first. A `cargo` command in `firmware/` fails until it has run once in
+the checkout, and after the patch changes it has to run again.
+
 ## probe-rs
 
 `just flash` writes the bootloader and the firmware over SWD as one image,
@@ -88,6 +96,9 @@ resetting it, run this from `firmware/`:
 ```sh
 probe-rs attach --chip STM32WB55CG --no-catch-reset target/thumbv7em-none-eabihf/release/sensor-board-firmware
 ```
+
+A board on battery that a probe has been attached to since it was powered up
+does not enter Stop mode, so that its log can be read (see "Stop mode").
 
 panic-probe handles a panic: it raises a HardFault. It does not log the
 panic message, because its `print-defmt` feature is off. With the feature,
@@ -232,22 +243,26 @@ Things learned the hard way:
 from embassy's `WPAN_DEFAULT`:
 
 - The system clock is the 32 MHz crystal (HSE), used directly.
-- The PLL runs only to give USB its 48 MHz. USB cannot use HSI48, because
-  CPU2 can switch that off.
+- On aux power the PLL runs only to give USB its 48 MHz. USB cannot use
+  HSI48, because CPU2 can switch that off. On battery the PLL is off, and
+  the 48 MHz clock is HSI48, which CPU2 turns on while its random number
+  generator needs it (`configure_clocks` takes the power mode).
 - PLLSAI1 gives the microphone's SAI 8.192 MHz. Both PLLs divide the crystal
   by 5 first (the divider is shared), the only way to reach an audio rate
-  from 32 MHz.
+  from 32 MHz. The microphone driver turns PLLSAI1 on for a measurement and
+  off after it.
 - HSI16 stays on although CPU1 does not use it, because the RF core is
   clocked from it.
 - The 32.768 kHz crystal (LSE) drives the RTC and the RF wakeup clock.
+- MSI, which the chip starts on, is turned off (`stop_unused_clocks`).
 
 The `watchdog` task starts the independent watchdog. On this chip, `IWDG_PR`
 reads back as 6 (/256) once the update flag clears, whatever value was
 written to it, while `IWDG_RLR` accepts any value. The ES0394 errata sheet
 does not mention this. The task requests 32 s from the driver, and a watchdog
 reset was measured about 32 s after the core stopped (2026-10-03). The IWDG
-keeps running in Stop mode unless the `IWDG_STOP` option bit is cleared, so a
-low-power firmware has to feed it or freeze it.
+keeps running in Stop mode unless the `IWDG_STOP` option bit is cleared. The
+task feeds it every 8 s, which wakes a chip that is in Stop mode.
 
 ## CPU2: FUS and the Thread stack
 
@@ -279,8 +294,8 @@ Things learned the hard way:
 - FUS sends its command responses to the mailbox that CPU2 booted with.
   Before the fix above, an upgrade looked hung although it had run.
 - A wireless stack switches the 48 MHz clock off unless CPU1 holds hardware
-  semaphore 5 (AN5289). The firmware takes the semaphore before C2BOOT and
-  never releases it.
+  semaphore 5 (AN5289). On aux power the firmware takes the semaphore before
+  C2BOOT and never releases it. On battery it leaves the semaphore to CPU2.
 - With HSI16 off, `SHCI_C2_THREAD_Init` never returns.
 - The Thread stack uses SRAM1 above 0x20024000, so CPU1's RAM is limited to
   144 KB.
@@ -567,7 +582,7 @@ commands with no board attached.
 A board whose power mode is `Battery` is never on USB. JP2 connects its cell
 straight to the 3 V rail, and USB power on top of that would destroy the
 board (see `TODO.org`). So the firmware treats such a board differently in
-four ways, and it has to be configured and updated over the network.
+five ways, and it has to be configured and updated over the network.
 
 ### No USB
 
@@ -585,8 +600,6 @@ There are two ways back to USB. Both make the board a board on aux power:
 - Holding the button for five seconds (`button.rs`). That erases the
   configuration and keeps the dataset, so the board stays on its network.
   The LED blinks fast five times to confirm.
-
-The 48 MHz PLL still runs on a board on battery.
 
 ### A sleepy end device
 
@@ -659,23 +672,88 @@ It finds them with `avahi-browse`, so it needs avahi.
   addresses that the board no longer has. The CLI sends to those too, and
   gets no answer from them.
 
+### Stop mode
+
+A board on battery puts the chip in Stop mode whenever every task waits and
+no peripheral is busy. The executor is embassy-stm32's (the `low-power`
+feature), which does this by itself: it pauses the time driver, has the RTC
+wake the chip for the next timer, and enters Stop 1. `power.rs` decides
+whether a board stops (`stops`). On a board that does not, its task holds a
+guard that keeps the executor from stopping.
+
+- The chip wakes for a timer (through the RTC), for a message from CPU2
+  (the IPCC), and for the button. CPU2 stops and wakes by itself for its
+  data polls. In the log of a board that polled every 10 s, CPU1 woke at
+  each poll too.
+- A measurement with the microphone keeps the chip awake: the DMA ring
+  buffer holds a guard for as long as it exists, which is why the driver
+  only creates it for the measurement (`Capture` in `pdm.rs`).
+- CPU1 sets how deep CPU2 may let the chip sleep (`allow_cpu2_low_power`),
+  before CPU2 boots. At reset that is Stop 0.
+- The two cores share the clocks, and ST's applications have a protocol for
+  changing them around a stop (`EnterLowPower` and `ExitLowPower` in
+  `stm32_lpm_if.c` of STM32CubeWB), which CPU2 follows too. A core that
+  stops takes hardware semaphore 3, and switches the system clock to HSI16
+  if the other core has stopped already. If the other core still runs, it
+  keeps semaphore 4 instead, and the other core switches when it stops.
+  After a stop the system clock is HSI16, and HSE and the PLLs are off. The
+  core that wakes first turns HSE on again.
+- A board whose debug port is enabled does not stop (`C_DEBUGEN`, which the
+  firmware reads at start). A probe cannot read the memory of a chip that
+  stops and starts, and the log goes through that. With a session attached
+  to a board that stopped, probe-rs reported a corrupted RTT control block
+  and a locked-up core, and the board's pushes failed. The flag survives a
+  reset, and probe-rs leaves it set: it was still set after sessions that
+  were killed, after a `probe-rs read` that exited by itself, and after
+  `probe-rs write` had written it to 0. So a board that a probe has touched
+  only stops again after it has lost power.
+- A board that stops also turns off the debug clocks in sleep
+  (`enable_debug_during_sleep`), which cost most of what stopping saves.
+  `probe-rs attach` to such a board still read its log buffer, in pieces.
+
+embassy-stm32 0.6.0 needs `firmware/patches/embassy-stm32-stm32wb-stop.patch`
+for this. Each of these kept the firmware from working with Stop mode:
+
+- The stop sequence used the wrong semaphores. ST numbers them from 0, as
+  the registers are numbered, and the driver's channels start at 1, so
+  `get_hsem(3)` and `get_hsem(4)` were HSEM_R2 and HSEM_R3. HSEM_R2 is the
+  one that guards flash operations (`radio_flash.rs`).
+- It released semaphore 4 before the chip stopped. ST's sequence keeps it
+  until the core wakes.
+- Nothing restored the clocks after a stop. The patch turns on what was on
+  before (HSE, the PLLs, MSI) and switches the system clock back, under
+  semaphore 3. It does not use embassy's full clock setup, which goes
+  through MSI at 4 MHz: CPU2 is clocked from the system clock too. Without
+  the restore, a measurement after the first stop waited for samples
+  forever, because PLLSAI1 was off.
+- `IpccRxChannel::receive` held a guard while it waited for CPU2. The
+  firmware always waits for CPU2 on several channels, so it never stopped.
+- When the next timer was too close to pause the time driver, the executor
+  entered Stop mode anyway. Time then stood still, and the watchdog reset
+  the board.
+- The chip's stop flags were never cleared.
+
+embassy's main branch, read on 2026-10-11, no longer stops with the time
+driver running. The other five are still as in 0.6.0. The patch is against
+the release, because the fork with the Thread support uses released crates.
+
+The firmware image grew by 10.9 K with this, to 209,280 bytes.
+
 ### Not done
 
-Only the radio sleeps. CPU1 still runs all the time, with the crystal and
-both PLLs on. The board's current has not been measured in either mode.
-Putting CPU1 in Stop mode is not done:
-
-- embassy-stm32 0.6.0 has a low-power executor (`low-power` feature). For
-  this chip it does the semaphore handshake with CPU2 before Stop, but it
-  does not restore the clocks afterwards (`exit_stop` in `low_power.rs`
-  reinitializes RCC for other families only), and the firmware's system
-  clock is the crystal.
-- The `watchdog` task wakes CPU1 every 20 ms.
-- It needs a debug probe for the log and a meter for the current.
-
-After three failed boots in a row a board enters the ROM bootloader (see
-"Logs and panics"). A board on battery cannot be reached there, and stays in
-it until its cell is taken out.
+- The current has not been measured in any mode. That needs a meter in
+  series with the supply, and a board that has been powered up without a
+  probe session since.
+- The chip only reaches Stop 1. embassy-stm32 keeps Stop 2 for when the
+  IPCC, I2C1 and the DMA controllers are not in use at all.
+- The sensors are not put in a low-power state when they are not polled.
+  Only the microphone is: it powers down when its clock stops.
+- The SMPS is off.
+- The first push after a start is made before the board has attached, and
+  times out. The next one is a minute later.
+- After three failed boots in a row a board enters the ROM bootloader (see
+  "Logs and panics"). A board on battery cannot be reached there, and stays
+  in it until its cell is taken out.
 
 ### Things learned
 
@@ -763,5 +841,29 @@ was off USB.
   the boards on battery: it listed all three boards, three times out of
   three.
 
-Not tested: a board that runs from a cell, and what any of this does to the
+Stop mode was tested later that day on the same board, powered at 3.0 V
+through the aux power connector, with JP2 open, USB unplugged and the probe
+connected. The board could not be power-cycled, so its debug port was
+enabled throughout, and the builds that stopped were temporary ones that
+ignored that.
+
+- With the debug clocks left on in Stop mode and no probe session: 14
+  pushes that the Pushgateway accepted, one every 10 s, each with a sound
+  measurement.
+- With the debug clocks off, the PLL off and HSI48 left to CPU2, as a board
+  on battery now runs: 17 pushes in 215 s, and a `config show` through the
+  border router.
+- `just push` with no board attached, while the board stopped: it and the
+  two boards on aux power fetched an image of 209,280 bytes and restarted
+  into it. The board then pushed as the new build, and the other two served
+  scrapes as the new build.
+- The same build on aux power, on the same board: a router, with a scrape
+  that included a sound level.
+- The build that honours the debug port: under `cargo run` the board logged
+  that it does not stop, and its pushes were accepted.
+
+Not tested: a board that runs from a cell, the firmware's own decision to
+stop on a board that has been power-cycled, the button on a board that
+stops, a board with I2C sensors that stops, USB on a board on aux power
+with this build (none was attached), and what any of this does to the
 current.
