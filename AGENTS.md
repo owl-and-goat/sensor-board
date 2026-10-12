@@ -744,6 +744,10 @@ was off USB.
   the board that way.
 - Erasing the configuration, with a temporary timer in place of the button:
   the board kept its network, and was a full Thread device afterwards.
+- The button, which Aspen held while the board was on battery and off USB:
+  the LED blinked fast, and the board came back on USB without a
+  configuration, on its network, as a full Thread device with its scrape
+  endpoint registered.
 - Off USB: the board left USB two seconds after a `config set` to battery,
   pushed to the Pushgateway, registered under a new name five seconds after
   the restart, answered a `config show` through the border router after 3 s,
@@ -759,5 +763,5 @@ was off USB.
   the boards on battery: it listed all three boards, three times out of
   three.
 
-Not tested: the button itself and the LED, a board that runs from a cell,
-and what any of this does to the current.
+Not tested: a board that runs from a cell, and what any of this does to the
+current.

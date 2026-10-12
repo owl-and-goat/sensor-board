@@ -373,10 +373,12 @@ board as a sleepy child, with its pushes accepted about every 10 s and
 messages to it delivered within 11 s. =config show= and =config set= for a
 sleepy board through an attached board, and through the border router.
 leaving usb on the change to battery, and coming back after =config set
---power-mode aux= through the border router. =just push= with no board attached, which updated two boards on aux power
-and a board on battery that was off usb, in about three minutes. erasing the
-configuration, with a timer in place of the button. not tested: the button
-itself and the led, and a board that runs from a cell.
+--power-mode aux= through the border router. =just push= with no board
+attached, which updated two boards on aux power and a board on battery that
+was off usb, in about three minutes. the button, held on a board that was on
+battery and off usb: the led blinked fast, and the board came back on usb
+without a configuration and still on its network. not tested: a board that
+runs from a cell.
 
 * getting into the bootloader
 
