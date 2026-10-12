@@ -16,6 +16,7 @@ use core::net::SocketAddrV6;
 use embassy_futures::select::{Either, select};
 use embassy_sync::blocking_mutex::{Mutex, raw::ThreadModeRawMutex};
 use embassy_time::{Duration, Instant, Timer, with_timeout};
+use nanofish::{HttpHandler, HttpMethod, HttpRequest, HttpResponse, StatusCode};
 use protocol::{
     BoardConfig, BoardId, MetricsChunk, PowerMode, Precision, Sensor, TempRh, TempRhReq,
 };
@@ -133,7 +134,7 @@ impl<C: fmt::Display> FmtLabels for ChannelLabels<C> {
 }
 
 /// Buffer for the metrics in Prometheus's text format.
-type Text = heapless::String<4096>;
+type Text = heapless::String<{ http::MAX_BODY }>;
 
 type BoardFamily<M> = MetricFamily<'static, M, 1, BoardLabels>;
 type CapacitanceFamily<M> = MetricFamily<'static, M, { CAPACITANCE.len() }, ChannelLabels<usize>>;
@@ -239,6 +240,32 @@ impl SharedMetrics {
     /// Reset every metric.
     fn reset(&self) {
         self.0.lock(|metrics| metrics.replace(Metrics::new()));
+    }
+
+    /// Add `n` to a per-board counter of `board`.
+    fn count(
+        &self,
+        board: BoardId,
+        counter: impl FnOnce(&Metrics) -> &BoardFamily<Counter>,
+        n: usize,
+    ) {
+        self.with(|metrics| {
+            if let Some(counter) = counter(metrics).register(BoardLabels(board)) {
+                counter.fetch_add(n);
+            }
+        });
+    }
+
+    /// Render the current metrics into `text`. Fails if they do not fit, and
+    /// leaves the text empty.
+    fn render(&self, text: &mut Text) -> fmt::Result {
+        text.clear();
+        let written = self.with(|metrics| metrics.write(text));
+        if written.is_err() {
+            defmt::error!("metrics: the text does not fit its buffer");
+            text.clear();
+        }
+        written
     }
 }
 
@@ -451,23 +478,12 @@ impl Exporter {
 
     /// Handle the HTTP request on the accepted connection.
     async fn handle_scrape(&mut self) {
-        let handled = async {
-            match http::read_request(&mut self.tcp).await? {
-                http::Request::Metrics => {
-                    self.count(|metrics| &metrics.scrapes, 1);
-                    let status = match self.render() {
-                        Ok(()) => http::Status::Ok,
-                        Err(fmt::Error) => http::Status::InternalServerError,
-                    };
-                    http::respond(&mut self.tcp, status, self.text).await
-                }
-                http::Request::Other => {
-                    let body = "The metrics are at /metrics.\n";
-                    http::respond(&mut self.tcp, http::Status::NotFound, body).await
-                }
-            }
+        let mut scrape = Scrape {
+            board: self.board,
+            metrics: self.metrics,
+            text: self.text,
         };
-        if let Err(e) = handled.await {
+        if let Err(e) = http::serve(&mut self.tcp, &mut scrape).await {
             defmt::debug!("metrics: scrape failed: {}", e);
         }
         self.tcp.close().await;
@@ -524,7 +540,8 @@ impl Exporter {
         self.count(|metrics| &metrics.pushes, 1);
 
         let pushed = async {
-            self.render().map_err(|_| http::Error::Malformed)?;
+            let rendered = self.metrics.render(self.text);
+            rendered.map_err(|_| http::Error::Malformed)?;
             let mut path: heapless::String<64> = heapless::String::new();
             let written = write!(path, "/metrics/job/{JOB}/instance/{}", self.board);
             written.map_err(|_| http::Error::Malformed)?;
@@ -680,22 +697,32 @@ impl Exporter {
 
     /// Add `n` to a per-board counter.
     fn count(&self, counter: impl FnOnce(&Metrics) -> &BoardFamily<Counter>, n: usize) {
-        self.metrics.with(|metrics| {
-            if let Some(counter) = counter(metrics).register(BoardLabels(self.board)) {
-                counter.fetch_add(n);
-            }
-        });
+        self.metrics.count(self.board, counter, n);
     }
+}
 
-    /// Render the current metrics into `self.text`. Fails if they do not
-    /// fit, and leaves the text empty.
-    fn render(&mut self) -> fmt::Result {
-        self.text.clear();
-        let written = self.metrics.with(|metrics| metrics.write(self.text));
-        if written.is_err() {
-            defmt::error!("metrics: the text does not fit its buffer");
-            self.text.clear();
+/// Answers the HTTP request of a scrape.
+struct Scrape<'a> {
+    board: BoardId,
+    metrics: &'static SharedMetrics,
+    /// The rendered metrics text, for the response.
+    text: &'a mut Text,
+}
+
+impl HttpHandler for Scrape<'_> {
+    async fn handle_request(
+        &mut self,
+        request: &HttpRequest<'_>,
+    ) -> Result<HttpResponse<'_>, nanofish::Error> {
+        if request.method != HttpMethod::GET || request.route_path() != "/metrics" {
+            let body = "The metrics are at /metrics.\n";
+            return Ok(http::response(StatusCode::NotFound, body));
         }
-        written
+        self.metrics
+            .count(self.board, |metrics| &metrics.scrapes, 1);
+        // nanofish answers an error with a 500.
+        let rendered = self.metrics.render(self.text);
+        rendered.map_err(|fmt::Error| nanofish::Error::BufferOverflow)?;
+        Ok(http::response(StatusCode::Ok, self.text))
     }
 }

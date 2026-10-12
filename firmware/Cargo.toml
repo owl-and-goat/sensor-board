@@ -53,6 +53,10 @@ embedded-hal = "1.0.0"
 # Prometheus metrics in the text format. Not released on crates.io. The
 # default features add timestamps, which need a clock the board does not have.
 tinymetrics = { git = "https://github.com/hawkw/tinymetrics.git", rev = "58a73feea1c94b858313e40dce0248f669a1c4f0", default-features = false }
+# HTTP for the scrape endpoint and for pushes. It runs on any embedded-io-async
+# stream, which http.rs implements for the Thread TCP connection.
+nanofish = "0.13.0"
+embedded-io-async = "0.7.0"
 
 # The same revision as in the protocol crate, which explains why it is not a
 # release.

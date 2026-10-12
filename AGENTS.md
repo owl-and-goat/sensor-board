@@ -417,10 +417,26 @@ A board without a configuration is taken to be on aux power. It reads no
 sensors, so it serves only the firmware build and the scrape counter, and it
 registers its endpoint like any other board on aux power.
 
-The metric types come from tinymetrics. `firmware/src/http.rs` implements
-the HTTP: one request and one response per connection. To add a sensor, add
-it to `SENSORS` and to the `match` in `Exporter::read`, and its metrics to
-`Metrics`, all in `metrics.rs`.
+The metric types come from tinymetrics, and the HTTP from nanofish.
+`firmware/src/http.rs` runs nanofish on the Thread TCP connection: one
+request and one response per connection. The handler for a scrape request is
+`Scrape` in `metrics.rs`. To add a sensor, add it to `SENSORS` and to the
+`match` in `Exporter::read`, and its metrics to `Metrics`, all in
+`metrics.rs`.
+
+Things learned about nanofish (0.13):
+
+- It copies a whole response into one buffer before it sends it, and reads a
+  whole response before it returns the status. So the metrics text is
+  limited to `MAX_BODY`. If the Pushgateway's response to a push is longer
+  than `MAX_RESPONSE`, the push fails as malformed and its status is lost.
+- A request gets no response, and the connection is closed, if it is longer
+  than `MAX_REQUEST`, has more than 16 headers, or has a method that
+  nanofish does not know.
+- It reports every failure of the stream as the same error. `Stream` in
+  `http.rs` keeps the `TcpError`, so that the log still shows it.
+- It took 9.4 K of flash (measured on 2026-10-11), and 6 K of RAM in the
+  metrics task for the request and response buffers.
 
 TCP is OpenThread's own implementation, running on CPU2 (`otTcp*`, wrapped
 in `thread/ot.rs`). The Thread service has one TCP endpoint, so the firmware
@@ -470,6 +486,13 @@ border router's network: a scrape with `curl` from a machine on the LAN,
 answered in full (1528 bytes), on a board that had served a scrape before.
 Tested on 2026-10-11: pushes that a Pushgateway on the LAN accepted, from a
 board that was a router and from one that was a sleepy end device.
+
+Those tests were made with the HTTP that `http.rs` implemented itself before
+nanofish. Since then `http.rs` has only been tested on a PC, on 2026-10-11,
+with a stand-in for `thread::Tcp` over a local socket: scrapes with curl and
+Python, the largest metrics text, requests that get no response, and pushes
+that a Pushgateway (1.11.4) accepted and rejected. Not tested on a board
+since: a scrape.
 
 ## Service registration
 

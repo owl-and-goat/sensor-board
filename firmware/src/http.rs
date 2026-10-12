@@ -1,18 +1,37 @@
-//! A minimal HTTP/1.1 implementation for Prometheus: a server for scrape
-//! requests, and a client for `PUT` requests to a Pushgateway. Every request
-//! uses its own connection, which is closed after the response.
+//! HTTP for Prometheus over the Thread TCP connection: a server for scrape
+//! requests, and a client for `PUT` requests to a Pushgateway. nanofish
+//! implements HTTP/1.1, and this module runs it on a [`Tcp`] connection.
+//! Every request uses its own connection, which is closed after the response.
 
-use core::fmt::{self, Write as _};
+use core::fmt::Write as _;
 use core::net::SocketAddrV6;
+
+use embedded_io_async::{ErrorKind, ErrorType, Read, Write};
+use nanofish::{
+    HttpClient, HttpClientOptions, HttpClientRequest, HttpHandler, HttpHeader, HttpMethod,
+    HttpResponse, HttpServer, ResponseBody, StatusCode,
+};
 
 use crate::thread::{Tcp, TcpChunk, TcpError};
 
 /// The `Content-Type` of Prometheus's text format, for responses and pushes.
 const CONTENT_TYPE: &str = "text/plain; version=0.0.4; charset=utf-8";
 
-/// The most bytes read while waiting for the end of a request head, or for
-/// the status line of a response.
-const MAX_HEAD: usize = 2048;
+/// The longest body of a response. nanofish copies a response into one
+/// buffer before it sends it.
+pub const MAX_BODY: usize = 4096;
+
+/// Room for the head of a message that is sent: the first line and the
+/// headers.
+const MAX_HEAD: usize = 256;
+
+/// The longest request that the server reads.
+const MAX_REQUEST: usize = 2048;
+
+/// The longest response that the client reads. nanofish reads the whole
+/// response before it returns the status, and the Pushgateway explains a
+/// rejected push in the body. A longer response counts as malformed.
+const MAX_RESPONSE: usize = 4096;
 
 #[derive(Clone, Copy, defmt::Format)]
 pub enum Error {
@@ -27,113 +46,94 @@ impl From<TcpError> for Error {
     }
 }
 
-/// The request that was received.
-#[derive(Clone, Copy, PartialEq, Eq)]
-pub enum Request {
-    /// `GET /metrics`
-    Metrics,
-    Other,
+/// A [`Tcp`] connection as the byte stream that nanofish reads and writes.
+struct Stream<'a> {
+    tcp: &'a mut Tcp,
+    /// The chunk that was received last.
+    chunk: TcpChunk,
+    /// How many bytes of `chunk` have been read.
+    read: usize,
+    /// The error that a read or a write failed with.
+    error: Option<TcpError>,
 }
 
-#[derive(Clone, Copy)]
-pub enum Status {
-    Ok,
-    NotFound,
-    InternalServerError,
-}
-
-impl fmt::Display for Status {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str(match self {
-            Status::Ok => "200 OK",
-            Status::NotFound => "404 Not Found",
-            Status::InternalServerError => "500 Internal Server Error",
-        })
-    }
-}
-
-/// Incremental parser for the head of an HTTP message. It keeps the first
-/// line, and detects the blank line that ends the head.
-struct Head {
-    first_line: heapless::String<64>,
-    first_line_done: bool,
-    /// How many bytes of the terminating `\r\n\r\n` have matched so far.
-    matched: usize,
-    len: usize,
-}
-
-impl Head {
-    const TERMINATOR: &[u8] = b"\r\n\r\n";
-
-    fn new() -> Self {
-        Head {
-            first_line: heapless::String::new(),
-            first_line_done: false,
-            matched: 0,
-            len: 0,
+impl<'a> Stream<'a> {
+    fn new(tcp: &'a mut Tcp) -> Self {
+        Stream {
+            tcp,
+            chunk: TcpChunk::new(),
+            read: 0,
+            error: None,
         }
     }
 
-    fn is_complete(&self) -> bool {
-        self.matched == Self::TERMINATOR.len()
+    /// Keep `error` for [`Stream::outcome`].
+    fn fail(&mut self, error: TcpError) -> ErrorKind {
+        self.error = Some(error);
+        ErrorKind::Other
     }
 
-    /// Feed received bytes to the parser.
-    fn feed(&mut self, bytes: &[u8]) {
-        for &byte in bytes {
-            if self.is_complete() {
-                return;
-            }
-            self.len += 1;
-            self.matched = match byte {
-                _ if byte == Self::TERMINATOR[self.matched] => self.matched + 1,
-                b'\r' => 1,
-                _ => 0,
-            };
-            self.first_line_done |= byte == b'\r' || byte == b'\n';
-            if !self.first_line_done {
-                // A first line that does not fit is truncated.
-                let _ = self.first_line.push(char::from(byte));
-            }
-        }
+    /// The outcome of the exchange that nanofish ran on this stream. nanofish
+    /// does not pass on a stream's error, so it is taken from the stream.
+    fn outcome<T>(&self, exchange: Result<T, nanofish::Error>) -> Result<T, Error> {
+        exchange.map_err(|_| self.error.map_or(Error::Malformed, Error::Tcp))
     }
 }
 
-/// Read a request from an accepted connection.
-pub async fn read_request(tcp: &mut Tcp) -> Result<Request, Error> {
-    let mut head = Head::new();
-    while !head.is_complete() {
-        let chunk = tcp.receive().await?;
-        if chunk.is_empty() || head.len > MAX_HEAD {
-            return Err(Error::Malformed);
-        }
-        head.feed(&chunk);
-    }
+impl ErrorType for Stream<'_> {
+    type Error = ErrorKind;
+}
 
-    let mut words = head.first_line.split(' ');
-    let (method, target) = (words.next(), words.next().unwrap_or_default());
-    let path = target.split('?').next().unwrap_or_default();
-    if method == Some("GET") && path == "/metrics" {
-        Ok(Request::Metrics)
-    } else {
-        Ok(Request::Other)
+impl Read for Stream<'_> {
+    async fn read(&mut self, buf: &mut [u8]) -> Result<usize, ErrorKind> {
+        if self.read == self.chunk.len() {
+            let received = self.tcp.receive().await;
+            self.chunk = received.map_err(|e| self.fail(e))?;
+            self.read = 0;
+        }
+        // An empty chunk means the peer has closed its side, and so does a
+        // read of no bytes.
+        let unread = &self.chunk[self.read..];
+        let len = unread.len().min(buf.len());
+        buf[..len].copy_from_slice(&unread[..len]);
+        self.read += len;
+        Ok(len)
     }
 }
 
-/// Send a response, then wait for the peer to close the connection.
-pub async fn respond(tcp: &mut Tcp, status: Status, body: &str) -> Result<(), Error> {
-    let mut head: heapless::String<160> = heapless::String::new();
-    let written = write!(
-        head,
-        "HTTP/1.1 {status}\r\n\
-         Content-Type: {CONTENT_TYPE}\r\n\
-         Content-Length: {}\r\n\
-         Connection: close\r\n\
-         \r\n",
-        body.len()
-    );
-    written.map_err(|_| Error::Malformed)?;
-    send(tcp, &head, body).await?;
+impl Write for Stream<'_> {
+    async fn write(&mut self, buf: &[u8]) -> Result<usize, ErrorKind> {
+        let sent = self.tcp.send(buf).await;
+        sent.map_err(|e| self.fail(e))?;
+        Ok(buf.len())
+    }
+
+    /// Nothing to do: a write returns when the peer has acknowledged it.
+    async fn flush(&mut self) -> Result<(), ErrorKind> {
+        Ok(())
+    }
+}
+
+/// A response with `body` in Prometheus's text format.
+pub fn response(status: StatusCode, body: &str) -> HttpResponse<'_> {
+    let mut headers = heapless::Vec::new();
+    // Neither `push` can fail: a response has room for more headers.
+    let _ = headers.push(HttpHeader::content_type(CONTENT_TYPE));
+    let _ = headers.push(HttpHeader::connection("close"));
+    HttpResponse {
+        status_code: status,
+        headers,
+        body: ResponseBody::Text(body),
+    }
+}
+
+/// Read the request on an accepted connection and send the response that
+/// `handler` returns for it. Then wait for the peer to close the connection.
+pub async fn serve(tcp: &mut Tcp, handler: &mut impl HttpHandler) -> Result<(), Error> {
+    let server = HttpServer::<MAX_REQUEST, { MAX_HEAD + MAX_BODY }>::new();
+    let mut stream = Stream::new(tcp);
+    let served = server.handle_connection(&mut stream, handler).await;
+    stream.outcome(served)?;
     tcp.finish().await?;
 
     // The peer closes its side once it has the whole response. Anything it
@@ -145,48 +145,26 @@ pub async fn respond(tcp: &mut Tcp, status: Status, body: &str) -> Result<(), Er
 /// Send `body` to `to` in a `PUT` request for `path`. Returns the status code
 /// of the response.
 pub async fn put(tcp: &mut Tcp, to: SocketAddrV6, path: &str, body: &str) -> Result<u16, Error> {
-    let mut head: heapless::String<256> = heapless::String::new();
-    let written = write!(
-        head,
-        "PUT {path} HTTP/1.1\r\n\
-         Host: {to}\r\n\
-         Content-Type: {CONTENT_TYPE}\r\n\
-         Content-Length: {}\r\n\
-         Connection: close\r\n\
-         \r\n",
-        body.len()
-    );
-    written.map_err(|_| Error::Malformed)?;
+    let mut host: heapless::String<64> = heapless::String::new();
+    write!(host, "{to}").map_err(|_| Error::Malformed)?;
+    let request = HttpClientRequest {
+        method: HttpMethod::PUT,
+        host: &host,
+        path,
+        headers: &[HttpHeader::content_type(CONTENT_TYPE)],
+        body: Some(body.as_bytes()),
+    };
+    // A failed read is not tried again: `Tcp` has already waited for the
+    // peer.
+    let client = HttpClient::<MAX_HEAD>::with_options(HttpClientOptions {
+        max_retries: 1,
+        ..HttpClientOptions::default()
+    });
 
     tcp.connect(to).await?;
-    send(tcp, &head, body).await?;
-
-    // "HTTP/1.1 200 OK": the status is the second word of the first line.
-    let mut response = Head::new();
-    while !response.first_line_done {
-        let chunk = tcp.receive().await?;
-        if chunk.is_empty() || response.len > MAX_HEAD {
-            return Err(Error::Malformed);
-        }
-        response.feed(&chunk);
-    }
-    let status = response.first_line.split(' ').nth(1);
-    status
-        .and_then(|status| status.parse().ok())
-        .ok_or(Error::Malformed)
-}
-
-/// Send a head followed by a body, in as few chunks as possible.
-async fn send(tcp: &mut Tcp, head: &str, body: &str) -> Result<(), TcpError> {
-    // Neither `extend_from_slice` can fail: the heads are written into
-    // strings shorter than a chunk, and only as much of the body is added as
-    // fits after the head.
-    let mut chunk = TcpChunk::new();
-    let _ = chunk.extend_from_slice(head.as_bytes());
-    let with_head = body.len().min(chunk.capacity() - chunk.len());
-    let (first, rest) = body.as_bytes().split_at(with_head);
-    let _ = chunk.extend_from_slice(first);
-
-    tcp.send(&chunk).await?;
-    tcp.send(rest).await
+    let mut stream = Stream::new(tcp);
+    let mut buffer = [0; MAX_RESPONSE];
+    let exchange = client.request(&mut stream, request, &mut buffer).await;
+    let (response, _) = stream.outcome(exchange)?;
+    Ok(response.status_code.as_u16())
 }
