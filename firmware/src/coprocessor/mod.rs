@@ -29,7 +29,7 @@ use embassy_sync::blocking_mutex::{Mutex, raw::ThreadModeRawMutex};
 use embassy_time::{Duration, Timer};
 use protocol::{
     CoprocessorError, CoprocessorFirmware, CoprocessorResult, CoprocessorStatus, ImageChunk,
-    ImageSize, NetworkError, StackKind, Version, WirelessStack,
+    ImageSize, NetworkError, PowerMode, StackKind, Version, WirelessStack,
 };
 use static_cell::StaticCell;
 
@@ -84,8 +84,9 @@ pub struct Builder<'d> {
     /// The board-configuration service. This task runs it for the same
     /// reason.
     pub board_config: board_config::Service,
-    /// The board's configuration, which selects its Thread device mode.
-    pub config: board_config::Monitor,
+    /// The power mode that the board started with, which selects its Thread
+    /// device mode.
+    pub power: PowerMode,
 }
 
 /// The UDP sockets for tasks other than the coprocessor task.
@@ -107,7 +108,7 @@ impl<'d> Builder<'d> {
         });
 
         let (client, server) = shared.requests.split();
-        let (thread_handle, sockets, tcp, thread) = thread::init(self.config);
+        let (thread_handle, sockets, tcp, thread) = thread::init(self.power);
         let task = Task {
             ipcc: self.ipcc,
             flash: self.flash,

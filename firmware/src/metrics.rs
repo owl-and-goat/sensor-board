@@ -38,21 +38,24 @@ use crate::{
 const SCRAPE_PORT: u16 = 9469;
 
 /// What the scrape endpoint is registered as, so that Prometheus can find it.
-/// The lease is short, so that the board is a scrape target again soon after
-/// a restart.
+/// The name is the board's alone, because Prometheus labels the metrics with
+/// it. So the lease is short: it is how long the board cannot register for
+/// after a restart.
 const SCRAPE_SERVICE: thread::SrpService = thread::SrpService {
     kind: protocol::SCRAPE_SERVICE,
     port: SCRAPE_PORT,
+    name: thread::SrpName::Board,
     lease: Duration::from_secs(120),
 };
 
 /// What a board that pushes registers, so that the CLI can find it. Each
 /// renewal costs a board on battery an exchange with the border router, so
-/// the lease is longer.
+/// the lease is long. For that the name has to differ at every start.
 const BOARD_SERVICE: thread::SrpService = thread::SrpService {
     kind: protocol::BOARD_SERVICE,
     port: protocol::CONFIG_PORT,
-    lease: Duration::from_secs(600),
+    name: thread::SrpName::BoardAndStart,
+    lease: Duration::from_secs(3600),
 };
 
 /// The Pushgateway job name. The instance is the board's serial number.

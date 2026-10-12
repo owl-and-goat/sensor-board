@@ -22,8 +22,8 @@
 //! board is given a dataset instead of being asked to create one. CPU2
 //! writes the entries of its neighbor table there, one entry per call.
 //!
-//! The board's configuration selects its [`DeviceMode`]. A board on aux power
-//! is a full Thread device. A board on battery is a sleepy end device: its
+//! The board's power mode selects its [`DeviceMode`]. A board on aux power is
+//! a full Thread device. A board on battery is a sleepy end device: its
 //! receiver is off, and its parent keeps the messages for it until the board
 //! asks for them ([`device_mode`]).
 
@@ -35,7 +35,7 @@ use core::time;
 use defmt::info;
 use embassy_futures::{
     join::join,
-    select::{Either, Either4, select, select_array, select4},
+    select::{Either, Either3, Either4, select, select_array, select3, select4},
 };
 use embassy_stm32_wpan::{
     shci::{SchiCommandStatus, ShciOpcode},
@@ -47,14 +47,14 @@ use embassy_sync::{
 };
 use embassy_time::{Duration, Instant, Timer};
 use protocol::{
-    Addresses, AddressesResult, BoardConfig, BoardId, CONFIG_PORT, DISCOVERY_PORT, Dataset,
+    AddressKind, Addresses, AddressesResult, BoardId, CONFIG_PORT, DISCOVERY_PORT, Dataset,
     DeviceMode, DeviceModeResult, HOST_NAME_PREFIX, Link, NeighborTable, NeighborsResult,
     NetworkError, NetworkResult, NetworkStatus, OtError, PowerMode, Registration,
     RegistrationError, SLEEPY_POLL_PERIOD, UPDATE_PORT,
 };
 use static_cell::StaticCell;
 
-use crate::{board_config, persistent_config, radio_flash, request};
+use crate::{persistent_config, radio_flash, request};
 
 mod ffi;
 mod ot;
@@ -129,13 +129,27 @@ pub struct SrpService {
     /// The DNS-SD service type, such as `_http._tcp`.
     pub kind: &'static str,
     pub port: u16,
-    /// How long the SRP server keeps the registration, and reserves the
-    /// board's name for its key, without a renewal. The SRP client renews
-    /// the registration at half this interval. CPU2 makes a new key every
-    /// time it starts. So after a reset the board cannot register until its
-    /// previous registration has run out, and this is how long that takes at
-    /// most.
+    pub name: SrpName,
+    /// How long the SRP server keeps the registration, and reserves its name
+    /// for the board's key, without a renewal. The SRP client renews the
+    /// registration at half this interval.
     pub lease: Duration,
+}
+
+/// The name that a service and the board are registered under. The SRP
+/// server reserves a name for the key that registered it, and CPU2 makes a
+/// new key every time it starts.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum SrpName {
+    /// [`HOST_NAME_PREFIX`] and the board's serial number. After a restart
+    /// the board cannot register until its previous registration has run
+    /// out, which takes the lease at most.
+    Board,
+    /// The same, and a number that differs every time the board starts. The
+    /// board can register at once after a restart. Its previous registration
+    /// stays until it runs out, under its own name and with an address that
+    /// the board no longer has.
+    BoardAndStart,
 }
 
 /// The link mode of a full Thread device, and that of a sleepy end device.
@@ -157,16 +171,15 @@ const SLEEPY_END_DEVICE: ot::LinkMode = ot::LinkMode {
 const FAST_POLL_PERIOD: time::Duration = time::Duration::from_millis(100);
 const ANSWER_TIME: Duration = Duration::from_secs(2);
 
-/// The mode of a board with this configuration. A board on battery is a
-/// sleepy end device. It asks its parent for its messages every
+/// The mode of a board with this power mode. A board on battery is a sleepy
+/// end device. It asks its parent for its messages every
 /// [`SLEEPY_POLL_PERIOD`], whatever the intervals of its sensors, so that a
 /// request reaches it within a known time: a board on battery is not on USB,
 /// and can only be configured and updated over the network.
-fn device_mode(config: Option<&BoardConfig>) -> DeviceMode {
-    match config {
-        Some(config) if config.power_mode == PowerMode::Battery => DeviceMode::Sleepy,
-        // A board without a configuration is taken to be on aux power.
-        _ => DeviceMode::Full,
+fn device_mode(power: PowerMode) -> DeviceMode {
+    match power {
+        PowerMode::Aux => DeviceMode::Full,
+        PowerMode::Battery => DeviceMode::Sleepy,
     }
 }
 
@@ -311,10 +324,10 @@ struct Buffers {
 }
 
 /// Create the [`Handle`], the [`Sockets`] and the [`Tcp`] handle for the rest
-/// of the firmware, and the [`Service`] for the coprocessor task to run. The
-/// service takes the board's device mode from `config`. Panics if called a
-/// second time.
-pub fn init(config: board_config::Monitor) -> (Handle, Sockets, Tcp, Service) {
+/// of the firmware, and the [`Service`] for the coprocessor task to run.
+/// `power` is the power mode that the board started with, which selects its
+/// device mode. Panics if called a second time.
+pub fn init(power: PowerMode) -> (Handle, Sockets, Tcp, Service) {
     static SHARED: StaticCell<Shared> = StaticCell::new();
     let shared: &'static Shared = SHARED.init(Shared {
         requests: request::Channel::new(),
@@ -384,7 +397,7 @@ pub fn init(config: board_config::Monitor) -> (Handle, Sockets, Tcp, Service) {
             config_sender,
             discovery_sender,
         ],
-        config,
+        power,
         status: &shared.status,
         buffers: &shared.buffers,
     };
@@ -769,8 +782,8 @@ type ReceivedQueues =
 pub struct Service {
     requests: Requests,
     received: ReceivedQueues,
-    /// The board's configuration, which selects the device mode.
-    config: board_config::Monitor,
+    /// The board's power mode, which selects the device mode.
+    power: PowerMode,
     status: &'static Status,
     buffers: &'static Buffers,
 }
@@ -797,7 +810,7 @@ impl Service {
             flash,
             requests: self.requests,
             received: self.received,
-            config: self.config,
+            power: self.power,
             status: self.status,
             buffers: self.buffers,
             mode: DeviceMode::Full,
@@ -858,7 +871,7 @@ struct Network<'a, 'd> {
     flash: &'a radio_flash::Shared<'d>,
     requests: Requests,
     received: ReceivedQueues,
-    config: board_config::Monitor,
+    power: PowerMode,
     status: &'static Status,
     buffers: &'static Buffers,
     /// The device mode that the stack has.
@@ -882,9 +895,9 @@ impl Network<'_, '_> {
         }
 
         // Before the board attaches, so that a board on battery attaches as
-        // a sleepy end device and is never a router.
-        let mode = device_mode(self.config.config().as_ref());
-        self.set_device_mode(mode).await;
+        // a sleepy end device and is never a router. The mode stays until
+        // the board restarts, which it does when its power mode changes.
+        self.set_device_mode(device_mode(self.power)).await;
 
         if let Some(dataset) = persistent_config::dataset()
             && let Err(e) = self.rejoin(&dataset).await
@@ -915,16 +928,11 @@ impl Network<'_, '_> {
                 &self.buffers.tcp,
                 accept_tcp,
             );
-            let next = select4(
-                self.requests.receive(),
-                notification,
-                self.config.changed(),
-                answer_time_over,
-            );
+            let next = select3(self.requests.receive(), notification, answer_time_over);
             match next.await {
-                Either4::First(incoming) => self.handle_request(incoming).await,
-                Either4::Second(ot::Notification::StateChanged) => self.publish_status().await,
-                Either4::Second(ot::Notification::UdpReceived {
+                Either3::First(incoming) => self.handle_request(incoming).await,
+                Either3::Second(ot::Notification::StateChanged) => self.publish_status().await,
+                Either3::Second(ot::Notification::UdpReceived {
                     socket,
                     from,
                     payload,
@@ -937,28 +945,21 @@ impl Network<'_, '_> {
                         defmt::warn!("thread: nothing is taking datagrams; dropped one");
                     }
                 }
-                Either4::Second(ot::Notification::Tcp(event)) => self.tcp_event(event).await,
-                Either4::Second(ot::Notification::SrpUpdate(error)) => {
+                Either3::Second(ot::Notification::Tcp(event)) => self.tcp_event(event).await,
+                Either3::Second(ot::Notification::SrpUpdate(error)) => {
                     self.srp.last_error = error;
                     self.publish_registration();
                 }
-                Either4::Second(ot::Notification::Other(id)) => {
+                Either3::Second(ot::Notification::Other(id)) => {
                     defmt::trace!("cpu2: notification {}", id);
                 }
-                Either4::Third(config) => {
-                    let mode = device_mode(config.as_ref());
-                    if mode != self.mode {
-                        self.set_device_mode(mode).await;
-                    }
-                }
                 // The next iteration slows the polls down again.
-                Either4::Fourth(()) => {}
+                Either3::Third(()) => {}
             }
         }
     }
 
-    /// Switch the stack to `mode`. If the board is attached and the change
-    /// needs it, the stack detaches and attaches again by itself.
+    /// Switch the stack to `mode`.
     async fn set_device_mode(&mut self, mode: DeviceMode) {
         let link_mode = match mode {
             DeviceMode::Full => FULL_DEVICE,
@@ -1305,8 +1306,11 @@ impl Network<'_, '_> {
 
             let mut name: heapless::String<64> = heapless::String::new();
             let board = BoardId(embassy_stm32::uid::uid());
-            // Cannot fail: the name is 37 characters.
+            // Neither can fail: the name is 46 characters at most.
             let _ = write!(name, "{HOST_NAME_PREFIX}{board}");
+            if service.name == SrpName::BoardAndStart {
+                let _ = write!(name, "-{:08x}", self.start_number().await?);
+            }
             self.ot.srp_client_set_host_name(buffer, &name).await?;
             self.srp.named = true;
         }
@@ -1319,6 +1323,20 @@ impl Network<'_, '_> {
         self.ot
             .srp_client_add_service(buffer, service.kind, service.port)
             .await
+    }
+
+    /// A number that differs every time the board starts: the end of its
+    /// mesh-local address, which CPU2 makes up when it starts. Fails while
+    /// the board has no such address, which it gets with its network.
+    async fn start_number(&mut self) -> ot::Result<u32> {
+        let addresses = self.ot.ip6_unicast_addresses().await;
+        let mut mesh_local = addresses
+            .addresses
+            .iter()
+            .filter(|address| address.kind == AddressKind::MeshLocal);
+        let address = mesh_local.next().ok_or(OtError::InvalidState)?;
+        let [.., a, b, c, d] = address.address.octets();
+        Ok(u32::from_be_bytes([a, b, c, d]))
     }
 
     fn publish_registration(&mut self) {

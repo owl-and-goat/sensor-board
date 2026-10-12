@@ -21,9 +21,10 @@ pub struct Advertised {
     pub address: Ipv6Addr,
 }
 
-/// The boards that are advertised on this machine's network. A board that
-/// has restarted can be missing for as long as its previous registration
-/// lasts: ten minutes for a board on battery.
+/// The boards that are advertised on this machine's network. A board on
+/// battery that has restarted is listed more than once for up to an hour:
+/// its registrations from before stay until they run out, with addresses
+/// that it no longer has.
 pub async fn boards() -> Result<Vec<Advertised>> {
     let lookups = [SCRAPE_SERVICE, BOARD_SERVICE]
         .map(|kind| tokio::task::spawn_blocking(move || browse(kind)));
@@ -65,9 +66,11 @@ fn parse(output: &str) -> Vec<Advertised> {
             continue;
         };
         // Other devices can advertise the same type of service.
-        let Some(serial) = name.strip_prefix(HOST_NAME_PREFIX) else {
+        let Some(name) = name.strip_prefix(HOST_NAME_PREFIX) else {
             continue;
         };
+        // A board on battery adds a hyphen and a number to its serial number.
+        let serial = name.split('-').next().unwrap_or(name);
         let Ok(address) = address.parse() else {
             continue;
         };
@@ -96,8 +99,8 @@ sensor-board-4C0045000350475532303120.local;fdf7:2e7f:cbf2:1:ba8a:ba21:ebef:11c2
 =;wlp5s0;IPv4;sensor-board-4C0045000350475532303120;_prometheus-http._tcp;local;\
 sensor-board-4C0045000350475532303120.local;fdf7:2e7f:cbf2:1:ba8a:ba21:ebef:11c2;9469;
 =;wlp5s0;IPv4;node-exporter;_prometheus-http._tcp;local;cerberus.local;10.0.0.1;9100;
-=;wlp5s0;IPv6;sensor-board-4B0041000350475532303120;_prometheus-http._tcp;local;\
-sensor-board-4B0041000350475532303120.local;fdf7:2e7f:cbf2:1:1dd5:1769:5a3d:2b17;9469;
+=;wlp5s0;IPv6;sensor-board-4B0041000350475532303120-0a1b2c3d;_sensor-board._udp;local;\
+sensor-board-4B0041000350475532303120-0a1b2c3d.local;fdf7:2e7f:cbf2:1:1dd5:1769:5a3d:2b17;61622;
 ";
         let board = |serial: &str, address: &str| Advertised {
             serial: serial.to_owned(),

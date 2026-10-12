@@ -1274,7 +1274,8 @@ pub const SCRAPE_SERVICE: &str = "_prometheus-http._tcp";
 pub const BOARD_SERVICE: &str = "_sensor-board._udp";
 
 /// The start of the name that a board registers itself and its service
-/// under. The board's serial number follows.
+/// under. The board's serial number follows. A board on battery adds a
+/// hyphen and a number that differs every time it starts.
 pub const HOST_NAME_PREFIX: &str = "sensor-board-";
 
 /// Whether a board has registered its service with the SRP server of its

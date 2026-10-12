@@ -188,7 +188,7 @@ async fn main(spawner: Spawner) {
         config_handle,
         config_eraser,
         config_service,
-        [metrics_config, thread_config, report_config, power_config],
+        [metrics_config, report_config, power_config],
     ) = board_config::init();
     let (power_mode, power_task) = power::init(power_config);
     spawner.spawn(power(power_task).unwrap());
@@ -198,7 +198,7 @@ async fn main(spawner: Spawner) {
             flash: p.FLASH,
             update: update_service,
             board_config: config_service,
-            config: thread_config,
+            power: power_mode,
         }
         .init();
     spawner.spawn(coprocessor(coprocessor_task).unwrap());
