@@ -195,7 +195,7 @@ enum TcpRequest {
     Accept,
     /// Open a connection.
     Connect(SocketAddrV6),
-    /// Send a chunk, and wait for the peer to acknowledge it.
+    /// Queue a chunk for sending. Waits only while the send buffer is full.
     Send(TcpChunk),
     /// Wait for data. An empty chunk means the peer has closed its side.
     Receive,
@@ -545,7 +545,9 @@ impl Tcp {
         self.request(TcpRequest::Connect(peer), TCP_TIMEOUT).await
     }
 
-    /// Send `bytes`, and wait for the peer to acknowledge them.
+    /// Send `bytes`. Returns once the stack has queued them, usually before
+    /// the peer has acknowledged them. Waits only if the send buffer is
+    /// full.
     pub async fn send(&mut self, bytes: &[u8]) -> Result<(), TcpError> {
         for piece in bytes.chunks(TCP_CHUNK_LEN) {
             // Cannot fail: a piece is no longer than a chunk.
@@ -782,9 +784,12 @@ struct TcpEndpoint {
     connection: Connection,
     /// When the connection started being established.
     opening_since: Instant,
-    /// Whether the last chunk sent is still unacknowledged, in which case
-    /// the stack is still reading the send buffer.
-    sending: bool,
+    /// The number of bytes in the send buffer. The stack keeps all of them
+    /// until the peer has acknowledged every one.
+    queued: usize,
+    /// A chunk that did not fit in the send buffer, to send once the peer
+    /// has acknowledged what is there.
+    unsent: Option<TcpChunk>,
     /// Whether the peer has closed its sending side.
     end_of_stream: bool,
     /// The pending request, and the event it is waiting for.
@@ -855,7 +860,8 @@ impl Service {
                 listening: None,
                 connection: Connection::Closed,
                 opening_since: Instant::now(),
-                sending: false,
+                queued: 0,
+                unsent: None,
                 end_of_stream: false,
                 waiting: None,
             },
@@ -1167,15 +1173,15 @@ impl Network<'_, '_> {
                 Ok(TcpStep::Wait(TcpWait::Connected))
             }
             TcpRequest::Send(chunk) => {
-                // The stack reads from the send buffer until the peer
-                // acknowledges the data, so the buffer cannot be reused
-                // before then.
-                if self.tcp.connection != Connection::Open || self.tcp.sending {
+                if self.tcp.connection != Connection::Open || self.tcp.unsent.is_some() {
                     return Err(TcpError::OutOfSequence);
                 }
-                self.ot.tcp_send(buffer, &chunk).await?;
-                self.tcp.sending = true;
-                Ok(TcpStep::Wait(TcpWait::Sent))
+                if self.tcp_queue(&chunk).await? {
+                    done
+                } else {
+                    self.tcp.unsent = Some(chunk);
+                    Ok(TcpStep::Wait(TcpWait::Sent))
+                }
             }
             TcpRequest::Receive => {
                 let over = match self.tcp.connection {
@@ -1217,9 +1223,29 @@ impl Network<'_, '_> {
             aborted?;
         }
         self.tcp.connection = Connection::Closed;
-        self.tcp.sending = false;
+        self.tcp.queued = 0;
+        self.tcp.unsent = None;
         self.tcp.end_of_stream = false;
         Ok(())
+    }
+
+    /// Queue `chunk` for sending. Returns false if the send buffer is too
+    /// full; it empties once the peer has acknowledged its contents.
+    async fn tcp_queue(&mut self, chunk: &[u8]) -> ot::Result<bool> {
+        let queued = self.tcp.queued;
+        if queued + chunk.len() > ot::TCP_SEND_LEN {
+            return Ok(false);
+        }
+        match self.ot.tcp_send(&self.buffers.tcp, queued, chunk).await {
+            Ok(()) => {
+                self.tcp.queued += chunk.len();
+                Ok(true)
+            }
+            // The peer has acknowledged everything and the stack has
+            // released the send buffer. A send-done callback follows.
+            Err(OtError::Failed) if queued > 0 => Ok(false),
+            Err(e) => Err(e),
+        }
     }
 
     /// Handle a TCP callback from the stack.
@@ -1242,8 +1268,17 @@ impl Network<'_, '_> {
                 self.tcp_respond(opened, Ok(TcpChunk::new()));
             }
             TcpEvent::SendDone => {
-                self.tcp.sending = false;
-                self.tcp_respond(|wait| wait == TcpWait::Sent, Ok(TcpChunk::new()));
+                // The peer has acknowledged everything in the send buffer.
+                self.tcp.queued = 0;
+                if let Some(chunk) = self.tcp.unsent.take() {
+                    let queued = match self.tcp_queue(&chunk).await {
+                        Ok(true) => Ok(TcpChunk::new()),
+                        // Cannot happen: a chunk fits in the empty buffer.
+                        Ok(false) => Err(TcpError::OutOfSequence),
+                        Err(e) => Err(e.into()),
+                    };
+                    self.tcp_respond(|wait| wait == TcpWait::Sent, queued);
+                }
             }
             TcpEvent::ReceiveAvailable { end_of_stream } => {
                 self.tcp.end_of_stream |= end_of_stream;
@@ -1261,7 +1296,8 @@ impl Network<'_, '_> {
             }
             TcpEvent::Disconnected(reason) => {
                 // The stack no longer reads the send buffer.
-                self.tcp.sending = false;
+                self.tcp.queued = 0;
+                self.tcp.unsent = None;
                 let ended = matches!(reason, TcpDisconnected::Normal | TcpDisconnected::TimeWait);
                 self.tcp.connection = match reason {
                     TcpDisconnected::TimeWait => Connection::Over,
@@ -1276,9 +1312,10 @@ impl Network<'_, '_> {
                     // No request is affected: an `Accept` keeps waiting for
                     // the next connection.
                     Some(TcpWait::Accepted) | None => {}
-                    // A clean close: the peer acknowledged everything sent,
-                    // and has nothing more to send.
-                    Some(TcpWait::Sent | TcpWait::Received) if ended => {
+                    // A clean close: the peer has nothing more to send. A
+                    // `Send` still waiting for room fails, because its chunk
+                    // was never sent.
+                    Some(TcpWait::Received) if ended => {
                         self.tcp_respond(|_| true, Ok(TcpChunk::new()))
                     }
                     Some(_) => self.tcp_respond(|_| true, Err(error)),

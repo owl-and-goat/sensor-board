@@ -540,7 +540,13 @@ Things learned about the TCP API:
   connection until it is aborted. For that reason every exchange ends with
   `Tcp::close`.
 - CPU2 reads sent data from the send buffer until the peer has acknowledged
-  it. Nothing else can be sent before the send-done callback.
+  all of it. The firmware passes its 4 K send buffer to the stack with
+  `otTcpSendByReference`, and adds later data after it with
+  `otTcpSendByExtension`. So `Tcp::send` returns as soon as the data is
+  queued, and a whole push goes out without waiting for acknowledgements in
+  between. Only a send that does not fit in the buffer waits, for the
+  send-done callback. Before this, each 512-byte piece waited for its
+  acknowledgement, about 200 ms on a sleepy board.
 - If a type is missing from the bindings, regenerate them with
   `firmware/tools/gen-thread-bindings.sh`, then format them with the rest of
   the crate.

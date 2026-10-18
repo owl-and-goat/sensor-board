@@ -160,6 +160,12 @@ pub const TCP_CHUNK_LEN: usize = 512;
 /// A chunk of TCP data.
 pub type TcpChunk = heapless::Vec<u8, TCP_CHUNK_LEN>;
 
+/// Size of the TCP send buffer. The stack sends from it as fast as the
+/// connection allows, and reads it until the peer has acknowledged every
+/// byte. A whole push fits, so the board never waits for an acknowledgement
+/// partway through one.
+pub const TCP_SEND_LEN: usize = 4096;
+
 /// CPU1 memory for TCP: one endpoint, which holds one connection at a time,
 /// and the listener that accepts connections into it. CPU2 links both into
 /// its own lists at initialization and keeps using them, and it keeps
@@ -177,7 +183,7 @@ pub struct TcpBuffer {
     /// The out argument of `otTcpReceiveByReference`: a pointer to the
     /// endpoint's chain of `otLinkedBuffer`s that hold the received data.
     received_link: UnsafeCell<*const ffi::otLinkedBuffer>,
-    sending: UnsafeCell<[u8; TCP_CHUNK_LEN]>,
+    sending: UnsafeCell<[u8; TCP_SEND_LEN]>,
     sending_link: UnsafeCell<MaybeUninit<ffi::otLinkedBuffer>>,
 }
 
@@ -191,7 +197,7 @@ impl TcpBuffer {
             name: UnsafeCell::new(MaybeUninit::zeroed()),
             received: UnsafeCell::new([0; TCP_RECEIVE_LEN]),
             received_link: UnsafeCell::new(null()),
-            sending: UnsafeCell::new([0; TCP_CHUNK_LEN]),
+            sending: UnsafeCell::new([0; TCP_SEND_LEN]),
             sending_link: UnsafeCell::new(MaybeUninit::zeroed()),
         }
     }
@@ -1082,33 +1088,57 @@ pub unsafe trait OpenThread {
         }
     }
 
-    /// Send `bytes` over the endpoint's connection. CPU2 reads them from the
-    /// send buffer until the peer acknowledges them, so do not call this
-    /// again before the send-done or disconnected callback.
-    async fn tcp_send(&mut self, buffer: &'static TcpBuffer, bytes: &TcpChunk) -> Result<()> {
+    /// Queue `bytes` for sending. They are copied into the send buffer after
+    /// the `queued` bytes already there. If nothing is queued, the send
+    /// buffer is passed to the stack as a new linked buffer. Otherwise the
+    /// stack's existing linked buffer is extended to include the new bytes.
+    /// Extending fails if the peer has already acknowledged everything and
+    /// the stack has released the linked buffer.
+    async fn tcp_send(
+        &mut self,
+        buffer: &'static TcpBuffer,
+        queued: usize,
+        bytes: &[u8],
+    ) -> Result<()> {
+        if queued + bytes.len() > TCP_SEND_LEN {
+            return Err(OtError::NoBufs);
+        }
         let data = buffer.sending.get().cast::<u8>();
         let link = buffer.sending_link.get().cast::<ffi::otLinkedBuffer>();
         unsafe {
             // SAFETY: CPU1 accesses the send buffer and its link only here,
-            // and never through a reference. The caller ensures that CPU2
-            // has finished with the previous chunk.
-            copy_nonoverlapping(bytes.as_ptr(), data, bytes.len());
-            write_volatile(
-                link,
-                ffi::otLinkedBuffer {
-                    mNext: null_mut(),
-                    mData: data,
-                    mLength: bytes.len(),
-                },
-            );
-            // SAFETY: expects pointers to the endpoint and to an
-            // otLinkedBuffer, and flags. CPU2 keeps the otLinkedBuffer until
-            // the peer has acknowledged its data.
-            self.ffi_try(
-                ffi_command::MSG_M4TOM0_OT_TCP_SEND_BY_REFERENCE,
-                &[buffer.endpoint(), link as u32, 0],
-            )
-            .await
+            // and never through a reference. The copy stays within the
+            // buffer, after the bytes that the stack may still read. The
+            // caller ensures that the stack is done with the link when
+            // nothing is queued.
+            copy_nonoverlapping(bytes.as_ptr(), data.add(queued), bytes.len());
+            if queued == 0 {
+                write_volatile(
+                    link,
+                    ffi::otLinkedBuffer {
+                        mNext: null_mut(),
+                        mData: data,
+                        mLength: bytes.len(),
+                    },
+                );
+                // SAFETY: expects pointers to the endpoint and to an
+                // otLinkedBuffer, and flags. CPU2 keeps the otLinkedBuffer
+                // until the peer has acknowledged its data.
+                self.ffi_try(
+                    ffi_command::MSG_M4TOM0_OT_TCP_SEND_BY_REFERENCE,
+                    &[buffer.endpoint(), link as u32, 0],
+                )
+                .await
+            } else {
+                // SAFETY: expects a pointer to the endpoint, the number of
+                // bytes to add to the last otLinkedBuffer that it was given,
+                // and flags. The bytes follow that buffer's data.
+                self.ffi_try(
+                    ffi_command::MSG_M4TOM0_OT_TCP_SEND_BY_EXTENSION,
+                    &[buffer.endpoint(), bytes.len() as u32, 0],
+                )
+                .await
+            }
         }
     }
 

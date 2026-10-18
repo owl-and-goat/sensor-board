@@ -108,7 +108,8 @@ impl Write for Stream<'_> {
         Ok(buf.len())
     }
 
-    /// Nothing to do: a write returns when the peer has acknowledged it.
+    /// Nothing to do: each write has already passed its data to the TCP
+    /// stack, which sends it without being asked again.
     async fn flush(&mut self) -> Result<(), ErrorKind> {
         Ok(())
     }
