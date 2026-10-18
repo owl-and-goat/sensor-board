@@ -11,8 +11,8 @@ use std::{
 use anyhow::{Context, Result, bail};
 use clap::{Args, ValueEnum};
 use protocol::{
-    BoardConfig, BoardId, CONFIG_PORT, ConfigMessage, PowerMode, SLEEPY_POLL_PERIOD, Sensor,
-    SensorConfig, SensorsConfig,
+    BoardConfig, BoardId, CONFIG_PORT, ConfigMessage, DEFAULT_SOUND_DURATION, PowerMode,
+    SLEEPY_POLL_PERIOD, SOUND_DURATIONS, Sensor, SensorConfig, SensorsConfig,
 };
 use tokio::{
     net::UdpSocket,
@@ -52,6 +52,11 @@ pub struct Changes {
     /// `[fd12:3456::1]:9091`, or `none` to clear it
     #[arg(long, value_name = "[ADDRESS]:PORT", value_parser = pushgateway_change)]
     pushgateway: Option<PushgatewayChange>,
+
+    /// How long the microphone listens for each sound measurement, as in `125ms` (from 10ms to
+    /// 10s)
+    #[arg(long, value_name = "DURATION", value_parser = parse_sound_duration)]
+    sound_duration: Option<Duration>,
 }
 
 /// The new Pushgateway setting. `None` clears it.
@@ -71,6 +76,7 @@ impl Changes {
             && self.power_mode.is_none()
             && self.sensors.is_empty()
             && self.pushgateway.is_none()
+            && self.sound_duration.is_none()
     }
 
     /// Apply the changes to `current`. If the board has no configuration
@@ -84,6 +90,7 @@ impl Changes {
                 sensor_config: SensorsConfig::default(),
                 power_mode,
                 pushgateway: None,
+                sound_duration: DEFAULT_SOUND_DURATION,
             },
             (None, _, _) => bail!("it has no configuration yet: give it --id and --power-mode"),
         };
@@ -98,6 +105,9 @@ impl Changes {
         }
         if let Some(PushgatewayChange(pushgateway)) = self.pushgateway {
             config.pushgateway = pushgateway;
+        }
+        if let Some(duration) = self.sound_duration {
+            config.sound_duration = duration;
         }
         Ok(config)
     }
@@ -333,7 +343,10 @@ pub async fn show(mut route: Route, target: BoardId) -> Result<()> {
 /// reaches.
 pub async fn set(mut route: Route, target: BoardId, changes: &Changes) -> Result<()> {
     if changes.is_empty() {
-        bail!("nothing to change: give --id, --power-mode, --sensor or --pushgateway");
+        bail!(
+            "nothing to change: give --id, --power-mode, --sensor, --pushgateway or \
+             --sound-duration"
+        );
     }
     let current = route.get(target).await?;
     let config = match changes.apply(current) {
@@ -352,11 +365,17 @@ fn describe(config: &BoardConfig) -> String {
         sensor_config,
         power_mode,
         pushgateway,
+        sound_duration,
     } = config;
-    let mut text = format!("  {:<12}  {board_id}\n", "id");
-    text += &format!("  {:<12}  {}\n", "power mode", name(power_mode));
+    let mut text = format!("  {:<14}  {board_id}\n", "id");
+    text += &format!("  {:<14}  {}\n", "power mode", name(power_mode));
     let pushgateway = pushgateway.map_or("none".to_owned(), |address| address.to_string());
-    text += &format!("  {:<12}  {pushgateway}\n", "pushgateway");
+    text += &format!("  {:<14}  {pushgateway}\n", "pushgateway");
+    text += &format!(
+        "  {:<14}  {}\n",
+        "sound duration",
+        describe_interval(*sound_duration)
+    );
     for (sensor, config) in &sensor_config.0 {
         let read = match config {
             Some(SensorConfig { poll_interval }) => {
@@ -364,7 +383,7 @@ fn describe(config: &BoardConfig) -> String {
             }
             None => "off".to_owned(),
         };
-        text += &format!("  {:<12}  {read}\n", name(&sensor));
+        text += &format!("  {:<14}  {read}\n", name(&sensor));
     }
     text
 }
@@ -394,6 +413,19 @@ fn sensor_change(text: &str) -> Result<SensorChange, String> {
         }),
     };
     Ok(SensorChange { sensor, config })
+}
+
+/// Parse a `--sound-duration` argument.
+fn parse_sound_duration(text: &str) -> Result<Duration, String> {
+    let duration = parse_interval(text)?;
+    if !SOUND_DURATIONS.contains(&duration) {
+        return Err(format!(
+            "a sound measurement lasts from {} to {}",
+            describe_interval(*SOUND_DURATIONS.start()),
+            describe_interval(*SOUND_DURATIONS.end())
+        ));
+    }
+    Ok(duration)
 }
 
 /// Parse a `--pushgateway` argument.
@@ -461,6 +493,7 @@ mod tests {
             sensor_config: sensors,
             power_mode: PowerMode::Aux,
             pushgateway: None,
+            sound_duration: DEFAULT_SOUND_DURATION,
         }
     }
 
@@ -519,6 +552,7 @@ mod tests {
                 sensor_change("humidity=1m").unwrap(),
             ],
             pushgateway: Some(pushgateway_change("[fd12:3456::1]:9091").unwrap()),
+            sound_duration: Some(Duration::from_millis(125)),
         };
         let changed = changes.apply(Some(config())).unwrap();
 
@@ -532,6 +566,7 @@ mod tests {
         ));
         expected.sensor_config.0[Sensor::Capacitance0] = None;
         expected.sensor_config.0[Sensor::Humidity] = every(Duration::from_secs(60));
+        expected.sound_duration = Duration::from_millis(125);
         assert_eq!(changed, expected);
     }
 
@@ -542,6 +577,7 @@ mod tests {
             power_mode: None,
             sensors: vec![sensor_change("capacitance0=10s").unwrap()],
             pushgateway: None,
+            sound_duration: None,
         };
         assert!(changes.apply(None).is_err());
 
@@ -557,17 +593,30 @@ mod tests {
         let text = describe(&config());
         let lines: Vec<&str> = text.lines().collect();
         assert_eq!(
-            lines[..4],
+            lines[..5],
             [
-                "  id            3",
-                "  power mode    aux",
-                "  pushgateway   none",
-                "  capacitance0  every 10s"
+                "  id              3",
+                "  power mode      aux",
+                "  pushgateway     none",
+                "  sound duration  1s",
+                "  capacitance0    every 10s"
             ]
         );
-        assert!(lines.contains(&"  capacitance1  off"), "{text}");
-        assert!(lines.contains(&"  temperature   every 5m"), "{text}");
-        assert_eq!(lines.len(), 3 + Sensor::value_variants().len());
+        assert!(lines.contains(&"  capacitance1    off"), "{text}");
+        assert!(lines.contains(&"  temperature     every 5m"), "{text}");
+        assert_eq!(lines.len(), 4 + Sensor::value_variants().len());
+    }
+
+    #[test]
+    fn parses_sound_durations() {
+        assert_eq!(
+            parse_sound_duration("125ms"),
+            Ok(Duration::from_millis(125))
+        );
+        assert_eq!(parse_sound_duration("10s"), Ok(Duration::from_secs(10)));
+        assert!(parse_sound_duration("5ms").is_err());
+        assert!(parse_sound_duration("11s").is_err());
+        assert!(parse_sound_duration("0s").is_err());
     }
 
     #[test]

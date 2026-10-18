@@ -29,9 +29,6 @@ use crate::{
 /// The interval between reports.
 const INTERVAL: Duration = Duration::from_secs(10);
 
-/// How long the microphone listens for each report.
-const SOUND_DURATION: Duration = Duration::from_secs(1);
-
 /// Timeout for a request to start or stop collecting. It covers one
 /// [`thread::Socket`] request, which has its own timeout, and the report
 /// that may be in progress. Shorter than the host's own timeout.
@@ -214,7 +211,8 @@ impl Task {
             }
         };
 
-        let sound = self.mic.lock().await.measure(SOUND_DURATION).await;
+        let duration = board_config::sound_duration(self.config.config().as_ref());
+        let sound = self.mic.lock().await.measure(duration).await;
 
         Readings {
             capacitance,

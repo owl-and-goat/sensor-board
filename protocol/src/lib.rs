@@ -11,7 +11,7 @@ use postcard_schema::Schema;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
-pub use board_config::{BoardConfig, PowerMode, Sensor, SensorConfig, SensorsConfig};
+pub use board_config::{BoardConfig, DEFAULT_SOUND_DURATION, SOUND_DURATIONS, PowerMode, Sensor, SensorConfig, SensorsConfig};
 
 /// USB IDs of a board running the firmware. This is the pid.codes test PID, which is for private
 /// testing only: by its terms it must not be on a board that is redistributed, sold or
@@ -1633,6 +1633,7 @@ mod tests {
             sensor_config: sensors,
             power_mode: PowerMode::Battery,
             pushgateway: Some(SocketAddrV6::new([0xffff; 8].into(), u16::MAX, 0, 0)),
+            sound_duration: core::time::Duration::MAX,
         }
     }
 

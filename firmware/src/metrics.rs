@@ -77,9 +77,6 @@ const RETRY: Duration = Duration::from_secs(5);
 /// The shortest poll interval. A shorter configured interval is raised to it.
 const MIN_INTERVAL: Duration = Duration::from_millis(100);
 
-/// How long the microphone listens for each measurement.
-const SOUND_DURATION: Duration = Duration::from_secs(1);
-
 /// The sensors that have a driver.
 const SENSORS: [Sensor; 8] = [
     Sensor::Capacitance0,
@@ -411,6 +408,7 @@ impl Builder {
                 metrics: shared,
                 text: TEXT.init(Text::new()),
                 polls: [None; SENSORS.len()],
+                sound_duration: board_config::sound_duration(None),
             },
         };
         let handle = Handle {
@@ -513,6 +511,8 @@ struct Exporter {
     /// The schedule of each sensor in [`SENSORS`], by index. `None` if the
     /// sensor is disabled.
     polls: [Option<Poll>; SENSORS.len()],
+    /// How long the microphone listens for each measurement.
+    sound_duration: Duration,
 }
 
 impl Exporter {
@@ -526,6 +526,7 @@ impl Exporter {
             }
         });
 
+        self.sound_duration = board_config::sound_duration(config);
         let now = Instant::now();
         for (poll, sensor) in self.polls.iter_mut().zip(SENSORS) {
             let sensor = config.and_then(|config| config.sensor_config.0[sensor]);
@@ -820,7 +821,7 @@ impl Exporter {
 
     /// Measure the sound level.
     async fn read_sound(&mut self) {
-        let level = self.mic.lock().await.measure(SOUND_DURATION).await;
+        let level = self.mic.lock().await.measure(self.sound_duration).await;
         self.count(|metrics| &metrics.sound_errors, usize::from(level.is_err()));
         self.metrics.with(|metrics| {
             let gauge = metrics.sound_level.register(BoardLabels(self.board));

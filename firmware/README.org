@@ -293,14 +293,17 @@ pushgateway on the lan accepted.
 ** board configuration
 
 a board stores a configuration in flash, next to its network's dataset. it
-holds the board's number, its power mode, and for each sensor either a poll
-interval or that the sensor is off. =config show= prints it. =config set=
+holds the board's number, its power mode, how long the microphone listens
+for each sound measurement (1 s unless set, from 10 ms to 10 s), and for
+each sensor either a poll interval or that the sensor is off. =config show=
+prints it. =config set=
 changes the settings it is given and keeps the rest. the power mode also
 selects how the board exports its metrics (see "metrics" above):
 
 #+begin_src sh
   cargo run -- config set --id 3 --power-mode aux    # a board's first configuration needs these two
   cargo run -- config set --sensor temperature=30s --sensor color=off
+  cargo run -- config set --sound-duration 125ms     # shorter measurements save power on battery
   cargo run -- config show
 #+end_src
 

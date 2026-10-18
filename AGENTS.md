@@ -675,9 +675,14 @@ every board it finds over mDNS, with the same two times. The firmware has nothin
 61622 at whatever address a request came from.
 
 - Changing `BoardConfig` (a new sensor, a new field) changes both keys: the
-  one in flash and the one that `ConfigMessage` starts with. A board then
-  has no configuration until it is set again. Boards on different sides of
-  the change ignore each other's requests instead of misreading them.
+  one in flash and the one that `ConfigMessage` starts with. Boards on
+  different sides of the change ignore each other's requests instead of
+  misreading them. A board can only read a stored configuration in an older
+  layout if `BoardConfig::decode` still knows that layout. It knows the one
+  from before `sound_duration` (2026-10-18) and converts it with a 1 s sound
+  duration. Without such a conversion, a board has no configuration after
+  the update until it is set again, and a board on battery then acts as
+  one on aux power.
 - Writing either record erases the page and writes both records again, with
   no other CPU1 code running in between (`RadioFlash::rewrite_page`). This
   matters because the Thread service reads the dataset from flash to tell
@@ -935,6 +940,9 @@ taken off (sound every 10 s, a push after each measurement):
   measuring sound, then the push, which takes a bit more than a second with
   the board polling its parent every 100 ms.
 
+Measured again on 2026-10-18, on the same board with the SMPS on: 0.02 to
+0.06 mA while stopped, and 5.5 to 6 mA while measuring and pushing.
+
 So what a board on battery draws is set by how often it measures and
 pushes: about 2 mA on average with this configuration. What would bring
 that down: a longer interval, and a push that takes less time on the air.
@@ -942,6 +950,19 @@ The SMPS, which was off for this measurement, should lower the current
 while the chip runs. The 20 µA only matter once a board measures every few
 minutes. A current of several milliamps for seconds is also a lot for a
 coin cell.
+
+Timed on 2026-10-18 on board 4B002E, with a probe attached and the board
+not stopping, from the start of a sound measurement to the response to the
+push:
+
+- Before: 2.4 s. The measurement took 1.1 s (1 s, plus 100 ms for the
+  microphone to settle). The push took 1.3 s, almost all of it spent
+  sending 3 K of text in 512-byte pieces, each waiting about 200 ms for its
+  acknowledgement.
+- After: 0.57 s. The measurement takes 226 ms with `config set
+  --sound-duration 125ms`. The push takes 0.35 s: it sends 0.6 to 0.8 K
+  without help lines, queued at once, and the response comes back about
+  300 ms after the request is queued.
 
 ### Not done
 

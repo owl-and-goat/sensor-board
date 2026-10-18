@@ -1,4 +1,5 @@
 use core::net::SocketAddrV6;
+use core::ops::RangeInclusive;
 use core::time::Duration;
 
 use enum_map::{Enum, EnumMap};
@@ -56,6 +57,15 @@ impl Schema for SensorsConfig {
     };
 }
 
+/// How long the microphone listens for a sound measurement, unless the
+/// configuration sets another length.
+pub const DEFAULT_SOUND_DURATION: Duration = Duration::from_secs(1);
+
+/// The shortest and the longest sound measurement. The firmware measures
+/// for the nearest of the two if the configuration is outside them.
+pub const SOUND_DURATIONS: RangeInclusive<Duration> =
+    Duration::from_millis(10)..=Duration::from_secs(10);
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Schema)]
 pub struct BoardConfig {
     pub board_id: u8,
@@ -64,12 +74,48 @@ pub struct BoardConfig {
     /// The Prometheus Pushgateway to push metrics to. Used only in
     /// [`PowerMode::Battery`].
     pub pushgateway: Option<SocketAddrV6>,
+    /// How long the microphone listens for each sound measurement. The
+    /// microphone is on for 100 ms longer, to settle first.
+    pub sound_duration: Duration,
+}
+
+/// The layout of [`BoardConfig`] before `sound_duration` was added, which
+/// boards stored before 2026-10-18. The type keeps its name, because the
+/// name is part of the key.
+mod without_sound_duration {
+    use super::*;
+
+    #[derive(Serialize, Deserialize, Schema)]
+    pub struct BoardConfig {
+        pub board_id: u8,
+        pub sensor_config: SensorsConfig,
+        pub power_mode: PowerMode,
+        pub pushgateway: Option<SocketAddrV6>,
+    }
+
+    impl BoardConfig {
+        pub fn key() -> [u8; 8] {
+            Key::for_path::<BoardConfig>("config/stored").to_bytes()
+        }
+    }
+
+    impl From<BoardConfig> for super::BoardConfig {
+        fn from(old: BoardConfig) -> Self {
+            super::BoardConfig {
+                board_id: old.board_id,
+                sensor_config: old.sensor_config,
+                power_mode: old.power_mode,
+                pushgateway: old.pushgateway,
+                sound_duration: DEFAULT_SOUND_DURATION,
+            }
+        }
+    }
 }
 
 impl BoardConfig {
     /// The longest encoded configuration: the key, then every field at its
     /// largest size (postcard encodes the intervals and the port as varints).
-    pub const MAX_LEN: usize = 8 + 1 + Sensor::COUNT * (1 + 10 + 5) + 1 + (1 + 16 + 3);
+    pub const MAX_LEN: usize = 8 + 1 + Sensor::COUNT * (1 + 10 + 5) + 1 + (1 + 16 + 3) + (10 + 5);
 
     /// Encode the configuration for storage in flash: a key derived from the
     /// layout of this type, then the postcard encoding. `None` if `buf` is
@@ -78,11 +124,16 @@ impl BoardConfig {
         crate::encode_with_prefix(&Self::key(), self, buf)
     }
 
-    /// Decode a stored configuration. `None` if `bytes` was not encoded with
-    /// this layout, so a configuration that a firmware with a different
-    /// layout stored is rejected instead of misread.
+    /// Decode a stored configuration. A configuration in the layout from
+    /// before `sound_duration` is converted, with the default sound duration.
+    /// `None` if `bytes` was encoded with any other layout, so that such a
+    /// configuration is rejected instead of misread.
     pub fn decode(bytes: &[u8]) -> Option<BoardConfig> {
-        crate::decode_with_prefix(&Self::key(), bytes)
+        crate::decode_with_prefix(&Self::key(), bytes).or_else(|| {
+            let old = without_sound_duration::BoardConfig::key();
+            crate::decode_with_prefix::<without_sound_duration::BoardConfig>(&old, bytes)
+                .map(BoardConfig::from)
+        })
     }
 
     fn key() -> [u8; 8] {
@@ -107,7 +158,38 @@ mod tests {
             sensor_config: sensors,
             power_mode: PowerMode::Aux,
             pushgateway: Some("[fd12:3456::1]:9091".parse().unwrap()),
+            sound_duration: Duration::from_millis(125),
         }
+    }
+
+    /// A configuration as a firmware from before `sound_duration` stored it.
+    const STORED_WITHOUT_SOUND_DURATION: [u8; 41] = [
+        0x85, 0x7c, 0x93, 0x1b, 0x6f, 0xdc, 0xda, 0x3f, 0x05, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+        0x00, 0x00, 0x00, 0x01, 0x0a, 0x00, 0x01, 0x01, 0xfd, 0x94, 0x69, 0x18, 0xdb, 0xe8, 0x37,
+        0xdd, 0x54, 0x57, 0x0a, 0xff, 0xfe, 0xe2, 0x84, 0x30, 0x83, 0x47,
+    ];
+
+    #[test]
+    fn config_without_sound_duration_is_converted() {
+        let mut sensors = SensorsConfig::default();
+        sensors.0[Sensor::Sound] = Some(SensorConfig {
+            poll_interval: Duration::from_secs(10),
+        });
+        let expected = BoardConfig {
+            board_id: 5,
+            sensor_config: sensors,
+            power_mode: PowerMode::Battery,
+            pushgateway: Some(
+                "[fd94:6918:dbe8:37dd:5457:aff:fee2:8430]:9091"
+                    .parse()
+                    .unwrap(),
+            ),
+            sound_duration: DEFAULT_SOUND_DURATION,
+        };
+        assert_eq!(
+            BoardConfig::decode(&STORED_WITHOUT_SOUND_DURATION),
+            Some(expected)
+        );
     }
 
     #[test]
@@ -135,6 +217,7 @@ mod tests {
         let mut longest = config();
         longest.board_id = u8::MAX;
         longest.pushgateway = Some(SocketAddrV6::new([0xffff; 8].into(), u16::MAX, 0, 0));
+        longest.sound_duration = Duration::MAX;
         for (_, sensor) in &mut longest.sensor_config.0 {
             *sensor = Some(SensorConfig {
                 poll_interval: Duration::MAX,

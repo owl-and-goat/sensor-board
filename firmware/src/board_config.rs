@@ -20,7 +20,7 @@ use embassy_sync::{
 use embassy_time::{Duration, Instant, Timer};
 use protocol::{
     BoardConfig, BoardConfigResult, BoardId, ConfigError, ConfigFor, ConfigMessage, ConfigResult,
-    NetworkResult, SLEEPY_POLL_PERIOD,
+    DEFAULT_SOUND_DURATION, NetworkResult, SLEEPY_POLL_PERIOD, SOUND_DURATIONS,
 };
 use static_cell::StaticCell;
 
@@ -90,6 +90,15 @@ pub fn init() -> (Handle, Eraser, Service, [Monitor; MONITORS]) {
 /// Watches the board's configuration for changes.
 pub struct Monitor {
     current: watch::Receiver<'static, ThreadModeRawMutex, Option<BoardConfig>, MONITORS>,
+}
+
+/// How long the microphone listens for a sound measurement under `config`,
+/// within [`SOUND_DURATIONS`].
+pub fn sound_duration(config: Option<&BoardConfig>) -> Duration {
+    let duration = config.map_or(DEFAULT_SOUND_DURATION, |config| config.sound_duration);
+    let duration = duration.clamp(*SOUND_DURATIONS.start(), *SOUND_DURATIONS.end());
+    // Cannot fail: the longest duration is ten seconds.
+    Duration::from_micros(duration.as_micros().try_into().unwrap_or(u64::MAX))
 }
 
 impl Monitor {
