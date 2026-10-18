@@ -25211,7 +25211,7 @@
 			(justify left bottom)
 		)
 	)
-	(gr_text "cap1"
+	(gr_text "cap0"
 		(at 186.69 67.564 0)
 		(layer "F.SilkS")
 		(uuid "6598a2cd-6cee-47fa-a692-5af72ad08215")
@@ -25223,7 +25223,7 @@
 			(justify left bottom)
 		)
 	)
-	(gr_text "cap2\n"
+	(gr_text "cap1"
 		(at 186.69 81.026 0)
 		(layer "F.SilkS")
 		(uuid "0d150cd1-5441-422c-a871-bc66c7601d95")
@@ -25247,7 +25247,7 @@
 			(justify left bottom)
 		)
 	)
-	(gr_text "cap4\n"
+	(gr_text "cap3"
 		(at 168.4 82.2 90)
 		(layer "F.SilkS")
 		(uuid "4f53bf73-3367-4f30-9102-86f97c79a41c")
@@ -25259,7 +25259,7 @@
 			(justify left bottom)
 		)
 	)
-	(gr_text "cap3\n"
+	(gr_text "cap2"
 		(at 181.864 82.296 90)
 		(layer "F.SilkS")
 		(uuid "c3a00e44-28a9-4171-9ae9-6e0e68f65b88")
@@ -42631,10 +42631,6 @@
 				(xy 184.82892 35.004477) (xy 184.836479 35.002833) (xy 184.862832 35) (xy 190.18267 35)
 			)
 		)
-	)
-	(group ""
-		(uuid "325d8df9-fe95-4aee-9ec3-9d2aec771bf8")
-		(members "6598a2cd-6cee-47fa-a692-5af72ad08215" "c38db361-1385-4d0e-83ac-f1940c2aaa71")
 	)
 	(embedded_fonts no)
 )

@@ -280,7 +280,8 @@ lose contact (the probe then still reads the target voltage and can reset
 the board, because VCC, reset and GND are on the other row). use a footprint
 that the clips or the cable's legs can hold on to, or another connector.
 ** TODO re-route board after edits
-** TODO re-index cap silkscreen from zero
+** DONE re-index cap silkscreen from zero
+CLOSED: [2026-10-18 Sun 13:25]
 ** DONE add +/- silkscreen for battery holder
 CLOSED: [2026-10-18 Sun 13:23]
 ** DONE add rough model to battery holder
