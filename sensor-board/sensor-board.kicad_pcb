@@ -12108,12 +12108,6 @@
 		(path "/b35e8608-6f34-4d04-bb8a-6f26a9acec58")
 		(sheetname "/")
 		(sheetfile "sensor-board.kicad_sch")
-		(units
-			(unit
-				(name "A")
-				(pins "1" "2")
-			)
-		)
 		(attr through_hole exclude_from_pos_files exclude_from_bom)
 		(duplicate_pad_numbers_are_jumpers no)
 		(fp_rect
@@ -12137,6 +12131,42 @@
 			(fill no)
 			(layer "F.CrtYd")
 			(uuid "1c7c3cd6-ad5b-4cdb-be2e-0afdcdd984c1")
+		)
+		(fp_text user "+"
+			(at -5 2 0)
+			(unlocked yes)
+			(layer "F.SilkS")
+			(uuid "ea68bcc5-74c1-47a7-8005-58a1efa4a684")
+			(effects
+				(font
+					(size 1 1)
+					(thickness 0.1)
+				)
+			)
+		)
+		(fp_text user "-"
+			(at 0 2 0)
+			(unlocked yes)
+			(layer "F.SilkS")
+			(uuid "2ba01149-ce3a-49f1-8d1a-beb7a8b95bf3")
+			(effects
+				(font
+					(size 1 1)
+					(thickness 0.1)
+				)
+			)
+		)
+		(fp_text user "+"
+			(at 5 2 0)
+			(unlocked yes)
+			(layer "F.SilkS")
+			(uuid "cc62b907-f274-4572-ac5b-e84977d443c3")
+			(effects
+				(font
+					(size 1 1)
+					(thickness 0.1)
+				)
+			)
 		)
 		(fp_text user "${REFERENCE}"
 			(at 0 2.5 0)
@@ -12184,6 +12214,17 @@
 			(uuid "b7a77edf-ee72-4775-b50b-651238e2d3fa")
 		)
 		(embedded_fonts no)
+		(model "${KIPRJMOD}/../vendor.pretty/BatteryHolder_CR2032.step"
+			(offset
+				(xyz 0 1.2 1.9)
+			)
+			(scale
+				(xyz 1 1 1)
+			)
+			(rotate
+				(xyz -0 -0 -0)
+			)
+		)
 	)
 	(footprint "Connector_JST:JST_SH_BM02B-SRSS-TB_1x02-1MP_P1.00mm_Vertical"
 		(layer "F.Cu")
