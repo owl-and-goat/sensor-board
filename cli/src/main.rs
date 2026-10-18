@@ -62,7 +62,15 @@ enum Command {
 #[derive(Subcommand)]
 enum ConfigCommand {
     /// Print a board's configuration
-    Show(ConfigTarget),
+    Show {
+        /// Print the configuration as the board stores it in flash, as a Rust array. A test can
+        /// use it to check that a later layout of the configuration still reads it
+        #[arg(long)]
+        stored: bool,
+
+        #[command(flatten)]
+        target: ConfigTarget,
+    },
     /// Change a board's configuration. Settings that are not given keep their values
     Set {
         #[command(flatten)]
@@ -453,9 +461,9 @@ async fn main() -> Result<()> {
             println!("{picofarads:.2} pF");
             Ok(())
         }
-        Command::Config(ConfigCommand::Show(target)) => {
+        Command::Config(ConfigCommand::Show { stored, target }) => {
             let (route, board) = target.route().await?;
-            config::show(route, board).await
+            config::show(route, board, stored).await
         }
         Command::Config(ConfigCommand::Set { changes, target }) => {
             let (route, board) = target.route().await?;

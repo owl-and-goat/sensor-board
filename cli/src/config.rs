@@ -330,13 +330,30 @@ fn reply(datagram: &[u8], board: BoardId, question: u32) -> Option<Option<BoardC
     }
 }
 
-/// Print the configuration of the board `target`, which `route` reaches.
-pub async fn show(mut route: Route, target: BoardId) -> Result<()> {
+/// Print the configuration of the board `target`, which `route` reaches. With
+/// `stored`, print it as the board stores it in flash, as a Rust array.
+pub async fn show(mut route: Route, target: BoardId, stored: bool) -> Result<()> {
     match route.get(target).await? {
+        Some(config) if stored => print!("{}", stored_array(&config)),
         Some(config) => print!("Board {target}\n{}", describe(&config)),
         None => println!("Board {target} has no configuration."),
     }
     Ok(())
+}
+
+/// The bytes that a board stores for `config`, as a Rust array that a test can
+/// use.
+fn stored_array(config: &BoardConfig) -> String {
+    let mut buf = [0; BoardConfig::MAX_LEN];
+    let bytes = config
+        .encode(&mut buf)
+        .expect("MAX_LEN fits every configuration");
+    let mut text = format!("const STORED: [u8; {}] = [\n", bytes.len());
+    for row in bytes.chunks(15) {
+        let row: Vec<_> = row.iter().map(|byte| format!("{byte:#04x},")).collect();
+        text += &format!("    {}\n", row.join(" "));
+    }
+    text + "];\n"
 }
 
 /// Apply `changes` to the configuration of the board `target`, which `route`
@@ -495,6 +512,20 @@ mod tests {
             pushgateway: None,
             sound_duration: DEFAULT_SOUND_DURATION,
         }
+    }
+
+    #[test]
+    fn stored_array_has_the_stored_bytes() {
+        let text = stored_array(&config());
+        let (head, body) = text.split_once(" = [\n").unwrap();
+        let bytes: Vec<u8> = body
+            .trim_end_matches("];\n")
+            .split_whitespace()
+            .map(|byte| u8::from_str_radix(&byte[2..4], 16).unwrap())
+            .collect();
+        assert_eq!(head, format!("const STORED: [u8; {}]", bytes.len()));
+        assert_eq!(BoardConfig::decode(&bytes), Some(config()));
+        assert!(text.lines().all(|line| line.len() <= 100));
     }
 
     #[test]
