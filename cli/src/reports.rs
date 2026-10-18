@@ -154,7 +154,7 @@ mod tests {
             describe(&report),
             "4B0041000350475532303120  build 1791145757  #7  capacitance 12.50 pF, -0.25 pF, \
              failed (I2C ACK Not Received), 4.00 pF  color red 512, green 256, blue 128, \
-             white failed (Color Sensor Channel Out of Range), infrared 0  \
+             white failed (Sensor Channel Out of Range), infrared 0  \
              temp-rh 21.50 °C 45.25 %RH  sound 48.5 dB SPL"
         );
     }

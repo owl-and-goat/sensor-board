@@ -303,27 +303,34 @@ does not, lower `LEVEL` in `supply.rs`.
 
 ## The capacitance sensor
 
-The chip is an FDC2114 (U9), the 12-bit part. Its datasheet is
-`doc/fdc2114.pdf`, which also covers the FDC2214. Each channel's tank and
-the reading's conversion to pF are described in
-`firmware/src/sensor/capacitance.rs`. The firmware reports pF everywhere: in
-`protocol::Capacitance`, in the reports, and as
-`sensor_board_capacitance_farads` in the metrics.
+The chip is an FDC2214 (U9), which gives a 28-bit result. The schematic
+says it is an FDC2114, the 12-bit version with the same pins, but U9 isn't
+in the assembly BOM, and the boards have an FDC2214 on them. The datasheet
+for both is `doc/fdc2114.pdf`. `firmware/src/sensor/capacitance.rs`
+describes each channel's tank circuit and how a reading is converted to pF.
+The firmware reports pF everywhere: in `protocol::Capacitance`, in the
+reports, and as `sensor_board_capacitance_farads` in the metrics.
 
-- CLKIN is grounded, so the reference clock is the chip's internal
-  oscillator. The datasheet gives 43.4 MHz typical and 35 to 55 MHz in
-  all. The firmware assumes 43.4 MHz. The capacitance goes with the inverse
-  square of the clock, so a board's values can be off by tens of pF. A
-  change on one channel is more accurate than the value.
-- Until 2026-10-18 the driver was written for the FDC2214. It read a
-  DATA_LSB register that the FDC2114 does not have, and left the clock
-  dividers at their reserved reset value of 0. Its raw readings had no
-  defined scale.
-- The chip sleeps between readings. A reading takes about 2 ms.
+- CLKIN is connected to ground, so the reference clock is the chip's
+  internal oscillator. The datasheet gives 43.4 MHz as typical, and
+  anywhere from 35 to 55 MHz. The firmware assumes 43.4 MHz. The
+  capacitance is proportional to the inverse square of the clock
+  frequency, so the values from a board can be off by tens of pF. Changes
+  in the value on one channel are more accurate than the value itself.
+- The firmware checks the device ID, which is 0x3055 for the FDC2214. On a
+  board with an FDC2114, every reading would fail with "not initialized".
+- Before 2026-10-18, the driver left the clock dividers at their reset
+  value of 0, which is reserved, and read the result without waiting for a
+  conversion to finish. Its raw readings (`sensor_board_capacitance`) had
+  no defined scale. On board 4C0045 they were about 28,000,000 to
+  29,000,000. If the chip treated the reserved dividers as 1, that's 31 to
+  35 pF.
+- The chip is in sleep mode between readings. A reading takes about 5 ms.
 
-Not tested on a board: any of it. The drive current is TI's value for the
-same tank (`IDRIVE`). The oscillation amplitude, which should be 1.2 to
-1.8 V peak, has not been measured with an electrode attached.
+Not tested on a board: any of it. The drive current (`IDRIVE`) is the value
+from TI's example, which uses the same tank circuit. The oscillation
+amplitude should be 1.2 to 1.8 V peak, and it hasn't been measured with an
+electrode attached.
 
 ## CPU2: FUS and the Thread stack
 

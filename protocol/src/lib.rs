@@ -587,11 +587,12 @@ pub enum CapacitanceChannel {
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize, Schema)]
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]
 pub struct Capacitance {
-    /// The capacitance at the channel's input, besides the tank capacitor, in
-    /// pF. It includes the board's own capacitance there, so a channel with
-    /// nothing attached reads more than zero. The chip's clock is only good
-    /// to about ±20 %, so a board can be off by tens of pF. A change on one
-    /// channel is more accurate than the value.
+    /// The capacitance at the channel's input, in pF, not counting the tank
+    /// capacitor. This includes the board's own capacitance at the input, so
+    /// a channel with nothing attached reads more than zero. The chip's clock
+    /// is only accurate to about ±20 %, so the values from a board can be off
+    /// by tens of pF. Changes in the value on one channel are more accurate
+    /// than the value itself.
     pub picofarads: f32,
 }
 
@@ -655,8 +656,8 @@ pub enum SensorReadError {
     /// one produced invalid data.
     #[error("Color Sensor Data Invalid")]
     DataInvalid,
-    /// The light on the channel is outside of the range it can measure.
-    #[error("Color Sensor Channel Out of Range")]
+    /// The channel's input is outside of the range the sensor can measure.
+    #[error("Sensor Channel Out of Range")]
     OutOfRange,
     /// The microphone's bitstream came in faster than it was worked out, for
     /// so long that the measurement was given up.

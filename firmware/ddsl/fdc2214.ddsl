@@ -1,8 +1,8 @@
 // -*- mode: Rust; eval: (apheleia-mode -1) -*-
 
-// FDC2114 capacitance-to-digital converter. Every register is 16 bits, MSB
+// FDC2214 capacitance-to-digital converter. Every register is 16 bits, MSB
 // first.
-device Fdc2114 {
+device Fdc2214 {
     register-address-type: u8,
     // An address is a whole 16-bit register.
     register-address-mode: indexed,
@@ -23,7 +23,8 @@ device Fdc2114 {
         Ch3: _,
     },
 
-    /// Conversion status and result.
+    /// Conversion status and the top of the 28-bit result. Reading it latches
+    /// DATA_LSB.
     register DATA[Channel stride 2] {
         address: 0x00,
         access: RO,
@@ -39,10 +40,17 @@ device Fdc2114 {
             /// ERROR_CONFIG.AH_WARN2OUT or AL_WARN2OUT set.
             field ERR_AW 12,
 
-            /// 12 bits of the 16-bit result, picked by RESET_DEV.OUTPUT_GAIN.
-            /// 0x000 is under range, 0xFFF over range.
-            field DATA 11:0,
+            /// Bits 27:16 of the result.
+            field DATA_MSB 11:0,
         },
+    },
+
+    /// Bits 15:0 of the conversion result. Must be read after DATA.
+    register DATA_LSB[Channel stride 2] {
+        address: 0x01,
+        access: RO,
+        reset: 0x0000,
+        fields: Word,
     },
 
     /// Reference count: the conversion time is RCOUNT * 16 / f_REF. 0x0000 to
@@ -215,16 +223,6 @@ device Fdc2114 {
 
             /// Write 1 to reset the device. Always reads back 0.
             field RESET_DEV 15,
-
-            /// Which 12 bits of the 16-bit result DATA holds, for every
-            /// channel. A gain of 4 drops the top 2 bits, which are 0 while
-            /// the sensor frequency is below a quarter of f_REF.
-            field OUTPUT_GAIN 10:9 -> _ as enum _ {
-                Gain1: 0b00,
-                Gain4: 0b01,
-                Gain8: 0b10,
-                Gain16: 0b11,
-            },
         },
     },
 
@@ -250,7 +248,7 @@ device Fdc2114 {
     register DEVICE_ID {
         address: 0x7F,
         access: RO,
-        reset: 0x3054,
+        reset: 0x3055,
         fields: Word,
     }
 }
