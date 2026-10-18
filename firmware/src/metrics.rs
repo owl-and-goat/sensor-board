@@ -149,6 +149,73 @@ impl<C: fmt::Display> FmtLabels for ChannelLabels<C> {
     }
 }
 
+/// How much of the text format to render.
+#[derive(Clone, Copy)]
+enum Detail {
+    /// Everything, for a scrape: Prometheus keeps each metric's help text.
+    Full,
+    /// The samples, and the `# TYPE` line of each family that has any. The
+    /// Pushgateway needs nothing else, and a shorter text makes a push
+    /// faster. The type lines stay because the Pushgateway rejects an
+    /// untyped metric when another group has the same metric with a type.
+    Samples,
+}
+
+/// The longest line of the text format: a help line, or a sample with its
+/// labels.
+const LINE_LEN: usize = 192;
+
+/// A writer that keeps only the sample lines of the text format, each
+/// family's samples preceded by its `# TYPE` line. It drops the other
+/// comment lines, the empty lines, and the type line of a family that has no
+/// samples.
+struct Samples<'a, W> {
+    out: &'a mut W,
+    /// The line being written.
+    line: heapless::String<LINE_LEN>,
+    /// The `# TYPE` line of the current family, until its first sample.
+    family_type: heapless::String<LINE_LEN>,
+}
+
+impl<'a, W: fmt::Write> Samples<'a, W> {
+    fn new(out: &'a mut W) -> Self {
+        Samples {
+            out,
+            line: heapless::String::new(),
+            family_type: heapless::String::new(),
+        }
+    }
+
+    /// Write out or drop the line that has just ended.
+    fn end_line(&mut self) -> fmt::Result {
+        let line = self.line.as_str();
+        if line.starts_with("# TYPE ") {
+            self.family_type.clear();
+            self.family_type.push_str(line).map_err(|_| fmt::Error)?;
+        } else if !line.is_empty() && !line.starts_with('#') {
+            if !self.family_type.is_empty() {
+                writeln!(self.out, "{}", self.family_type)?;
+                self.family_type.clear();
+            }
+            writeln!(self.out, "{line}")?;
+        }
+        self.line.clear();
+        Ok(())
+    }
+}
+
+impl<W: fmt::Write> fmt::Write for Samples<'_, W> {
+    fn write_str(&mut self, s: &str) -> fmt::Result {
+        let mut rest = s;
+        while let Some(end) = rest.find('\n') {
+            self.line.push_str(&rest[..end]).map_err(|_| fmt::Error)?;
+            self.end_line()?;
+            rest = &rest[end + 1..];
+        }
+        self.line.push_str(rest).map_err(|_| fmt::Error)
+    }
+}
+
 /// Buffer for the metrics in Prometheus's text format.
 type Text = heapless::String<{ http::MAX_BODY }>;
 
@@ -286,12 +353,22 @@ impl SharedMetrics {
     }
 
     /// Render the current metrics into `text`, with the state of `board`'s
-    /// supply. Fails if they do not fit, and leaves the text empty.
-    fn render(&self, board: BoardId, supply: supply::Monitor, text: &mut Text) -> fmt::Result {
+    /// supply, in as much `detail` as given. Fails if they do not fit, and
+    /// leaves the text empty.
+    fn render(
+        &self,
+        board: BoardId,
+        supply: supply::Monitor,
+        detail: Detail,
+        text: &mut Text,
+    ) -> fmt::Result {
         text.clear();
         let written = self.with(|metrics| {
             metrics.record_supply(board, supply);
-            metrics.write(text)
+            match detail {
+                Detail::Full => metrics.write(text),
+                Detail::Samples => metrics.write(&mut Samples::new(text)),
+            }
         });
         if written.is_err() {
             defmt::error!("metrics: the text does not fit its buffer");
@@ -597,7 +674,9 @@ impl Exporter {
         self.count(|metrics| &metrics.pushes, 1);
 
         let pushed = async {
-            let rendered = self.metrics.render(self.board, self.supply, self.text);
+            let rendered = self
+                .metrics
+                .render(self.board, self.supply, Detail::Samples, self.text);
             rendered.map_err(|_| http::Error::Malformed)?;
             let mut path: heapless::String<64> = heapless::String::new();
             let written = write!(path, "/metrics/job/{JOB}/instance/{}", self.board);
@@ -778,7 +857,9 @@ impl HttpHandler for Scrape<'_> {
         self.metrics
             .count(self.board, |metrics| &metrics.scrapes, 1);
         // nanofish answers an error with a 500.
-        let rendered = self.metrics.render(self.board, self.supply, self.text);
+        let rendered = self
+            .metrics
+            .render(self.board, self.supply, Detail::Full, self.text);
         rendered.map_err(|fmt::Error| nanofish::Error::BufferOverflow)?;
         Ok(http::response(StatusCode::Ok, self.text))
     }

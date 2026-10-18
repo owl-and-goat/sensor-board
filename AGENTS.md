@@ -504,6 +504,14 @@ request and one response per connection. The handler for a scrape request is
 `match` in `Exporter::read`, and its metrics to `Metrics`, all in
 `metrics.rs`.
 
+A scrape gets the full text format. A push sends only the samples, each
+family's preceded by its `# TYPE` line (`Detail::Samples` in `metrics.rs`),
+which cuts a push from about 3 K to under 1 K. The type lines have to stay:
+the Pushgateway (1.11.2) rejects an untyped metric when another group has
+the same metric with a type. That was tested on 2026-10-18 on a local
+Pushgateway. Without help lines, the Pushgateway takes the help text from
+the other groups.
+
 Things learned about nanofish (0.13):
 
 - It copies a whole response into one buffer before it sends it, and reads a
