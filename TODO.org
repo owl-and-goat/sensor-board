@@ -257,7 +257,8 @@ tag, because the fork's thread support uses released crates): point
 =[patch.crates-io]= in =firmware/Cargo.toml= at that revision, and drop the
 =embassy-stm32= recipe from the =Justfile= and the patch file.
 * Rev. 2
-** TODO fix the pin numbering for the color sensor footprint
+** DONE fix the pin numbering for the color sensor footprint
+CLOSED: [2026-10-18 Sun 13:01]
 half of them are the wrong way gdi
 ** TODO add a VBUS sense pin
 the mcu cannot tell whether a usb host is attached: VBUS only reaches the
