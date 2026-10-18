@@ -16,12 +16,16 @@ use core::net::SocketAddrV6;
 use embassy_futures::select::{Either, select};
 use embassy_sync::blocking_mutex::{Mutex, raw::ThreadModeRawMutex};
 use embassy_time::{Duration, Instant, Timer, with_timeout};
+use fixed::{
+    traits::Fixed,
+    types::{I14F50, I16F16},
+};
 use nanofish::{HttpHandler, HttpMethod, HttpRequest, HttpResponse, StatusCode};
 use protocol::{
     BoardConfig, BoardId, MetricsChunk, PowerMode, Precision, Sensor, TempRh, TempRhReq,
 };
 use static_cell::StaticCell;
-use tinymetrics::{Counter, FmtLabels, Gauge, IntGauge, MetricBuilder, MetricFamily};
+use tinymetrics::{Counter, FixedGauge, FmtLabels, IntGauge, MetricBuilder, MetricFamily};
 
 use crate::{
     board_config, http,
@@ -146,6 +150,20 @@ impl<C: fmt::Display> FmtLabels for ChannelLabels<C> {
     }
 }
 
+/// The type of the temperature, humidity and sound level gauges. Its range
+/// is -32768 to 32768, in steps of 1.5e-5.
+type Decimal = I16F16;
+
+/// The type of the capacitance gauge, in farads. Its range is -8192 F to
+/// 8192 F, in steps of 8.9e-16 F.
+type Farads = I14F50;
+
+/// Convert a reading to the fixed-point type of its gauge, saturating at the
+/// type's limits. `None` if the reading is NaN.
+fn fixed<F: Fixed>(value: f32) -> Option<F> {
+    (!value.is_nan()).then(|| F::saturating_from_num(value))
+}
+
 /// How much of the text format to render.
 #[derive(Clone, Copy)]
 enum Detail {
@@ -223,14 +241,14 @@ type ColorFamily<M> = MetricFamily<'static, M, { COLOR.len() }, ChannelLabels<&'
 struct Metrics {
     firmware_build: MetricFamily<'static, IntGauge, 1, BuildLabels>,
     battery_low: BoardFamily<IntGauge>,
-    capacitance: CapacitanceFamily<Gauge>,
+    capacitance: CapacitanceFamily<FixedGauge<Farads>>,
     capacitance_errors: CapacitanceFamily<Counter>,
     color: ColorFamily<IntGauge>,
     color_errors: ColorFamily<Counter>,
-    temperature: BoardFamily<Gauge>,
-    humidity: BoardFamily<Gauge>,
+    temperature: BoardFamily<FixedGauge<Decimal>>,
+    humidity: BoardFamily<FixedGauge<Decimal>>,
     temp_rh_errors: BoardFamily<Counter>,
-    sound_level: BoardFamily<Gauge>,
+    sound_level: BoardFamily<FixedGauge<Decimal>>,
     sound_errors: BoardFamily<Counter>,
     scrapes: BoardFamily<Counter>,
     pushes: BoardFamily<Counter>,
@@ -758,9 +776,9 @@ impl Exporter {
             if let Some(errors) = metrics.capacitance_errors.register(labels()) {
                 errors.fetch_add(usize::from(reading.is_none()));
             }
-            if let (Some(reading), Some(gauge)) = (reading, metrics.capacitance.register(labels()))
-            {
-                gauge.set_value(f64::from(reading.picofarads) * 1e-12);
+            let farads = reading.and_then(|reading| fixed(reading.picofarads * 1e-12));
+            if let (Some(farads), Some(gauge)) = (farads, metrics.capacitance.register(labels())) {
+                gauge.set_value(farads);
             }
         });
     }
@@ -797,7 +815,7 @@ impl Exporter {
     /// fails.
     async fn read_temp_rh(
         &mut self,
-        gauge: impl FnOnce(&Metrics) -> &BoardFamily<Gauge>,
+        gauge: impl FnOnce(&Metrics) -> &BoardFamily<FixedGauge<Decimal>>,
         value: impl FnOnce(TempRh) -> f32,
     ) {
         let reading = match self.temp_rh {
@@ -813,8 +831,9 @@ impl Exporter {
         );
         self.metrics.with(|metrics| {
             let gauge = gauge(metrics).register(BoardLabels(self.board));
-            if let (Some(reading), Some(gauge)) = (reading, gauge) {
-                gauge.set_value(value(reading).into());
+            let value = reading.and_then(|reading| fixed(value(reading)));
+            if let (Some(value), Some(gauge)) = (value, gauge) {
+                gauge.set_value(value);
             }
         });
     }
@@ -825,8 +844,9 @@ impl Exporter {
         self.count(|metrics| &metrics.sound_errors, usize::from(level.is_err()));
         self.metrics.with(|metrics| {
             let gauge = metrics.sound_level.register(BoardLabels(self.board));
-            if let (Ok(level), Some(gauge)) = (level, gauge) {
-                gauge.set_value(level.leq.into());
+            let leq = level.ok().and_then(|level| fixed(level.leq));
+            if let (Some(leq), Some(gauge)) = (leq, gauge) {
+                gauge.set_value(leq);
             }
         });
     }

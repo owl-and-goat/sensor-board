@@ -498,7 +498,13 @@ A board without a configuration is taken to be on aux power. It reads no
 sensors, so it serves only the firmware build and the scrape counter, and it
 registers its endpoint like any other board on aux power.
 
-The metric types come from tinymetrics, and the HTTP from nanofish.
+The metric types come from tinymetrics, and the HTTP from nanofish. The
+firmware uses Aspen's fork of tinymetrics (`glittershark/tinymetrics`,
+branch `fixed`), which adds `FixedGauge`: a gauge that holds a fixed-point
+number from the `fixed` crate. The temperature, humidity, sound and
+capacitance gauges use it. tinymetrics' own `Gauge` holds an `f64`, and the
+code that formats an `f64` took about 10 K of flash (measured on
+2026-10-18).
 `firmware/src/http.rs` runs nanofish on the Thread TCP connection: one
 request and one response per connection. The handler for a scrape request is
 `Scrape` in `metrics.rs`. To add a sensor, add it to `SENSORS` and to the

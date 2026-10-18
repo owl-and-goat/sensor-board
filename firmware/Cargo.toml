@@ -50,9 +50,13 @@ bitvec = { version = "1.1", default-features = false }
 device-driver = { version = "2.1.1", features = ["defmt", "macros"] }
 embedded-hal = "1.0.0"
 
-# Prometheus metrics in the text format. Not released on crates.io. The
-# default features add timestamps, which need a clock the board does not have.
-tinymetrics = { git = "https://github.com/hawkw/tinymetrics.git", rev = "58a73feea1c94b858313e40dce0248f669a1c4f0", default-features = false }
+# Prometheus metrics in the text format, from Aspen's fork, which adds a gauge
+# for fixed-point numbers (see "Metrics" in AGENTS.md). Not released on
+# crates.io. The default features add timestamps, which need a clock the board
+# does not have.
+tinymetrics = { git = "https://github.com/glittershark/tinymetrics.git", rev = "552b01237c13818d376e43cd0e1339e157ab98bd", default-features = false, features = ["fixed"] }
+# The fixed-point numbers for the gauges.
+fixed = { version = "1.31", default-features = false }
 # HTTP for the scrape endpoint and for pushes. It runs on any embedded-io-async
 # stream, which http.rs implements for the Thread TCP connection.
 nanofish = "0.13.0"
