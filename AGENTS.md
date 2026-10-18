@@ -417,6 +417,12 @@ once and discovery requests did not make a restarted board do it again. The
 three boards that had been updated through a board that morning kept
 working.
 
+Seen again on 2026-10-18, on board 4C0045. It restarted into an image from
+`just push` at 10:43, and Prometheus last scraped it at 11:06, 23 minutes
+later. `network show` through the border router did not list it. A power
+cycle brought it back at 11:22. Nothing was read from the board while it was
+silent.
+
 ## Sensor reports
 
 `firmware/src/report.rs` multicasts a `protocol::Report` to every board
