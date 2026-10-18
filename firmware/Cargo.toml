@@ -70,11 +70,11 @@ git = "https://github.com/glittershark/embassy.git"
 rev = "ebbabe3b4c979d0c9815b663649c5b85c59dfd30"
 features = ["defmt", "stm32wb55cg", "wb55_thread"]
 
-# embassy-stm32 0.6.0 with the patch in patches/, which makes Stop mode work on
-# the STM32WB (see "Boards on battery" in AGENTS.md). `just embassy-stm32`
-# creates the directory, and every recipe that builds the firmware runs it.
+# embassy-stm32 0.6.0 with the fixes that make Stop mode work on the STM32WB
+# (see "Stop mode" under "Boards on battery" in AGENTS.md).
+# https://github.com/glittershark/embassy/tree/wb55-stop
 [patch.crates-io]
-embassy-stm32 = { path = "../.cache/embassy-stm32" }
+embassy-stm32 = { git = "https://github.com/glittershark/embassy.git", rev = "f5fbbd22b7086ee5f0fd9f0ed12e1388e8e7c809" }
 
 [profile.release]
 debug = 2

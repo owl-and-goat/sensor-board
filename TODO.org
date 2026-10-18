@@ -188,9 +188,8 @@ sensors between polls.
 * Embassy: bugs to send upstream
 all of these are in embassy-stm32, for the stm32wb, and were found while
 making a board on battery stop (see "Stop mode" and "The SMPS" in
-=AGENTS.md=). our fixes are in
-=firmware/patches/embassy-stm32-stm32wb-stop.patch=, which is against the
-0.6.0 release. upstream's main was read on 2026-10-11: where an entry says
+=AGENTS.md=). our fixes are on the =wb55-stop= branch of the fork
+(github.com/glittershark/embassy), which starts from the 0.6.0 release. upstream's main was read on 2026-10-11: where an entry says
 "still on main", the code there had the same fault that day, but the code
 around it has changed, so each fix has to be redone on main. every fix was
 run on board 4B002E. one pull request per entry is probably easiest to
@@ -251,11 +250,6 @@ firmware turns it off itself (=stop_unused_clocks=). not checked on main.
   in use at all, because embassy counts them against stop 2
   (=enable_and_reset_without_stop= in =src/rcc/mod.rs=). st's applications
   use stop 2 with the ipcc.
-** TODO afterwards: use the fork in place of the patch file
-once the fixes are on a branch of the fork (from the =embassy-stm32-v0.6.0=
-tag, because the fork's thread support uses released crates): point
-=[patch.crates-io]= in =firmware/Cargo.toml= at that revision, and drop the
-=embassy-stm32= recipe from the =Justfile= and the patch file.
 * Rev. 2
 ** TODO fix the pin numbering for the color sensor footprint
 half of them are the wrong way gdi

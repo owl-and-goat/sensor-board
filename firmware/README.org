@@ -22,14 +22,11 @@ no board is attached. to flash only the firmware through the probe and
 watch the board's log (the bootloader has to be on the board already):
 
 #+begin_src sh
-  just embassy-stm32          # once per checkout: unpack embassy-stm32 and patch it
   cargo run --release         # flash, reset, stay attached (ctrl-c to leave)
 #+end_src
 
-the firmware builds against embassy-stm32 0.6.0 with
-=patches/embassy-stm32-stm32wb-stop.patch= applied, which =just
-embassy-stm32= puts in =../.cache/embassy-stm32=. the =just= recipes above do
-that themselves.
+the firmware builds against embassy-stm32 0.6.0 with the fixes for stop
+mode, from the =wb55-stop= branch of github.com/glittershark/embassy.
 
 ** firmware updates
 

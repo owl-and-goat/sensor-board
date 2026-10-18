@@ -58,13 +58,14 @@ such a shell has `probe-rs`, but neither `just` nor `dfu-util`. In that case,
 run recipes from the top of the repository with
 `nix-shell --run 'just <recipe>'`.
 
-`firmware/Cargo.toml` takes embassy-stm32 from `.cache/embassy-stm32`, which
-is not in the repository. It is the released 0.6.0 with
-`firmware/patches/embassy-stm32-stm32wb-stop.patch` applied (see "Stop mode"
-under "Boards on battery"). `just embassy-stm32` downloads the crate, checks
-it and applies the patch, and every recipe that builds the firmware runs
-that first. A `cargo` command in `firmware/` fails until it has run once in
-the checkout, and after the patch changes it has to run again.
+`firmware/Cargo.toml` takes embassy-stm32 from the `wb55-stop` branch of
+Aspen's fork of embassy (github.com/glittershark/embassy), which is the
+released 0.6.0 with the fixes that make Stop mode work (see "Stop mode"
+under "Boards on battery"). embassy-stm32-wpan comes from the `wb55-thread`
+branch of the same fork. Each branch has a "NOT FOR UPSTREAM" commit that
+replaces the path dependencies with released crates, so that the firmware
+gets a single copy of each embassy crate. To change embassy-stm32, commit to
+`wb55-stop`, push it, and update the `rev` in `firmware/Cargo.toml`.
 
 ## probe-rs
 
@@ -868,8 +869,8 @@ guard that keeps the executor from stopping.
   (`enable_debug_during_sleep`), which cost most of what stopping saves.
   `probe-rs attach` to such a board still read its log buffer, in pieces.
 
-embassy-stm32 0.6.0 needs `firmware/patches/embassy-stm32-stm32wb-stop.patch`
-for this. Each of these kept the firmware from working with Stop mode:
+embassy-stm32 0.6.0 needs the fixes on the fork's `wb55-stop` branch for
+this. Each of these kept the firmware from working with Stop mode:
 
 - The stop sequence used the wrong semaphores. ST numbers them from 0, as
   the registers are numbered, and the driver's channels start at 1, so
@@ -877,7 +878,7 @@ for this. Each of these kept the firmware from working with Stop mode:
   one that guards flash operations (`radio_flash.rs`).
 - It released semaphore 4 before the chip stopped. ST's sequence keeps it
   until the core wakes.
-- Nothing restored the clocks after a stop. The patch turns on what was on
+- Nothing restored the clocks after a stop. The fix turns on what was on
   before (HSE, the PLLs, MSI) and switches the system clock back, under
   semaphore 3. It does not use embassy's full clock setup, which goes
   through MSI at 4 MHz: CPU2 is clocked from the system clock too. Without
@@ -893,8 +894,9 @@ for this. Each of these kept the firmware from working with Stop mode:
   SMPS").
 
 embassy's main branch, read on 2026-10-11, no longer stops with the time
-driver running. The others are still as in 0.6.0. The patch is against
-the release, because the fork with the Thread support uses released crates.
+driver running. The others are still as in 0.6.0. The `wb55-stop` branch
+starts from the release, because the fork with the Thread support uses
+released crates.
 
 The firmware image grew by 10.9 K with this, to 209,280 bytes. With the
 HTTP crate and the supply monitor merged in, it is 219,736 bytes, which
@@ -915,8 +917,8 @@ production calibration, and 80 mA at its start.
 - At 1.40 V the radio sends with at most 3.7 dBm (ST's `app_entry.c`).
 - In Stop 1 and Stop 2 the chip takes the converter out of the circuit by
   itself and puts it back afterwards. ST's stop sequence does not touch it.
-  embassy-stm32 turned it off before every stop and left it off, which the
-  patch removes.
+  embassy-stm32 turned it off before every stop and left it off. The fork
+  no longer does.
 - Nothing switches it to bypass when the supply gets low. That takes a
   higher brown-out level, which is an option byte.
 - Boards on aux power do not start it yet. It has only been tried on one
