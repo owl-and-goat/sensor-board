@@ -16,11 +16,11 @@ use protocol::{
     FinishInstall, FinishUpdate, FirmwareStatus, GetBoardConfig, GetBoardInfo, GetBuildCommit,
     GetCoprocessorStatus, GetDeviceMode, GetFirmwareStatus, GetMetrics, GetNetworkAddresses,
     GetNetworkDataset, GetNetworkNeighbors, GetNetworkStatus, GetOfferProgress, GetRegistration,
-    ImageChunk, ImageSize, JoinNetwork, LeaveNetwork, MeasureTempRh, Member, NeighborTable,
-    NetworkError, NetworkStatus, OfferProgress, ReadCapacitance, Registration, Report,
-    ReportReceived, SLEEPY_POLL_PERIOD, SetBoardConfig, StartCollecting, StartOffering,
-    StopCollecting, StopOffering, TempRhReq, TempRhResult, USB_PID, USB_VID, UninstallStack,
-    UpdateImage, UpdateResult, WriteInstall, WriteUpdate,
+    GetRunningBuilds, ImageChunk, ImageSize, JoinNetwork, LeaveNetwork, MeasureTempRh, Member,
+    NeighborTable, NetworkError, NetworkStatus, OfferProgress, ReadCapacitance, Registration,
+    RunningBuilds, SLEEPY_POLL_PERIOD, SetBoardConfig, StartOffering, StopOffering, TempRhReq,
+    TempRhResult, USB_PID, USB_VID, UninstallStack, UpdateImage, UpdateResult, WriteInstall,
+    WriteUpdate,
 };
 
 /// Timeout for a call to a board. The slowest call is a configuration
@@ -166,25 +166,6 @@ impl Board {
         self.network_result(result)
     }
 
-    /// Subscribe to the reports that the board forwards. It forwards none
-    /// until it is told to collect.
-    pub async fn reports(&self) -> Result<MultiSubscription<Report>> {
-        let subscription = self.client.subscribe_multi::<ReportReceived>(64).await;
-        subscription.map_err(|_| anyhow!("board {} is gone", self.serial))
-    }
-
-    /// Tell the board to receive the reports that boards on its network
-    /// send, including its own, and forward them.
-    pub async fn start_collecting(&self) -> Result<()> {
-        let result = self.call::<StartCollecting>(&()).await?;
-        self.network_result(result)
-    }
-
-    pub async fn stop_collecting(&self) -> Result<()> {
-        let result = self.call::<StopCollecting>(&()).await?;
-        self.network_result(result)
-    }
-
     /// The board's IPv6 unicast addresses.
     pub async fn addresses(&self) -> Result<Addresses> {
         let result = self.call::<GetNetworkAddresses>(&()).await?;
@@ -320,6 +301,18 @@ impl Board {
         let answer = self.client.send_resp::<GetOfferProgress>(&());
         match tokio::time::timeout(TIMEOUT, answer).await {
             Ok(Ok(progress)) => Ok(Some(progress)),
+            Ok(Err(HostErr::Wire(WireError::UnknownKey))) => Ok(None),
+            Ok(Err(e)) => bail!("board {}: could not tell: {e:?}", self.serial),
+            Err(_) => bail!("board {} did not answer", self.serial),
+        }
+    }
+
+    /// The builds that the boards which received this board's offer run.
+    /// `None` from a board whose firmware predates the endpoint.
+    pub async fn running_builds(&self) -> Result<Option<RunningBuilds>> {
+        let answer = self.client.send_resp::<GetRunningBuilds>(&());
+        match tokio::time::timeout(TIMEOUT, answer).await {
+            Ok(Ok(builds)) => Ok(Some(builds)),
             Ok(Err(HostErr::Wire(WireError::UnknownKey))) => Ok(None),
             Ok(Err(e)) => bail!("board {}: could not tell: {e:?}", self.serial),
             Err(_) => bail!("board {} did not answer", self.serial),

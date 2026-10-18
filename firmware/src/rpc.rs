@@ -23,16 +23,15 @@ use protocol::{
     ENDPOINT_LIST, EnterBootloader, FinishInstall, FinishUpdate, FirmwareStatus, GetBoardConfig,
     GetBoardInfo, GetBuildCommit, GetCoprocessorStatus, GetDeviceMode, GetFirmwareStatus,
     GetMetrics, GetNetworkAddresses, GetNetworkDataset, GetNetworkNeighbors, GetNetworkStatus,
-    GetOfferProgress, GetRegistration, ImageChunk, ImageSize, JoinNetwork, LeaveNetwork,
-    MeasureTempRh, Member, MetricsChunk, NeighborsResult, NetworkResult, NetworkStatus,
-    OfferProgress, ReadCapacitance, Registration, Report, ReportReceived, SensorReadError,
-    SetBoardConfig, StartCollecting, StartOffering, StopCollecting, StopOffering, TOPICS_IN_LIST,
-    TOPICS_OUT_LIST, TempRhReq, TempRhResult, UninstallStack, UpdateImage, UpdateResult,
-    WriteInstall, WriteUpdate,
+    GetOfferProgress, GetRegistration, GetRunningBuilds, ImageChunk, ImageSize, JoinNetwork,
+    LeaveNetwork, MeasureTempRh, Member, MetricsChunk, NeighborsResult, NetworkResult,
+    NetworkStatus, OfferProgress, ReadCapacitance, Registration, RunningBuilds, SensorReadError,
+    SetBoardConfig, StartOffering, StopOffering, TOPICS_IN_LIST, TOPICS_OUT_LIST, TempRhReq,
+    TempRhResult, UninstallStack, UpdateImage, UpdateResult, WriteInstall, WriteUpdate,
 };
 
 use crate::{
-    board_config, coprocessor, dfu, discovery, metrics, report,
+    board_config, coprocessor, dfu, discovery, metrics,
     sensor::{self, capacitance, temp_rh},
     thread, update, usb,
 };
@@ -43,7 +42,6 @@ pub struct Context {
     pub coprocessor: coprocessor::Handle,
     pub bootloader: dfu::Handle,
     pub update: update::Handle,
-    pub reports: report::Handle,
     pub config: board_config::Handle,
     pub metrics: metrics::Handle,
     pub discovery: discovery::Handle,
@@ -78,8 +76,6 @@ define_dispatch! {
         | UninstallStack       | async    | uninstall_stack    |
         | ReadCapacitance      | async    | read_capacitance   |
         | MeasureTempRh        | async    | measure_temp_rh    |
-        | StartCollecting      | async    | start_collecting   |
-        | StopCollecting       | async    | stop_collecting    |
         | GetFirmwareStatus    | blocking | firmware_status    |
         | BeginUpdate          | async    | begin_update       |
         | WriteUpdate          | async    | write_update       |
@@ -88,6 +84,7 @@ define_dispatch! {
         | StartOffering        | async    | start_offering     |
         | StopOffering         | async    | stop_offering      |
         | GetOfferProgress     | blocking | offer_progress     |
+        | GetRunningBuilds     | blocking | running_builds     |
         | GetBoardConfig       | async    | board_config       |
         | SetBoardConfig       | async    | set_board_config   |
         | GetNetworkAddresses  | async    | network_addresses  |
@@ -123,27 +120,15 @@ pub fn server(spawner: Spawner, link: usb::Link, context: Context) -> (Server, P
     (server, publisher)
 }
 
-/// Publishes the topics of the `protocol` crate to the host. Each task that
-/// publishes has its own clone.
-#[derive(Clone)]
+/// Publishes the topics of the `protocol` crate to the host.
 pub struct Publisher {
     sender: server::Sender<usb::Tx>,
     sequence: u16,
 }
 
 impl Publisher {
-    /// Forward a report to the host. Delivery is not confirmed: if no host
-    /// is listening, the report is lost.
-    pub async fn report_received(&mut self, report: &Report) {
-        let sequence = self.next_sequence();
-        let sent = self.sender.publish::<ReportReceived>(sequence, report);
-        if sent.await.is_err() {
-            defmt::debug!("rpc: no host took a report");
-        }
-    }
-
     /// Forward a board's discovery reply to the host. Delivery is not
-    /// confirmed either.
+    /// confirmed: if no host is listening, the reply is lost.
     pub async fn board_discovered(&mut self, member: &Member) {
         let sequence = self.next_sequence();
         let sent = self.sender.publish::<BoardDiscovered>(sequence, member);
@@ -290,6 +275,10 @@ fn offer_progress(context: &mut Context, _header: VarHeader, (): ()) -> OfferPro
     context.update.offer_progress()
 }
 
+fn running_builds(context: &mut Context, _header: VarHeader, (): ()) -> RunningBuilds {
+    context.update.running_builds()
+}
+
 async fn board_config(
     context: &mut Context,
     _header: VarHeader,
@@ -304,14 +293,6 @@ async fn set_board_config(
     config: ConfigFor,
 ) -> ConfigResult {
     context.config.set(config).await
-}
-
-async fn start_collecting(context: &mut Context, _header: VarHeader, (): ()) -> NetworkResult {
-    context.reports.collect(true).await
-}
-
-async fn stop_collecting(context: &mut Context, _header: VarHeader, (): ()) -> NetworkResult {
-    context.reports.collect(false).await
 }
 
 async fn read_capacitance(

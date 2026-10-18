@@ -8,7 +8,6 @@ mod discovery;
 mod firmware;
 mod mdns;
 mod network;
-mod reports;
 
 use std::path::PathBuf;
 
@@ -43,10 +42,6 @@ enum Command {
     Bootloader(Target),
     #[command(subcommand)]
     Sensor(SensorCommand),
-    /// Receive the sensor reports that boards send over their network, through a board that
-    /// stays attached
-    #[command(subcommand)]
-    Reports(ReportsCommand),
     /// Inspect a board's Prometheus metrics
     #[command(subcommand)]
     Metrics(MetricsCommand),
@@ -120,12 +115,6 @@ enum FirmwareCommand {
         )]
         border_router: Option<String>,
     },
-}
-
-#[derive(Subcommand)]
-enum ReportsCommand {
-    /// Print the reports as they arrive
-    Watch(Target),
 }
 
 #[derive(Subcommand)]
@@ -448,9 +437,6 @@ async fn main() -> Result<()> {
             border_router,
             target,
         }) => discovery::show(target.board.as_deref(), border_router.as_deref()).await,
-        Command::Reports(ReportsCommand::Watch(target)) => {
-            reports::watch(target.board.as_deref()).await
-        }
         Command::Metrics(MetricsCommand::Show(target)) => {
             print!("{}", target.board().await?.metrics().await?);
             Ok(())

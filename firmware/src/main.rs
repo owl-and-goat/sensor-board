@@ -13,7 +13,6 @@ mod metrics;
 mod persistent_config;
 mod power;
 mod radio_flash;
-mod report;
 mod request;
 mod rpc;
 mod sensor;
@@ -177,11 +176,6 @@ async fn bootloader(task: dfu::Task) -> ! {
 }
 
 #[embassy_executor::task]
-async fn reports(task: report::Task, publisher: Option<rpc::Publisher>) -> ! {
-    task.run(publisher).await
-}
-
-#[embassy_executor::task]
 async fn discovery(task: discovery::Task, publisher: Option<rpc::Publisher>) -> ! {
     task.run(publisher).await
 }
@@ -228,12 +222,8 @@ async fn main(spawner: Spawner) {
 
     // The configuration is read first, because the clocks depend on the
     // power mode.
-    let (
-        config_handle,
-        config_eraser,
-        config_service,
-        [metrics_config, report_config, power_config],
-    ) = board_config::init();
+    let (config_handle, config_eraser, config_service, [metrics_config, power_config]) =
+        board_config::init();
     let (power_mode, power_task) = power::init(power_config);
 
     let mut config = Config::default();
@@ -266,7 +256,7 @@ async fn main(spawner: Spawner) {
 
     let (update_handle, update_service) = update::init();
     spawner.spawn(power(power_task).unwrap());
-    let (coprocessor_task, coprocessor_handle, thread_handle, sockets, tcp) =
+    let (coprocessor_task, coprocessor_handle, thread_handle, discovery_socket, tcp) =
         coprocessor::Builder {
             ipcc: p.IPCC,
             flash: p.FLASH,
@@ -343,18 +333,8 @@ async fn main(spawner: Spawner) {
     static MIC: StaticCell<sensor::Shared<Mic<'static>>> = StaticCell::new();
     let mic = &*MIC.init(Mutex::new(Mic::new(pdm)));
 
-    let (report_task, report_handle) = report::Builder {
-        socket: sockets.reports,
-        config: report_config,
-        capacitance,
-        color,
-        temp_rh,
-        mic,
-    }
-    .init();
-
     let (discovery_task, discovery_handle) = discovery::Builder {
-        socket: sockets.discovery,
+        socket: discovery_socket,
         network: thread_handle.monitor(),
     }
     .init();
@@ -375,7 +355,6 @@ async fn main(spawner: Spawner) {
         thread: thread_handle,
         coprocessor: coprocessor_handle,
         bootloader: bootloader_handle,
-        reports: report_handle,
         update: update_handle,
         config: config_handle,
         metrics: metrics_handle,
@@ -388,7 +367,6 @@ async fn main(spawner: Spawner) {
         spawner.spawn(rpc(server).unwrap());
         publisher
     });
-    spawner.spawn(reports(report_task, publisher.clone()).unwrap());
     spawner.spawn(discovery(discovery_task, publisher).unwrap());
 
     let button_task = button::Builder {

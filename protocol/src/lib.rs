@@ -7,12 +7,15 @@ mod max_len;
 
 use core::{fmt, net::Ipv6Addr, str::FromStr, time::Duration};
 
-use postcard_rpc::{Key, Topic, TopicDirection, endpoints, topics};
+use postcard_rpc::{Key, TopicDirection, endpoints, topics};
 use postcard_schema::Schema;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
-pub use board_config::{BoardConfig, DEFAULT_SOUND_DURATION, SOUND_DURATIONS, PowerMode, Sensor, SensorConfig, SensorsConfig};
+pub use board_config::{
+    BoardConfig, DEFAULT_SOUND_DURATION, PowerMode, SOUND_DURATIONS, Sensor, SensorConfig,
+    SensorsConfig,
+};
 
 /// USB IDs of a board running the firmware. This is the pid.codes test PID, which is for private
 /// testing only: by its terms it must not be on a board that is redistributed, sold or
@@ -38,8 +41,6 @@ endpoints! {
     | UninstallStack       | ()                 | CoprocessorResult | "coprocessor/uninstall"      |
     | ReadCapacitance      | CapacitanceChannel | CapacitanceResult | "sensor/capacitance"         |
     | MeasureTempRh        | TempRhReq          | TempRhResult      | "sensor/temp-rh"             |
-    | StartCollecting      | ()                 | NetworkResult     | "reports/collect/start"      |
-    | StopCollecting       | ()                 | NetworkResult     | "reports/collect/stop"       |
     | GetFirmwareStatus    | ()                 | FirmwareStatus    | "firmware/status"            |
     | BeginUpdate          | UpdateImage        | UpdateResult      | "firmware/update/begin"      |
     | WriteUpdate          | ImageChunk         | UpdateResult      | "firmware/update/write"      |
@@ -48,6 +49,7 @@ endpoints! {
     | StartOffering        | ()                 | UpdateResult      | "firmware/offer/start"       |
     | StopOffering         | ()                 | UpdateResult      | "firmware/offer/stop"        |
     | GetOfferProgress     | ()                 | OfferProgress     | "firmware/offer/progress"    |
+    | GetRunningBuilds     | ()                 | RunningBuilds     | "firmware/offer/builds"      |
     | GetBoardConfig       | BoardId            | BoardConfigResult | "config/get"                 |
     | SetBoardConfig       | ConfigFor          | ConfigResult      | "config/set"                 |
     | GetNetworkAddresses  | ()                 | AddressesResult   | "network/addresses"          |
@@ -70,7 +72,6 @@ topics! {
     direction = TopicDirection::ToClient;
     | TopicTy         | MessageTy | Path                 | Cfg |
     | -------         | --------- | ----                 | --- |
-    | ReportReceived  | Report    | "reports/received"   |     |
     | BoardDiscovered | Member    | "network/discovered" |     |
 }
 
@@ -599,26 +600,6 @@ pub struct Capacitance {
 
 pub type CapacitanceResult = Result<Capacitance, SensorReadError>;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Schema)]
-#[cfg_attr(feature = "defmt", derive(defmt::Format))]
-pub struct SensorValue {
-    pub value: u32,
-}
-
-impl From<u32> for SensorValue {
-    fn from(value: u32) -> Self {
-        Self { value }
-    }
-}
-
-impl From<u16> for SensorValue {
-    fn from(value: u16) -> Self {
-        Self {
-            value: value.into(),
-        }
-    }
-}
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Schema, Error)]
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]
 pub enum SensorReadError {
@@ -665,8 +646,6 @@ pub enum SensorReadError {
     #[error("Microphone Overrun")]
     MicOverrun,
 }
-
-pub type SensorReadResult = Result<SensorValue, SensorReadError>;
 
 /// How the temperature & humidity sensor is to measure.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Schema)]
@@ -772,60 +751,6 @@ impl FromStr for BoardId {
             *byte = u8::from_str_radix(&s[2 * i..2 * i + 2], 16).map_err(|_| ParseBoardIdError)?;
         }
         Ok(BoardId(id))
-    }
-}
-
-/// A board's periodic report of its readings. Every board multicasts one to
-/// its network at intervals. A board that has been told to collect
-/// ([`StartCollecting`]) forwards the reports it receives, including its
-/// own, to the host ([`ReportReceived`]).
-#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize, Schema)]
-#[cfg_attr(feature = "defmt", derive(defmt::Format))]
-pub struct Report {
-    pub board: BoardId,
-    /// The firmware the board runs.
-    pub firmware: BuildId,
-    /// Starts at 0 when the board starts, and increases by one with each
-    /// report. A gap shows the collector that a report was lost, and a reset
-    /// to 0 that the board restarted.
-    pub sequence: u32,
-    pub readings: Readings,
-}
-
-/// The readings in a [`Report`]: one for every sensor that has a driver.
-#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize, Schema)]
-#[cfg_attr(feature = "defmt", derive(defmt::Format))]
-pub struct Readings {
-    /// The four channels of the capacitance sensor.
-    pub capacitance: [CapacitanceResult; 4],
-    /// The color sensor's channels: red, green, blue, white, infrared.
-    pub color: [SensorReadResult; 5],
-    /// The temperature & humidity sensor, at high precision, unheated.
-    pub temp_rh: TempRhResult,
-    /// The microphone, over a second.
-    pub sound: SoundLevelResult,
-}
-
-impl Report {
-    /// The longest encoded report that boards send each other.
-    pub const MAX_LEN: usize = 256;
-
-    /// Encode the report as boards send it to each other: the key of
-    /// [`ReportReceived`], which is derived from the layout of this type,
-    /// then the postcard encoding. `None` if `buf` is too short.
-    pub fn encode<'a>(&self, buf: &'a mut [u8]) -> Option<&'a [u8]> {
-        encode_with_prefix(&Self::key(), self, buf)
-    }
-
-    /// Decode a report. `None` if `bytes` was not encoded with this layout,
-    /// so a report from a firmware with a different layout is rejected
-    /// instead of misread.
-    pub fn decode(bytes: &[u8]) -> Option<Report> {
-        decode_with_prefix(&Self::key(), bytes)
-    }
-
-    fn key() -> [u8; 8] {
-        <ReportReceived as Topic>::TOPIC_KEY.to_bytes()
     }
 }
 
@@ -1007,6 +932,27 @@ pub struct Fetcher {
     pub received: u32,
 }
 
+/// The builds that the boards which received the offer of a board run, as
+/// they have told it ([`UpdateMessage::Running`]) since it started to offer.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, Schema)]
+#[cfg_attr(feature = "defmt", derive(defmt::Format))]
+pub struct RunningBuilds {
+    /// One entry for each board, with the build it last told. A board that
+    /// does not fit is left out.
+    pub boards: heapless::Vec<RunningBuild, { RunningBuilds::MAX_BOARDS }>,
+}
+
+impl RunningBuilds {
+    pub const MAX_BOARDS: usize = 16;
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Schema)]
+#[cfg_attr(feature = "defmt", derive(defmt::Format))]
+pub struct RunningBuild {
+    pub board: BoardId,
+    pub build: BuildId,
+}
+
 /// The UDP port of [`UpdateMessage`]. A board sends its requests to this port
 /// at the address an offer came from, so a host that offers an image has to
 /// send the offer from this port.
@@ -1045,6 +991,13 @@ pub enum UpdateMessage {
     /// board whose firmware only has those neither sends nor decodes it.
     Fetching {
         board: BoardId,
+    },
+    /// Sent by a board in reply to every offer it receives, whether it
+    /// fetches the image or not, to tell the offering board which build it
+    /// runs. A board whose firmware predates this variant does not send it.
+    Running {
+        board: BoardId,
+        build: BuildId,
     },
 }
 
@@ -1455,60 +1408,9 @@ mod tests {
         assert!(13 + message.len() <= 1024, "{} bytes", message.len());
     }
 
-    fn report() -> Report {
-        Report {
-            board: BoardId([
-                0x4b, 0x00, 0x41, 0x00, 0x03, 0x50, 0x47, 0x55, 0x32, 0x30, 0x31, 0x20,
-            ]),
-            firmware: BuildId(u32::MAX),
-            sequence: u32::MAX,
-            readings: Readings {
-                capacitance: [
-                    Ok(Capacitance { picofarads: -12.5 }),
-                    Ok(Capacitance { picofarads: 0.0 }),
-                    Err(SensorReadError::Nack),
-                    Err(SensorReadError::WatchdogTimeoutError),
-                ],
-                color: [
-                    Ok(SensorValue {
-                        value: u32::from(u16::MAX),
-                    }),
-                    Ok(SensorValue { value: 0 }),
-                    Err(SensorReadError::DataInvalid),
-                    Err(SensorReadError::OutOfRange),
-                    Err(SensorReadError::Nack),
-                ],
-                temp_rh: Ok(TempRh {
-                    temperature: -45.0,
-                    humidity: 119.0,
-                }),
-                sound: Ok(SoundLevel { leq: 122.5 }),
-            },
-        }
-    }
-
-    #[test]
-    fn report_round_trips() {
-        let mut buf = [0; Report::MAX_LEN];
-        let encoded = report().encode(&mut buf).unwrap();
-        assert_eq!(Report::decode(encoded), Some(report()));
-    }
-
-    #[test]
-    fn report_with_other_layout_is_rejected() {
-        let mut buf = [0; Report::MAX_LEN];
-        let encoded = report().encode(&mut buf).unwrap();
-        let mut other = encoded.to_vec();
-        other[0] ^= 1;
-        assert_eq!(Report::decode(&other), None);
-        assert_eq!(Report::decode(&encoded[..encoded.len() - 1]), None);
-        assert_eq!(Report::decode(&[]), None);
-    }
-
-    #[test]
-    fn report_encode_fails_on_short_buffer() {
-        assert_eq!(report().encode(&mut [0; 16]), None);
-    }
+    const BOARD: BoardId = BoardId([
+        0x4b, 0x00, 0x41, 0x00, 0x03, 0x50, 0x47, 0x55, 0x32, 0x30, 0x31, 0x20,
+    ]);
 
     #[test]
     fn update_messages_round_trip() {
@@ -1526,7 +1428,11 @@ mod tests {
             build: BuildId(7),
             offset: 192,
         };
-        for message in [UpdateMessage::Offer(image), request, chunk] {
+        let running = UpdateMessage::Running {
+            board: BOARD,
+            build: BuildId(u32::MAX),
+        };
+        for message in [UpdateMessage::Offer(image), request, chunk, running] {
             let mut buf = [0; UpdateMessage::MAX_LEN];
             let encoded = message.encode(&mut buf).unwrap();
             assert_eq!(UpdateMessage::decode(encoded), Some(message));
@@ -1568,13 +1474,22 @@ mod tests {
             board: BoardId(*b"0123456789ab"),
         };
         assert_eq!(fetching.encode(&mut buf).unwrap(), b"SBU1\x030123456789ab");
+
+        let running = UpdateMessage::Running {
+            board: BoardId(*b"0123456789ab"),
+            build: BuildId(1),
+        };
+        assert_eq!(
+            running.encode(&mut buf).unwrap(),
+            b"SBU1\x040123456789ab\x01"
+        );
     }
 
     /// A board whose firmware lacks a variant cannot decode a message of
     /// that variant.
     #[test]
     fn update_message_with_unknown_variant_is_rejected() {
-        assert_eq!(UpdateMessage::decode(b"SBU1\x040123456789ab"), None);
+        assert_eq!(UpdateMessage::decode(b"SBU1\x05\x01"), None);
     }
 
     #[test]
@@ -1601,12 +1516,12 @@ mod tests {
 
     #[test]
     fn board_id_displays_as_usb_serial() {
-        assert_eq!(report().board.to_string(), "4B0041000350475532303120");
+        assert_eq!(BOARD.to_string(), "4B0041000350475532303120");
     }
 
     #[test]
     fn board_id_parses_its_display_form() {
-        let board = report().board;
+        let board = BOARD;
         assert_eq!("4B0041000350475532303120".parse(), Ok(board));
         assert_eq!("4b0041000350475532303120".parse(), Ok(board));
         assert_eq!("4B00".parse::<BoardId>(), Err(ParseBoardIdError));
@@ -1639,7 +1554,7 @@ mod tests {
 
     #[test]
     fn config_messages_round_trip() {
-        let board = report().board;
+        let board = BOARD;
         let messages = [
             ConfigMessage::Get { board, question: 0 },
             ConfigMessage::Set {
@@ -1668,7 +1583,7 @@ mod tests {
     #[test]
     fn longest_config_message_fits() {
         let longest = ConfigMessage::Has {
-            board: report().board,
+            board: BOARD,
             question: u32::MAX,
             config: Some(longest_config()),
         };
@@ -1679,7 +1594,7 @@ mod tests {
     #[test]
     fn config_message_with_other_layout_is_rejected() {
         let message = ConfigMessage::Get {
-            board: report().board,
+            board: BOARD,
             question: 0,
         };
         let mut buf = [0; ConfigMessage::MAX_LEN];
@@ -1703,7 +1618,7 @@ mod tests {
             addresses.addresses.push(address).unwrap();
         }
         Member {
-            board: report().board,
+            board: BOARD,
             rloc16: u16::MAX,
             addresses,
         }

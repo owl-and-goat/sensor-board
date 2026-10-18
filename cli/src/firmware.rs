@@ -11,9 +11,8 @@ use std::{
 
 use anyhow::{Context, Result, bail};
 use indicatif::{MultiProgress, ProgressBar, ProgressDrawTarget, ProgressStyle};
-use postcard_rpc::host_client::{MultiSubRxError, MultiSubscription};
 use protocol::{
-    BoardId, BuildId, BuildMarker, Fetcher, ImageChunk, ImageDigest, ImageSize, Report,
+    BoardId, BuildId, BuildMarker, Fetcher, ImageChunk, ImageDigest, ImageSize, RunningBuild,
     SLEEPY_POLL_PERIOD, UPDATE_PORT, UpdateImage, UpdateMessage, UpdateStatus,
 };
 use sha2::{Digest, Sha256};
@@ -29,16 +28,18 @@ use crate::{
 const RESTART_TIMEOUT: Duration = Duration::from_secs(90);
 const POLL_INTERVAL: Duration = Duration::from_millis(500);
 
-/// Boards on aux power report every ten seconds. A board on battery does not
-/// report, but it starts to fetch within two offers and one poll period. A
-/// board that has done neither after this long is treated as absent.
+/// A board tells the offering board its build in reply to every offer, so
+/// it is heard from within two offers, even if one is lost, and one poll
+/// period for a board on battery. A board that has not been heard from after
+/// this long is treated as absent.
 const ALL_HEARD_AFTER: Duration =
     Duration::from_secs(2 * OFFER_INTERVAL.as_secs() + SLEEPY_POLL_PERIOD.as_secs() + 5);
 
 /// Timeout for the boards on the network to fetch an image and restart.
 const PUSH_TIMEOUT: Duration = Duration::from_secs(900);
 
-/// How often to ask the offering board for the fetchers' progress.
+/// How often to ask the offering board for the fetchers' progress and the
+/// builds that the boards run.
 const PROGRESS_INTERVAL: Duration = Duration::from_secs(1);
 
 /// The tick interval of the spinner on a push's summary line.
@@ -186,20 +187,15 @@ pub async fn push(gateway: Board, image: &Image) -> Result<()> {
         stage(&gateway, image).await?;
     }
 
-    // The reports show which build each board runs.
-    let mut reports = gateway.reports().await?;
-    gateway.start_collecting().await?;
     gateway.start_offering().await?;
     println!(
         "Board {serial} is offering build {} to the network.",
         image.build()
     );
 
-    let outcome = wait_for_boards(&gateway, &mut reports, image).await;
-    // Best effort: a board that keeps offering and collecting only does
-    // unneeded work.
+    let outcome = wait_for_boards(&gateway, image).await;
+    // Best effort: a board that keeps offering only does unneeded work.
     let _ = gateway.stop_offering().await;
-    let _ = gateway.stop_collecting().await;
     if !outcome? {
         return Ok(());
     }
@@ -211,20 +207,16 @@ pub async fn push(gateway: Board, image: &Image) -> Result<()> {
     restart_into_staged(gateway, image).await
 }
 
-/// Watch the reports that `gateway` forwards until every board except the
-/// gateway runs `image`, and show the progress of the boards that are
-/// fetching it. A board on battery does not report, so it is only seen while
-/// it fetches. Returns `false` if interrupted before every board is done.
-async fn wait_for_boards(
-    gateway: &Board,
-    reports: &mut MultiSubscription<Report>,
-    image: &Image,
-) -> Result<bool> {
+/// Ask `gateway`, which offers `image`, which builds the other boards run,
+/// until every one of them runs `image`, and show the progress of the boards
+/// that are fetching it. Returns `false` if interrupted before every board is
+/// done.
+async fn wait_for_boards(gateway: &Board, image: &Image) -> Result<bool> {
     let build = image.build();
     let started = Instant::now();
     let mut builds = BTreeMap::new();
     // The boards that the gateway last listed as fetching, and those among
-    // them that have the whole image and do not report.
+    // them that have the whole image and do not tell their build.
     let mut fetchers: Vec<Fetcher> = Vec::new();
     let mut fetched = BTreeSet::new();
 
@@ -232,15 +224,17 @@ async fn wait_for_boards(
     progress.summarize(&builds, build);
     let mut progress_due = tokio::time::interval(PROGRESS_INTERVAL);
     progress_due.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
-    // Set to false if the gateway's firmware cannot report progress.
-    let mut reports_progress = true;
+    // Set to false if the gateway's firmware cannot tell the progress, or
+    // the builds.
+    let mut tells_progress = true;
+    let mut tells_builds = true;
 
     let interrupted = tokio::signal::ctrl_c();
     tokio::pin!(interrupted);
 
     loop {
-        // Every board reports within this time, so after it no board is
-        // still waiting to be heard from.
+        // Every board tells its build within this time, so after it no board
+        // is still waiting to be heard from.
         let all_heard = started.elapsed() > ALL_HEARD_AFTER;
         let fetching = fetchers.iter().any(|f| f.received < image.describes.size.0);
         if all_heard && !fetching && builds.values().all(|&running| running == build) {
@@ -259,63 +253,66 @@ async fn wait_for_boards(
             bail!("these boards did not update: {}", behind.join(", "));
         }
 
-        let report = tokio::select! {
+        tokio::select! {
             _ = &mut interrupted => return Ok(false),
-            () = tokio::time::sleep(POLL_INTERVAL) => continue,
-            _ = progress_due.tick(), if reports_progress => {
-                match gateway.offer_progress().await {
-                    Ok(Some(fetching)) => {
-                        progress.show(&fetching.fetchers);
-                        fetchers = fetching.fetchers.to_vec();
-                        for fetcher in &fetchers {
-                            // A board that reports is listed as updated at
-                            // its next report instead.
-                            if let Some(board) = fetcher.board
-                                && fetcher.received == image.describes.size.0
-                                && !builds.contains_key(&board)
-                                && fetched.insert(board)
-                            {
-                                progress.println(&format!(
-                                    "{board}  has build {build}, and restarts into it"
-                                ));
-                            }
+            _ = progress_due.tick() => {}
+        }
+
+        if tells_builds {
+            match gateway.running_builds().await? {
+                Some(running) => {
+                    for RunningBuild { board, build: runs } in running.boards {
+                        if builds.insert(board, runs) == Some(runs) {
+                            continue;
+                        }
+                        let state = if runs == build {
+                            "updated"
+                        } else {
+                            "to update"
+                        };
+                        progress.println(&format!("{board}  build {runs}  {state}"));
+                        progress.summarize(&builds, build);
+                    }
+                }
+                None => {
+                    tells_builds = false;
+                    progress.println(&format!(
+                        "Board {} runs a firmware that cannot tell which build the others run, \
+                         so only the boards that fetch the image are shown.",
+                        gateway.serial()
+                    ));
+                }
+            }
+        }
+
+        if tells_progress {
+            match gateway.offer_progress().await? {
+                Some(fetching) => {
+                    progress.show(&fetching.fetchers);
+                    fetchers = fetching.fetchers.to_vec();
+                    for fetcher in &fetchers {
+                        // A board that tells its build is listed as updated
+                        // once it tells the new one instead.
+                        if let Some(board) = fetcher.board
+                            && fetcher.received == image.describes.size.0
+                            && !builds.contains_key(&board)
+                            && fetched.insert(board)
+                        {
+                            progress.println(&format!(
+                                "{board}  has build {build}, and restarts into it"
+                            ));
                         }
                     }
-                    Ok(None) => {
-                        reports_progress = false;
-                        progress.println(&format!(
-                            "Board {} runs a firmware that cannot tell how far the others have \
-                             got. Update it first (firmware update) to see that.",
-                            gateway.serial()
-                        ));
-                    }
-                    // Ignore the error: any real problem also shows in the
-                    // reports.
-                    Err(_) => {}
                 }
-                continue;
-            }
-            report = reports.recv() => report,
-        };
-        match report {
-            Ok(report) if report.board.to_string() != gateway.serial() => {
-                if builds.insert(report.board, report.firmware) != Some(report.firmware) {
-                    let state = if report.firmware == build {
-                        "updated"
-                    } else {
-                        "to update"
-                    };
+                None => {
+                    tells_progress = false;
                     progress.println(&format!(
-                        "{}  build {}  {state}",
-                        report.board, report.firmware
+                        "Board {} runs a firmware that cannot tell how far the others have \
+                         got. Update it first (firmware update) to see that.",
+                        gateway.serial()
                     ));
-                    progress.summarize(&builds, build);
                 }
             }
-            // The gateway's own report. The gateway is updated last.
-            Ok(_) => {}
-            Err(MultiSubRxError::Lagged(_)) => {}
-            Err(MultiSubRxError::IoClosed) => bail!("board {} is gone", gateway.serial()),
         }
     }
 }
@@ -528,6 +525,9 @@ impl<'a> Offer<'a> {
                     data: data.iter().copied().collect(),
                 })
             }
+            // A push through the border router does not use the builds that
+            // the boards tell.
+            UpdateMessage::Running { .. } => None,
             // What a board sends to a board that fetches, not to one that
             // offers.
             UpdateMessage::Offer(_) | UpdateMessage::Chunk { .. } => None,

@@ -15,8 +15,7 @@ pub mod color;
 pub mod mic;
 pub mod temp_rh;
 
-/// A sensor that several tasks read: the RPC handlers, the reports and the
-/// metrics.
+/// A sensor that several tasks read: the RPC handlers and the metrics.
 pub type Shared<S> = Mutex<ThreadModeRawMutex, S>;
 
 /// What the host is told of an I2C error.

@@ -23,7 +23,8 @@ use embassy_time::{Duration, Instant, Timer};
 use embedded_storage_async::nor_flash::{NorFlash, ReadNorFlash};
 use protocol::{
     BoardId, BuildId, BuildMarker, Fetcher, ImageChunk, NetworkError, NetworkStatus, OfferProgress,
-    UpdateError, UpdateImage, UpdateMessage, UpdateResult, UpdateStatus,
+    RunningBuild, RunningBuilds, UpdateError, UpdateImage, UpdateMessage, UpdateResult,
+    UpdateStatus,
 };
 use sha2::{Digest, Sha256};
 use static_cell::StaticCell;
@@ -128,10 +129,14 @@ impl Status {
 /// this board offers.
 struct Progress(Mutex<ThreadModeRawMutex, RefCell<OfferProgress>>);
 
+/// The builds that the boards which received this board's offer run.
+struct Builds(Mutex<ThreadModeRawMutex, RefCell<RunningBuilds>>);
+
 struct Shared {
     requests: request::Channel<Request, UpdateResult>,
     status: Status,
     progress: Progress,
+    builds: Builds,
 }
 
 /// Create the [`Handle`] and the [`Service`]. Panics if called a second time.
@@ -141,6 +146,7 @@ pub fn init() -> (Handle, Service) {
         requests: request::Channel::new(),
         status: Status(Mutex::new(Cell::new(UpdateStatus::Starting))),
         progress: Progress(Mutex::new(RefCell::new(OfferProgress::default()))),
+        builds: Builds(Mutex::new(RefCell::new(RunningBuilds::default()))),
     });
 
     let (client, server) = shared.requests.split();
@@ -148,11 +154,13 @@ pub fn init() -> (Handle, Service) {
         requests: client,
         status: &shared.status,
         progress: &shared.progress,
+        builds: &shared.builds,
     };
     let service = Service {
         requests: server,
         status: &shared.status,
         progress: &shared.progress,
+        builds: &shared.builds,
     };
     (handle, service)
 }
@@ -162,6 +170,7 @@ pub struct Handle {
     requests: request::Client<Request, UpdateResult>,
     status: &'static Status,
     progress: &'static Progress,
+    builds: &'static Builds,
 }
 
 impl Handle {
@@ -173,6 +182,12 @@ impl Handle {
     /// offers.
     pub fn offer_progress(&self) -> OfferProgress {
         self.progress.0.lock(|progress| progress.borrow().clone())
+    }
+
+    /// The builds that the boards which received this board's offer run, as
+    /// they have told it since it started to offer.
+    pub fn running_builds(&self) -> RunningBuilds {
+        self.builds.0.lock(|builds| builds.borrow().clone())
     }
 
     /// Start receiving `image`. This discards any image that was staged or
@@ -218,6 +233,7 @@ pub struct Service {
     requests: request::Server<Request, UpdateResult>,
     status: &'static Status,
     progress: &'static Progress,
+    builds: &'static Builds,
 }
 
 impl Service {
@@ -239,6 +255,7 @@ impl Service {
             requests: self.requests,
             status: self.status,
             progress: self.progress,
+            builds: self.builds,
             incoming: None,
             staged: None,
             socket,
@@ -321,6 +338,7 @@ struct Updates<'a, 'd> {
     requests: request::Server<Request, UpdateResult>,
     status: &'static Status,
     progress: &'static Progress,
+    builds: &'static Builds,
     incoming: Option<Incoming>,
     staged: Option<UpdateImage>,
     /// The UDP socket for [`UpdateMessage`]s.
@@ -430,7 +448,7 @@ impl Updates<'_, '_> {
             },
             Request::Offer(false) => {
                 self.offering = None;
-                self.clear_fetchers();
+                self.forget_boards();
                 Ok(())
             }
         };
@@ -492,6 +510,11 @@ impl Updates<'_, '_> {
                     self.publish_progress();
                 }
             }
+            Some(UpdateMessage::Running { board, build }) => {
+                if self.offering.is_some() {
+                    self.record_build(board, build);
+                }
+            }
             // Not a message this firmware understands. A newer firmware may
             // have sent it.
             None => {}
@@ -503,6 +526,15 @@ impl Updates<'_, '_> {
     /// back.
     async fn handle_offer(&mut self, image: UpdateImage, from: thread::Peer) {
         // A board also receives its own offers.
+        if self.offering.is_some() && self.staged == Some(image) {
+            return;
+        }
+        let running = UpdateMessage::Running {
+            board: self.board,
+            build: build(),
+        };
+        self.send(Some(from), &running).await;
+
         if image.build == build()
             || self.staged == Some(image)
             || self.rolled_back == Some(image.build)
@@ -655,9 +687,30 @@ impl Updates<'_, '_> {
         fetcher
     }
 
-    fn clear_fetchers(&mut self) {
+    /// Record that `board` runs `build`, as it has told this board in reply
+    /// to its offer.
+    fn record_build(&mut self, board: BoardId, build: BuildId) {
+        self.builds.0.lock(|builds| {
+            let boards = &mut builds.borrow_mut().boards;
+            match boards.iter_mut().find(|known| known.board == board) {
+                Some(known) => known.build = build,
+                None => {
+                    if boards.push(RunningBuild { board, build }).is_err() {
+                        defmt::debug!("update: no room for the build of {}", board);
+                    }
+                }
+            }
+        });
+    }
+
+    /// Forget the boards that fetch the staged image or have told their
+    /// build, because the offer has ended.
+    fn forget_boards(&mut self) {
         self.fetchers.clear();
         self.publish_progress();
+        self.builds
+            .0
+            .lock(|builds| builds.borrow_mut().boards.clear());
     }
 
     /// Publish the fetchers' progress, after dropping those that have gone
@@ -724,7 +777,7 @@ impl Updates<'_, '_> {
         self.incoming = None;
         self.staged = None;
         self.offering = None;
-        self.clear_fetchers();
+        self.forget_boards();
         // The bootloader swaps the staging area with a region that is one
         // page shorter, so an image can only be as long as that region.
         let room = self.staging_area.capacity() as u32 - PAGE;

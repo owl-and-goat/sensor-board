@@ -44,9 +44,9 @@ network without plugging any of them in. the attached board receives the
 image over usb and offers it to the others every ten seconds. a board that
 runs another build fetches the image from the attached board in small
 chunks, verifies it, and restarts into it in the same way, including the
-trial. the command follows the boards' reports, which show the build each
-board runs. it updates the attached board last, once every board it has
-heard from runs the image. a board whose trial of a build failed does not
+trial. every board replies to the offer with the build it runs, and the
+command asks the attached board for those builds. it updates the attached
+board last, once every board it has heard from runs the image. a board whose trial of a build failed does not
 fetch that build again.
 
 during a push, the command shows a summary line with the number of boards
@@ -65,7 +65,7 @@ a bar shows the board's serial number once the board has sent its id.
 firmware from before 2026-10-04 does not send it, so such a board is shown
 as "a board". a board that has the whole image keeps its bar for half a
 minute while it verifies the image, restarts and swaps, and is listed as
-=updated= at its next report. the bars are only drawn on a terminal (and not
+=updated= when it replies to an offer with the new build. the bars are only drawn on a terminal (and not
 if =TERM= is =dumb=), and only if the attached board's firmware can report
 progress (run =just update= first if it cannot).
 
@@ -142,7 +142,6 @@ unambiguous prefix of it.
   cargo run -- network registration --board 4b  # whether prometheus can find that board
   cargo run -- network mode --board 4b     # full thread device, or sleepy on battery
   cargo run -- network show                # every sensor board on the network; see below
-  cargo run -- reports watch               # print the boards' sensor reports as they arrive
   cargo run -- metrics show --board 4d     # the board's current prometheus metrics
   cargo run -- config show --board 4d      # the board's configuration
   cargo run -- config set --board 4d --sensor temperature=30s  # see "board configuration" below
@@ -199,18 +198,6 @@ that board, which lists itself, and through the border router, with the
 quality once the board was a router. tested on 2026-10-11: the replies of
 two other boards arriving through the attached board, with the link columns
 filled from its neighbor table.
-
-** sensor reports
-
-every board on aux power multicasts a report with its sensor readings to
-its network every ten seconds. a board on battery sends none (see "boards on
-battery"). =reports watch= prints the reports that one attached
-board receives, including that board's own, for as long as the command runs.
-the board has to stay attached: if it goes away (unplugged, reflashed), the
-command waits for it to come back. any board can do this. a board only
-understands reports from firmware with the same report layout, and ignores
-the rest. =firmware push= also uses these reports, to learn which build each
-board runs.
 
 ** metrics
 
@@ -350,7 +337,6 @@ usb first, and configured and updated over the network from then on.
   device. its parent (a router, or the border router) keeps the messages for
   it, and the board asks for them every 10 seconds, whatever the intervals
   of its sensors.
-- it sends no sensor reports, so =reports watch= does not show it.
 - it puts the chip in stop mode whenever the firmware has nothing to do. the
   chip wakes for a timer, for the radio processor, and for the button.
 - a board that a debug probe has been attached to does not stop, so that its

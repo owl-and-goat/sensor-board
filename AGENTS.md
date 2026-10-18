@@ -188,6 +188,16 @@ and at every offer it receives, so that its progress bar can show its serial
 number. The bars use indicatif, which draws nothing unless stderr is a
 terminal and `TERM` is not `dumb`.
 
+Every board, whether it fetches or not, replies to every offer it receives
+with its ID and the build it runs (`UpdateMessage::Running`). The offering
+board keeps the last build of each board until the offer ends, and
+`firmware push` reads them (`GetRunningBuilds`) to learn which build each
+board runs. That includes boards on battery. A board starts to listen for
+offers after its trial, so it replies with a new build only once it has
+kept it. The push ends when every board it has heard from runs the image
+and no board is still fetching. A board whose firmware predates `Running`
+only shows up while it fetches.
+
 `firmware push` can also offer an image without an attached board
 (`push_through_border_router` in `cli/src/firmware.rs`). The CLI then does
 what an offering board does. It sends the offer from UDP port 61621 to the
@@ -200,10 +210,11 @@ at the address the offer came from, which is why the CLI binds that port.
   the Thread network.
 - The offer goes to every listed device, not only to the boards that answer
   discovery. A board whose firmware predates discovery still has to get it.
-- The CLI receives no reports this way, so it does not know which build a
-  board runs. It ends when no board has asked for anything for 30 s, and it
-  reports the boards that fetched the image. It cannot tell a board that
-  kept the image from one that rolled it back.
+- The CLI ignores the builds that the boards reply with
+  (`UpdateMessage::Running`), so it does not know which build a board runs.
+  It ends when no board has asked for anything for 30 s, and it reports the
+  boards that fetched the image. It cannot tell a board that kept the image
+  from one that rolled it back.
 - A board gets a new address when it restarts into the image, so the device
   list from before the push no longer reaches it.
 
@@ -313,8 +324,8 @@ says it is an FDC2114, the 12-bit version with the same pins, but U9 isn't
 in the assembly BOM, and the boards have an FDC2214 on them. The datasheet
 for both is `doc/fdc2114.pdf`. `firmware/src/sensor/capacitance.rs`
 describes each channel's tank circuit and how a reading is converted to pF.
-The firmware reports pF everywhere: in `protocol::Capacitance`, in the
-reports, and as `sensor_board_capacitance_farads` in the metrics.
+The firmware reports pF everywhere: in `protocol::Capacitance`, and as
+`sensor_board_capacitance_farads` in the metrics.
 
 - CLKIN is connected to ground, so the reference clock is the chip's
   internal oscillator. The datasheet gives 43.4 MHz as typical, and
@@ -399,8 +410,8 @@ Things learned the hard way:
   acknowledges a notification while a call is waiting for its answer, and
   neither does the Thread service.
 - A UDP datagram sent to a multicast address is also delivered to the
-  sender's own socket if `mMulticastLoop` is set. That is how a collecting
-  board receives its own report.
+  sender's own socket if `mMulticastLoop` is set. That is how a board that
+  sends a discovery request receives it too, and replies to itself.
 
 Not understood yet, seen on 2026-10-11: two boards stopped receiving and
 sending on the radio, one and five minutes after they had come back from a
@@ -423,22 +434,6 @@ Seen again on 2026-10-18, on board 4C0045. It restarted into an image from
 later. `network show` through the border router did not list it. A power
 cycle brought it back at 11:22. Nothing was read from the board while it was
 silent.
-
-## Sensor reports
-
-`firmware/src/report.rs` multicasts a `protocol::Report` to every board
-(`ff03::1`, UDP port 61620) every ten seconds. When the host tells a board to
-collect, the board binds that port and forwards each report it receives to
-the host as the `ReportReceived` topic. A board on battery sends no reports
-(see "Boards on battery").
-
-- To add a sensor, add it to `protocol::Readings`, to `Task::readings` in
-  `report.rs`, and to `describe` in `cli/src/reports.rs`.
-- Changing `Report` changes the key that its datagrams start with. Boards
-  with the old layout and boards with the new one then ignore each other's
-  reports.
-- `firmware push` uses the reports to learn which build each board runs. It
-  does not wait for a board whose reports it does not receive.
 
 ## Board discovery
 
@@ -697,7 +692,7 @@ every board it finds over mDNS, with the same two times. The firmware has nothin
   records.
 - When the dataset is written, a configuration record that the firmware
   cannot decode is copied over unchanged.
-- The metrics, the reports and `power.rs` use the configuration. Each has
+- The metrics and `power.rs` use the configuration. Each has
   its own `Monitor` (`board_config.rs`), which notifies it of a change. The
   Thread service is given the power mode that the board started with.
 - A request goes to the realm-local all-Thread-nodes address, so that it
@@ -718,7 +713,7 @@ commands with no board attached.
 A board whose power mode is `Battery` is never on USB. JP2 connects its cell
 straight to the 3 V rail, and USB power on top of that would destroy the
 board (see `TODO.org`). So the firmware treats such a board differently in
-five ways, and it has to be configured and updated over the network.
+several ways, and it has to be configured and updated over the network.
 
 ### No USB
 
@@ -759,21 +754,18 @@ For a sleepy board the firmware also sends `SHCI_C2_RADIO_AllowLowPower`, as
 ST's sleepy end device example does. CPU2 accepts it. What it saves has not
 been measured.
 
-A board on battery sends no sensor reports.
-
 ### Reaching it
 
 - The requests that a board multicasts (configuration, discovery, update
   offers) go to the realm-local all-Thread-nodes address
   (`broadcast_address` in `thread/mod.rs`). A parent forwards that address
-  to its sleepy children. It does not forward `ff03::1`, which only the
-  reports still use, so that they do not wake a board on battery.
+  to its sleepy children. It does not forward `ff03::1`.
 - Everything that waits for a reply allows for the poll period: the board
   that relays a configuration request, the CLI's own requests through a
   border router, and the CLI's timeout for a call to a board.
-- `firmware push` through an attached board also waits for the boards that
-  fetch the image without ever reporting, which is how a board on battery
-  shows up. It cannot see which build such a board runs afterwards.
+- `firmware push` through an attached board learns the build of a board on
+  battery as it does for any other board: from the board's reply to the
+  offer, which takes up to a poll period.
 - A fetch needs no change of mode. The board polls fast for two seconds
   after every chunk request, which carries the whole fetch.
 - `network show` through an attached board collects replies for three

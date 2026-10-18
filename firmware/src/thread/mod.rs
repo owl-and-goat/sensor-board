@@ -65,27 +65,25 @@ pub use ot::{Datagram, MAX_DATAGRAM_LEN, TCP_CHUNK_LEN, TcpChunk};
 
 /// The realm-local all-nodes multicast address. A datagram sent there
 /// reaches every device whose receiver is on, any number of hops away. A
-/// sleepy board does not get it: its parent does not forward it.
+/// sleepy board does not get it: its parent does not forward it. It is only
+/// used if the stack does not give the all-Thread-nodes address.
 const ALL_NODES: Ipv6Addr = Ipv6Addr::new(0xff03, 0, 0, 0, 0, 0, 0, 1);
 
 /// The kinds of message that boards exchange, each on its own UDP port. The
 /// ports are in the range of sixteen that 6LoWPAN compresses to four bits.
 #[derive(Clone, Copy)]
 enum Port {
-    Reports,
     Updates,
     Configs,
     Discovery,
 }
 
 impl Port {
-    const ALL: [Port; 4] = [Port::Reports, Port::Updates, Port::Configs, Port::Discovery];
+    const ALL: [Port; 3] = [Port::Updates, Port::Configs, Port::Discovery];
 
     const fn number(self) -> u16 {
         match self {
-            Port::Reports => 61620,
-            // The CLI also sends to the other three ports, through a border
-            // router.
+            // The CLI also sends to these ports, through a border router.
             Port::Updates => UPDATE_PORT,
             Port::Configs => CONFIG_PORT,
             Port::Discovery => DISCOVERY_PORT,
@@ -395,7 +393,6 @@ pub fn init(power: PowerMode) -> (Handle, Sockets, Tcp, Service) {
         };
         (socket_end, server, socket.received.sender())
     };
-    let (reports, report_server, report_sender) = ends(Port::Reports);
     let (updates, update_server, update_sender) = ends(Port::Updates);
     let (configs, config_server, config_sender) = ends(Port::Configs);
     let (discovery, discovery_server, discovery_sender) = ends(Port::Discovery);
@@ -405,26 +402,15 @@ pub fn init(power: PowerMode) -> (Handle, Sockets, Tcp, Service) {
             changes: server,
             neighbors: neighbor_server,
             addresses: address_server,
-            sockets: [
-                report_server,
-                update_server,
-                config_server,
-                discovery_server,
-            ],
+            sockets: [update_server, config_server, discovery_server],
             tcp: tcp_server,
         },
-        received: [
-            report_sender,
-            update_sender,
-            config_sender,
-            discovery_sender,
-        ],
+        received: [update_sender, config_sender, discovery_sender],
         power,
         status: &shared.status,
         buffers: &shared.buffers,
     };
     let sockets = Sockets {
-        reports,
         updates,
         configs,
         discovery,
@@ -439,8 +425,6 @@ pub fn init(power: PowerMode) -> (Handle, Sockets, Tcp, Service) {
 /// The UDP sockets that boards exchange messages on, one per kind of
 /// message.
 pub struct Sockets {
-    /// Sensor reports.
-    pub reports: Socket,
     /// Firmware updates.
     pub updates: Socket,
     /// Board configurations.
@@ -1085,7 +1069,7 @@ impl Network<'_, '_> {
                 let outcome = match request {
                     SocketRequest::Listen(on) => self.listen(port, on).await,
                     SocketRequest::Broadcast(datagram) => {
-                        let everyone = self.broadcast_address(port).await;
+                        let everyone = self.broadcast_address().await;
                         self.send(port, everyone, &datagram).await
                     }
                     SocketRequest::Send(Peer(address), datagram) => {
@@ -1441,22 +1425,13 @@ impl Network<'_, '_> {
         Ok(())
     }
 
-    /// The multicast address that reaches every board that a datagram on
-    /// `port` is for.
-    async fn broadcast_address(&mut self, port: Port) -> Ipv6Addr {
-        match port {
-            // A report is for the boards that are awake. It must not wake a
-            // board on battery.
-            Port::Reports => ALL_NODES,
-            // A request is for every board. A parent forwards this address
-            // to its sleepy children.
-            Port::Updates | Port::Configs | Port::Discovery => {
-                let address = self
-                    .ot
-                    .thread_get_realm_local_all_thread_nodes_multicast_address();
-                address.await.unwrap_or(ALL_NODES)
-            }
-        }
+    /// The multicast address that reaches every board, including those on
+    /// battery: a parent forwards it to its sleepy children.
+    async fn broadcast_address(&mut self) -> Ipv6Addr {
+        let address = self
+            .ot
+            .thread_get_realm_local_all_thread_nodes_multicast_address();
+        address.await.unwrap_or(ALL_NODES)
     }
 
     /// Send `datagram` from the socket of `port` to the same port at
