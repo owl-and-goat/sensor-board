@@ -491,14 +491,23 @@ impl Exporter {
                 // have failed because Thread had not started. Doing either
                 // again is a no-op.
                 tcp.listen(Some(SCRAPE_PORT)).await?;
-                // A scrape does not need the registration.
-                if let Err(e) = tcp.register(Some(SCRAPE_SERVICE)).await {
-                    defmt::debug!("metrics: could not register the endpoint: {}", e);
+                // A scrape does not need the registration. Without it, wait
+                // for a connection only until it is time to register again:
+                // Prometheus does not scrape a board that is not registered.
+                match tcp.register(Some(SCRAPE_SERVICE)).await {
+                    Ok(()) => tcp.accept().await.map(|()| true),
+                    Err(e) => {
+                        defmt::debug!("metrics: could not register the endpoint: {}", e);
+                        match with_timeout(RETRY, tcp.accept()).await {
+                            Ok(accepted) => accepted.map(|()| true),
+                            Err(_) => Ok(false),
+                        }
+                    }
                 }
-                tcp.accept().await
             };
             match accepted.await {
-                Ok(()) => return,
+                Ok(true) => return,
+                Ok(false) => {}
                 Err(e) => {
                     defmt::debug!("metrics: cannot accept scrapes yet: {}", e);
                     Timer::after(RETRY).await;
