@@ -18,8 +18,8 @@ use clap::{Args, Parser, Subcommand};
 use board::Board;
 use network::SavedDataset;
 use protocol::{
-    BoardId, BuildCommit, HeaterDuration, HeaterPower, Precision, Sensor, SensorValue, TempRh,
-    TempRhReq,
+    BoardId, BuildCommit, Capacitance, CapacitanceChannel, HeaterDuration, HeaterPower, Precision,
+    TempRh, TempRhReq,
 };
 
 #[derive(Parser)]
@@ -205,11 +205,11 @@ enum CoprocessorCommand {
 /// Commands to interact with sensors
 #[derive(Subcommand)]
 enum SensorCommand {
-    /// Read the current value of a sensor
-    Read {
-        /// Which sensor to read
+    /// Measure the capacitance on a channel's electrode
+    Capacitance {
+        /// Which channel to measure
         #[arg(long)]
-        sensor: Sensor,
+        channel: CapacitanceChannel,
 
         #[command(flatten)]
         target: Target,
@@ -447,10 +447,10 @@ async fn main() -> Result<()> {
             print!("{}", target.board().await?.metrics().await?);
             Ok(())
         }
-        Command::Sensor(SensorCommand::Read { sensor, target }) => {
+        Command::Sensor(SensorCommand::Capacitance { channel, target }) => {
             let board = target.board().await?;
-            let SensorValue { value } = board.read_sensor(sensor).await??;
-            println!("Sensor value: {value}");
+            let Capacitance { picofarads } = board.read_capacitance(channel).await??;
+            println!("{picofarads:.2} pF");
             Ok(())
         }
         Command::Config(ConfigCommand::Show(target)) => {

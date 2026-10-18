@@ -10,7 +10,7 @@ use embassy_futures::select::{Either3, select3};
 use embassy_time::{Duration, Ticker};
 use protocol::{
     BoardId, NetworkError, NetworkResult, PowerMode, Precision, Readings, Report, SensorReadError,
-    SensorValue, TempRhReq,
+    TempRhReq,
 };
 use static_cell::StaticCell;
 
@@ -47,7 +47,7 @@ pub struct Builder {
     pub socket: thread::Socket,
     /// The board's configuration, which says whether it is on battery.
     pub config: board_config::Monitor,
-    pub capacitance: &'static sensor::Shared<CapacitanceSensor<'static>>,
+    pub capacitance: Option<&'static sensor::Shared<CapacitanceSensor<'static>>>,
     pub color: Option<&'static sensor::Shared<ColorSensor<'static>>>,
     pub temp_rh: Option<&'static sensor::Shared<TempRhSensor<'static>>>,
     pub mic: &'static sensor::Shared<Mic<'static>>,
@@ -92,7 +92,7 @@ impl Handle {
 pub struct Task {
     socket: thread::Socket,
     config: board_config::Monitor,
-    capacitance: &'static sensor::Shared<CapacitanceSensor<'static>>,
+    capacitance: Option<&'static sensor::Shared<CapacitanceSensor<'static>>>,
     color: Option<&'static sensor::Shared<ColorSensor<'static>>>,
     temp_rh: Option<&'static sensor::Shared<TempRhSensor<'static>>>,
     mic: &'static sensor::Shared<Mic<'static>>,
@@ -163,16 +163,14 @@ impl Task {
     }
 
     async fn readings(&mut self) -> Readings {
-        let mut sensor = self.capacitance.lock().await;
-        let mut capacitance = [Err(protocol::SensorReadError::Timeout); 4];
-        let channels = [Channel::Ch0, Channel::Ch1, Channel::Ch2, Channel::Ch3];
-        for (reading, channel) in capacitance.iter_mut().zip(channels) {
-            *reading = match sensor.read_channel_capacitance(channel).await {
-                Ok(value) => Ok(SensorValue { value }),
-                Err(e) => Err(e.into()),
-            };
+        let mut capacitance = [Err(SensorReadError::NotInitialized); 4];
+        if let Some(sensor) = self.capacitance {
+            let mut sensor = sensor.lock().await;
+            let channels = [Channel::Ch0, Channel::Ch1, Channel::Ch2, Channel::Ch3];
+            for (reading, channel) in capacitance.iter_mut().zip(channels) {
+                *reading = sensor.read(channel).await.map_err(From::from);
+            }
         }
-        drop(sensor);
 
         let color = match self.color {
             None => [Err(SensorReadError::NotInitialized); 5],

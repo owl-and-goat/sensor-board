@@ -11,14 +11,14 @@ use postcard_rpc::{
 };
 use protocol::{
     Addresses, ApplyUpdate, BeginInstall, BeginUpdate, BoardConfig, BoardDiscovered, BoardId,
-    BoardInfo, BuildCommit, ConfigError, ConfigFor, CoprocessorResult, CoprocessorStatus, Dataset,
-    DeviceMode, DiscoverBoards, EnterBootloader, FinishInstall, FinishUpdate, FirmwareStatus,
-    GetBoardConfig, GetBoardInfo, GetBuildCommit, GetCoprocessorStatus, GetDeviceMode,
-    GetFirmwareStatus, GetMetrics, GetNetworkAddresses, GetNetworkDataset, GetNetworkNeighbors,
-    GetNetworkStatus, GetOfferProgress, GetRegistration, ImageChunk, ImageSize, JoinNetwork,
-    LeaveNetwork, MeasureTempRh, Member, NeighborTable, NetworkError, NetworkStatus, OfferProgress,
-    ReadSensorValue, Registration, Report, ReportReceived, SLEEPY_POLL_PERIOD, Sensor,
-    SensorReadReq, SensorReadResult, SetBoardConfig, StartCollecting, StartOffering,
+    BoardInfo, BuildCommit, CapacitanceChannel, CapacitanceResult, ConfigError, ConfigFor,
+    CoprocessorResult, CoprocessorStatus, Dataset, DeviceMode, DiscoverBoards, EnterBootloader,
+    FinishInstall, FinishUpdate, FirmwareStatus, GetBoardConfig, GetBoardInfo, GetBuildCommit,
+    GetCoprocessorStatus, GetDeviceMode, GetFirmwareStatus, GetMetrics, GetNetworkAddresses,
+    GetNetworkDataset, GetNetworkNeighbors, GetNetworkStatus, GetOfferProgress, GetRegistration,
+    ImageChunk, ImageSize, JoinNetwork, LeaveNetwork, MeasureTempRh, Member, NeighborTable,
+    NetworkError, NetworkStatus, OfferProgress, ReadCapacitance, Registration, Report,
+    ReportReceived, SLEEPY_POLL_PERIOD, SetBoardConfig, StartCollecting, StartOffering,
     StopCollecting, StopOffering, TempRhReq, TempRhResult, USB_PID, USB_VID, UninstallStack,
     UpdateImage, UpdateResult, WriteInstall, WriteUpdate,
 };
@@ -263,9 +263,8 @@ impl Board {
         self.coprocessor_result(result)
     }
 
-    pub async fn read_sensor(&self, sensor: Sensor) -> Result<SensorReadResult> {
-        self.call::<ReadSensorValue>(&SensorReadReq { sensor })
-            .await
+    pub async fn read_capacitance(&self, channel: CapacitanceChannel) -> Result<CapacitanceResult> {
+        self.call::<ReadCapacitance>(&channel).await
     }
 
     pub async fn measure_temp_rh(&self, req: TempRhReq) -> Result<TempRhResult> {

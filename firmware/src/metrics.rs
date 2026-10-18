@@ -159,7 +159,7 @@ type ColorFamily<M> = MetricFamily<'static, M, { COLOR.len() }, ChannelLabels<&'
 struct Metrics {
     firmware_build: MetricFamily<'static, IntGauge, 1, BuildLabels>,
     battery_low: BoardFamily<IntGauge>,
-    capacitance: CapacitanceFamily<IntGauge>,
+    capacitance: CapacitanceFamily<Gauge>,
     capacitance_errors: CapacitanceFamily<Counter>,
     color: ColorFamily<IntGauge>,
     color_errors: ColorFamily<Counter>,
@@ -183,8 +183,8 @@ impl Metrics {
             battery_low: MetricBuilder::new("sensor_board_battery_low")
                 .with_help("1 if the supply voltage has been low since the board started, else 0.")
                 .build_labeled(),
-            capacitance: MetricBuilder::new("sensor_board_capacitance")
-                .with_help("Raw reading of a capacitance channel.")
+            capacitance: MetricBuilder::new("sensor_board_capacitance_farads")
+                .with_help("Capacitance on the electrode of a channel, in farads.")
                 .build_labeled(),
             capacitance_errors: MetricBuilder::new("sensor_board_capacitance_errors_total")
                 .with_help("Failed readings of a capacitance channel.")
@@ -306,7 +306,7 @@ pub struct Builder {
     pub tcp: thread::Tcp,
     pub config: board_config::Monitor,
     pub supply: supply::Monitor,
-    pub capacitance: &'static sensor::Shared<CapacitanceSensor<'static>>,
+    pub capacitance: Option<&'static sensor::Shared<CapacitanceSensor<'static>>>,
     pub color: Option<&'static sensor::Shared<ColorSensor<'static>>>,
     pub temp_rh: Option<&'static sensor::Shared<TempRhSensor<'static>>>,
     pub mic: &'static sensor::Shared<Mic<'static>>,
@@ -423,7 +423,7 @@ struct Poll {
 
 struct Exporter {
     tcp: thread::Tcp,
-    capacitance: &'static sensor::Shared<CapacitanceSensor<'static>>,
+    capacitance: Option<&'static sensor::Shared<CapacitanceSensor<'static>>>,
     color: Option<&'static sensor::Shared<ColorSensor<'static>>>,
     temp_rh: Option<&'static sensor::Shared<TempRhSensor<'static>>>,
     mic: &'static sensor::Shared<Mic<'static>>,
@@ -670,18 +670,17 @@ impl Exporter {
             channel,
         };
 
-        let reading = {
-            let mut capacitance = self.capacitance.lock().await;
-            capacitance
-                .read_channel_capacitance(CAPACITANCE[channel])
-                .await
+        let reading = match self.capacitance {
+            Some(sensor) => sensor.lock().await.read(CAPACITANCE[channel]).await.ok(),
+            None => None,
         };
         self.metrics.with(|metrics| {
             if let Some(errors) = metrics.capacitance_errors.register(labels()) {
-                errors.fetch_add(usize::from(reading.is_err()));
+                errors.fetch_add(usize::from(reading.is_none()));
             }
-            if let (Ok(value), Some(gauge)) = (reading, metrics.capacitance.register(labels())) {
-                gauge.set_value(value as usize);
+            if let (Some(reading), Some(gauge)) = (reading, metrics.capacitance.register(labels()))
+            {
+                gauge.set_value(f64::from(reading.picofarads) * 1e-12);
             }
         });
     }

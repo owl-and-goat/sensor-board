@@ -5,7 +5,7 @@ use std::time::Duration;
 
 use anyhow::{Result, bail};
 use postcard_rpc::host_client::MultiSubRxError;
-use protocol::{Report, SensorReadResult, SoundLevel, TempRh};
+use protocol::{Capacitance, Report, SensorReadResult, SoundLevel, TempRh};
 
 use crate::board::Board;
 
@@ -78,7 +78,14 @@ pub fn describe(report: &Report) -> String {
         sequence,
         readings,
     } = report;
-    let capacitance: Vec<String> = readings.capacitance.iter().map(describe_reading).collect();
+    let capacitance: Vec<String> = readings
+        .capacitance
+        .iter()
+        .map(|reading| match reading {
+            Ok(Capacitance { picofarads }) => format!("{picofarads:.2} pF"),
+            Err(e) => format!("failed ({e})"),
+        })
+        .collect();
     let color: Vec<String> = COLOR_CHANNELS
         .iter()
         .zip(&readings.color)
@@ -124,10 +131,10 @@ mod tests {
             sequence: 7,
             readings: Readings {
                 capacitance: [
-                    Ok(SensorValue { value: 1234567 }),
-                    Ok(SensorValue { value: 0 }),
+                    Ok(Capacitance { picofarads: 12.5 }),
+                    Ok(Capacitance { picofarads: -0.25 }),
                     Err(SensorReadError::Nack),
-                    Ok(SensorValue { value: 42 }),
+                    Ok(Capacitance { picofarads: 4.0 }),
                 ],
                 color: [
                     Ok(SensorValue { value: 512 }),
@@ -145,8 +152,8 @@ mod tests {
         };
         assert_eq!(
             describe(&report),
-            "4B0041000350475532303120  build 1791145757  #7  capacitance 1234567, 0, \
-             failed (I2C ACK Not Received), 42  color red 512, green 256, blue 128, \
+            "4B0041000350475532303120  build 1791145757  #7  capacitance 12.50 pF, -0.25 pF, \
+             failed (I2C ACK Not Received), 4.00 pF  color red 512, green 256, blue 128, \
              white failed (Color Sensor Channel Out of Range), infrared 0  \
              temp-rh 21.50 °C 45.25 %RH  sound 48.5 dB SPL"
         );

@@ -304,7 +304,13 @@ async fn main(spawner: Spawner) {
     )));
 
     static CAPACITANCE: StaticCell<sensor::Shared<CapacitanceSensor<'static>>> = StaticCell::new();
-    let capacitance = &*CAPACITANCE.init(Mutex::new(CapacitanceSensor::new(p.PB4, i2c)));
+    let capacitance = match CapacitanceSensor::init(p.PB4, i2c).await {
+        Ok(sensor) => Some(&*CAPACITANCE.init(Mutex::new(sensor))),
+        Err(e) => {
+            defmt::warn!("capacitance sensor failed to initialize: {}", e);
+            None
+        }
+    };
 
     static COLOR: StaticCell<sensor::Shared<ColorSensor<'static>>> = StaticCell::new();
     let color = match ColorSensor::init(i2c).await {

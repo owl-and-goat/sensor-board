@@ -18,16 +18,17 @@ use postcard_rpc::{
 use postcard_rpc::server::impls::embassy_usb_v0_6::dispatch_impl::spawn_fn;
 use protocol::{
     AddressesResult, ApplyUpdate, BeginInstall, BeginUpdate, BoardConfigResult, BoardDiscovered,
-    BoardId, BoardInfo, BuildCommit, ConfigFor, ConfigResult, CoprocessorResult, CoprocessorStatus,
-    Dataset, DeviceModeResult, DiscoverBoards, ENDPOINT_LIST, EnterBootloader, FinishInstall,
-    FinishUpdate, FirmwareStatus, GetBoardConfig, GetBoardInfo, GetBuildCommit,
-    GetCoprocessorStatus, GetDeviceMode, GetFirmwareStatus, GetMetrics, GetNetworkAddresses,
-    GetNetworkDataset, GetNetworkNeighbors, GetNetworkStatus, GetOfferProgress, GetRegistration,
-    ImageChunk, ImageSize, JoinNetwork, LeaveNetwork, MeasureTempRh, Member, MetricsChunk,
-    NeighborsResult, NetworkResult, NetworkStatus, OfferProgress, ReadSensorValue, Registration,
-    Report, ReportReceived, SensorReadError, SensorReadReq, SensorReadResult, SetBoardConfig,
-    StartCollecting, StartOffering, StopCollecting, StopOffering, TOPICS_IN_LIST, TOPICS_OUT_LIST,
-    TempRhReq, TempRhResult, UninstallStack, UpdateImage, UpdateResult, WriteInstall, WriteUpdate,
+    BoardId, BoardInfo, BuildCommit, CapacitanceChannel, CapacitanceResult, ConfigFor,
+    ConfigResult, CoprocessorResult, CoprocessorStatus, Dataset, DeviceModeResult, DiscoverBoards,
+    ENDPOINT_LIST, EnterBootloader, FinishInstall, FinishUpdate, FirmwareStatus, GetBoardConfig,
+    GetBoardInfo, GetBuildCommit, GetCoprocessorStatus, GetDeviceMode, GetFirmwareStatus,
+    GetMetrics, GetNetworkAddresses, GetNetworkDataset, GetNetworkNeighbors, GetNetworkStatus,
+    GetOfferProgress, GetRegistration, ImageChunk, ImageSize, JoinNetwork, LeaveNetwork,
+    MeasureTempRh, Member, MetricsChunk, NeighborsResult, NetworkResult, NetworkStatus,
+    OfferProgress, ReadCapacitance, Registration, Report, ReportReceived, SensorReadError,
+    SetBoardConfig, StartCollecting, StartOffering, StopCollecting, StopOffering, TOPICS_IN_LIST,
+    TOPICS_OUT_LIST, TempRhReq, TempRhResult, UninstallStack, UpdateImage, UpdateResult,
+    WriteInstall, WriteUpdate,
 };
 
 use crate::{
@@ -47,7 +48,7 @@ pub struct Context {
     pub metrics: metrics::Handle,
     pub discovery: discovery::Handle,
     // TODO(aspen): Make nicer
-    pub capacitance: &'static sensor::Shared<capacitance::CapacitanceSensor<'static>>,
+    pub capacitance: Option<&'static sensor::Shared<capacitance::CapacitanceSensor<'static>>>,
     pub temp_rh: Option<&'static sensor::Shared<temp_rh::TempRhSensor<'static>>>,
 }
 
@@ -75,7 +76,7 @@ define_dispatch! {
         | WriteInstall         | async    | write_install      |
         | FinishInstall        | async    | finish_install     |
         | UninstallStack       | async    | uninstall_stack    |
-        | ReadSensorValue      | async    | read_sensor        |
+        | ReadCapacitance      | async    | read_capacitance   |
         | MeasureTempRh        | async    | measure_temp_rh    |
         | StartCollecting      | async    | start_collecting   |
         | StopCollecting       | async    | stop_collecting    |
@@ -313,33 +314,24 @@ async fn stop_collecting(context: &mut Context, _header: VarHeader, (): ()) -> N
     context.reports.collect(false).await
 }
 
-async fn read_sensor(
+async fn read_capacitance(
     context: &mut Context,
     _header: VarHeader,
-    req: SensorReadReq,
-) -> SensorReadResult {
-    let read_cap = async |chan| -> SensorReadResult {
-        Ok(context
-            .capacitance
-            .lock()
-            .await
-            .read_channel_capacitance(chan)
-            .await?
-            .into())
+    channel: CapacitanceChannel,
+) -> CapacitanceResult {
+    let channel = match channel {
+        CapacitanceChannel::Ch0 => capacitance::Channel::Ch0,
+        CapacitanceChannel::Ch1 => capacitance::Channel::Ch1,
+        CapacitanceChannel::Ch2 => capacitance::Channel::Ch2,
+        CapacitanceChannel::Ch3 => capacitance::Channel::Ch3,
     };
-
-    match req.sensor {
-        protocol::Sensor::Capacitance0 => read_cap(capacitance::Channel::Ch0).await,
-        protocol::Sensor::Capacitance1 => read_cap(capacitance::Channel::Ch1).await,
-        protocol::Sensor::Capacitance2 => read_cap(capacitance::Channel::Ch2).await,
-        protocol::Sensor::Capacitance3 => read_cap(capacitance::Channel::Ch3).await,
-        protocol::Sensor::Distance => todo!(),
-        protocol::Sensor::Color => todo!(),
-        protocol::Sensor::Temperature => todo!(),
-        protocol::Sensor::Humidity => todo!(),
-        protocol::Sensor::Acceleration => todo!(),
-        protocol::Sensor::Sound => todo!(),
-    }
+    Ok(context
+        .capacitance
+        .ok_or(SensorReadError::NotInitialized)?
+        .lock()
+        .await
+        .read(channel)
+        .await?)
 }
 
 async fn measure_temp_rh(

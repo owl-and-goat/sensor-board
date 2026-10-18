@@ -21,40 +21,40 @@ pub const USB_PID: u16 = 0x0001;
 
 endpoints! {
     list = ENDPOINT_LIST;
-    | EndpointTy           | RequestTy     | ResponseTy        | Path                         |
-    | ----------           | ---------     | ----------        | ----                         |
-    | GetBoardInfo         | ()            | BoardInfo         | "board/info"                 |
-    | EnterBootloader      | ()            | ()                | "board/bootloader"           |
-    | GetNetworkStatus     | ()            | NetworkStatus     | "network/status"             |
-    | GetNetworkDataset    | ()            | StoredDataset     | "network/dataset"            |
-    | JoinNetwork          | Dataset       | NetworkResult     | "network/join"               |
-    | LeaveNetwork         | ()            | NetworkResult     | "network/leave"              |
-    | GetNetworkNeighbors  | ()            | NeighborsResult   | "network/neighbors"          |
-    | GetCoprocessorStatus | ()            | CoprocessorStatus | "coprocessor/status"         |
-    | BeginInstall         | ImageSize     | CoprocessorResult | "coprocessor/install/begin"  |
-    | WriteInstall         | ImageChunk    | CoprocessorResult | "coprocessor/install/write"  |
-    | FinishInstall        | ()            | CoprocessorResult | "coprocessor/install/finish" |
-    | UninstallStack       | ()            | CoprocessorResult | "coprocessor/uninstall"      |
-    | ReadSensorValue      | SensorReadReq | SensorReadResult  | "sensor/read"                |
-    | MeasureTempRh        | TempRhReq     | TempRhResult      | "sensor/temp-rh"             |
-    | StartCollecting      | ()            | NetworkResult     | "reports/collect/start"      |
-    | StopCollecting       | ()            | NetworkResult     | "reports/collect/stop"       |
-    | GetFirmwareStatus    | ()            | FirmwareStatus    | "firmware/status"            |
-    | BeginUpdate          | UpdateImage   | UpdateResult      | "firmware/update/begin"      |
-    | WriteUpdate          | ImageChunk    | UpdateResult      | "firmware/update/write"      |
-    | FinishUpdate         | ()            | UpdateResult      | "firmware/update/finish"     |
-    | ApplyUpdate          | ()            | UpdateResult      | "firmware/update/apply"      |
-    | StartOffering        | ()            | UpdateResult      | "firmware/offer/start"       |
-    | StopOffering         | ()            | UpdateResult      | "firmware/offer/stop"        |
-    | GetOfferProgress     | ()            | OfferProgress     | "firmware/offer/progress"    |
-    | GetBoardConfig       | BoardId       | BoardConfigResult | "config/get"                 |
-    | SetBoardConfig       | ConfigFor     | ConfigResult      | "config/set"                 |
-    | GetNetworkAddresses  | ()            | AddressesResult   | "network/addresses"          |
-    | GetMetrics           | u32           | MetricsChunk      | "metrics/get"                |
-    | DiscoverBoards       | ()            | NetworkResult     | "network/discover"           |
-    | GetRegistration      | ()            | Registration      | "network/registration"       |
-    | GetDeviceMode        | ()            | DeviceModeResult  | "network/mode"               |
-    | GetBuildCommit       | ()            | BuildCommit       | "board/commit"               |
+    | EndpointTy           | RequestTy          | ResponseTy        | Path                         |
+    | ----------           | ---------          | ----------        | ----                         |
+    | GetBoardInfo         | ()                 | BoardInfo         | "board/info"                 |
+    | EnterBootloader      | ()                 | ()                | "board/bootloader"           |
+    | GetNetworkStatus     | ()                 | NetworkStatus     | "network/status"             |
+    | GetNetworkDataset    | ()                 | StoredDataset     | "network/dataset"            |
+    | JoinNetwork          | Dataset            | NetworkResult     | "network/join"               |
+    | LeaveNetwork         | ()                 | NetworkResult     | "network/leave"              |
+    | GetNetworkNeighbors  | ()                 | NeighborsResult   | "network/neighbors"          |
+    | GetCoprocessorStatus | ()                 | CoprocessorStatus | "coprocessor/status"         |
+    | BeginInstall         | ImageSize          | CoprocessorResult | "coprocessor/install/begin"  |
+    | WriteInstall         | ImageChunk         | CoprocessorResult | "coprocessor/install/write"  |
+    | FinishInstall        | ()                 | CoprocessorResult | "coprocessor/install/finish" |
+    | UninstallStack       | ()                 | CoprocessorResult | "coprocessor/uninstall"      |
+    | ReadCapacitance      | CapacitanceChannel | CapacitanceResult | "sensor/capacitance"         |
+    | MeasureTempRh        | TempRhReq          | TempRhResult      | "sensor/temp-rh"             |
+    | StartCollecting      | ()                 | NetworkResult     | "reports/collect/start"      |
+    | StopCollecting       | ()                 | NetworkResult     | "reports/collect/stop"       |
+    | GetFirmwareStatus    | ()                 | FirmwareStatus    | "firmware/status"            |
+    | BeginUpdate          | UpdateImage        | UpdateResult      | "firmware/update/begin"      |
+    | WriteUpdate          | ImageChunk         | UpdateResult      | "firmware/update/write"      |
+    | FinishUpdate         | ()                 | UpdateResult      | "firmware/update/finish"     |
+    | ApplyUpdate          | ()                 | UpdateResult      | "firmware/update/apply"      |
+    | StartOffering        | ()                 | UpdateResult      | "firmware/offer/start"       |
+    | StopOffering         | ()                 | UpdateResult      | "firmware/offer/stop"        |
+    | GetOfferProgress     | ()                 | OfferProgress     | "firmware/offer/progress"    |
+    | GetBoardConfig       | BoardId            | BoardConfigResult | "config/get"                 |
+    | SetBoardConfig       | ConfigFor          | ConfigResult      | "config/set"                 |
+    | GetNetworkAddresses  | ()                 | AddressesResult   | "network/addresses"          |
+    | GetMetrics           | u32                | MetricsChunk      | "metrics/get"                |
+    | DiscoverBoards       | ()                 | NetworkResult     | "network/discover"           |
+    | GetRegistration      | ()                 | Registration      | "network/registration"       |
+    | GetDeviceMode        | ()                 | DeviceModeResult  | "network/mode"               |
+    | GetBuildCommit       | ()                 | BuildCommit       | "board/commit"               |
 }
 
 topics! {
@@ -572,11 +572,30 @@ impl fmt::Display for FusError {
     }
 }
 
+/// A channel of the capacitance sensor.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Schema)]
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]
-pub struct SensorReadReq {
-    pub sensor: Sensor,
+#[cfg_attr(feature = "clap", derive(clap::ValueEnum))]
+pub enum CapacitanceChannel {
+    Ch0,
+    Ch1,
+    Ch2,
+    Ch3,
 }
+
+/// A measurement of a capacitance channel.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize, Schema)]
+#[cfg_attr(feature = "defmt", derive(defmt::Format))]
+pub struct Capacitance {
+    /// The capacitance at the channel's input, besides the tank capacitor, in
+    /// pF. It includes the board's own capacitance there, so a channel with
+    /// nothing attached reads more than zero. The chip's clock is only good
+    /// to about ±20 %, so a board can be off by tens of pF. A change on one
+    /// channel is more accurate than the value.
+    pub picofarads: f32,
+}
+
+pub type CapacitanceResult = Result<Capacitance, SensorReadError>;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Schema)]
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]
@@ -776,7 +795,7 @@ pub struct Report {
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]
 pub struct Readings {
     /// The four channels of the capacitance sensor.
-    pub capacitance: [SensorReadResult; 4],
+    pub capacitance: [CapacitanceResult; 4],
     /// The color sensor's channels: red, green, blue, white, infrared.
     pub color: [SensorReadResult; 5],
     /// The temperature & humidity sensor, at high precision, unheated.
@@ -1444,8 +1463,8 @@ mod tests {
             sequence: u32::MAX,
             readings: Readings {
                 capacitance: [
-                    Ok(SensorValue { value: u32::MAX }),
-                    Ok(SensorValue { value: 0 }),
+                    Ok(Capacitance { picofarads: -12.5 }),
+                    Ok(Capacitance { picofarads: 0.0 }),
                     Err(SensorReadError::Nack),
                     Err(SensorReadError::WatchdogTimeoutError),
                 ],

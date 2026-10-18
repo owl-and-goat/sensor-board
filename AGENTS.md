@@ -301,6 +301,30 @@ Not tested on a board: any of it. In particular, it is not known whether a
 fresh coin cell stays above the threshold while the radio transmits. If it
 does not, lower `LEVEL` in `supply.rs`.
 
+## The capacitance sensor
+
+The chip is an FDC2114 (U9), the 12-bit part. Its datasheet is
+`doc/fdc2114.pdf`, which also covers the FDC2214. Each channel's tank and
+the reading's conversion to pF are described in
+`firmware/src/sensor/capacitance.rs`. The firmware reports pF everywhere: in
+`protocol::Capacitance`, in the reports, and as
+`sensor_board_capacitance_farads` in the metrics.
+
+- CLKIN is grounded, so the reference clock is the chip's internal
+  oscillator. The datasheet gives 43.4 MHz typical and 35 to 55 MHz in
+  all. The firmware assumes 43.4 MHz. The capacitance goes with the inverse
+  square of the clock, so a board's values can be off by tens of pF. A
+  change on one channel is more accurate than the value.
+- Until 2026-10-18 the driver was written for the FDC2214. It read a
+  DATA_LSB register that the FDC2114 does not have, and left the clock
+  dividers at their reserved reset value of 0. Its raw readings had no
+  defined scale.
+- The chip sleeps between readings. A reading takes about 2 ms.
+
+Not tested on a board: any of it. The drive current is TI's value for the
+same tank (`IDRIVE`). The oscillation amplitude, which should be 1.2 to
+1.8 V peak, has not been measured with an electrode attached.
+
 ## CPU2: FUS and the Thread stack
 
 ST's images are in STM32CubeWB, under
