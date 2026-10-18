@@ -3,6 +3,7 @@
 #![cfg_attr(not(feature = "std"), no_std)]
 
 mod board_config;
+mod max_len;
 
 use core::{fmt, net::Ipv6Addr, str::FromStr, time::Duration};
 
@@ -1180,9 +1181,8 @@ pub enum ConfigMessage {
 }
 
 impl ConfigMessage {
-    /// The longest encoded message: the key, the variant, the board, the
-    /// question number, and an optional configuration.
-    pub const MAX_LEN: usize = 8 + 1 + 12 + 5 + 1 + (BoardConfig::MAX_LEN - 8);
+    /// The longest encoded message: the key, then the message.
+    pub const MAX_LEN: usize = 8 + max_len::max_encoded_len::<ConfigMessage>();
 
     /// `None` if `buf` is too short.
     pub fn encode<'a>(&self, buf: &'a mut [u8]) -> Option<&'a [u8]> {
@@ -1666,15 +1666,14 @@ mod tests {
     }
 
     #[test]
-    fn longest_config_message_has_max_len() {
+    fn longest_config_message_fits() {
         let longest = ConfigMessage::Has {
             board: report().board,
             question: u32::MAX,
             config: Some(longest_config()),
         };
-        let mut buf = [0; 2 * ConfigMessage::MAX_LEN];
-        let encoded = longest.encode(&mut buf).unwrap();
-        assert_eq!(encoded.len(), ConfigMessage::MAX_LEN);
+        let mut buf = [0; ConfigMessage::MAX_LEN];
+        assert!(longest.encode(&mut buf).is_some());
     }
 
     #[test]

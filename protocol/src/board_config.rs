@@ -11,6 +11,8 @@ use postcard_schema::{
 use serde::{Deserialize, Serialize};
 use strum::EnumCount;
 
+use crate::max_len::max_encoded_len;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Schema, Enum, EnumCount)]
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]
 #[cfg_attr(feature = "clap", derive(clap::ValueEnum))]
@@ -113,9 +115,8 @@ mod without_sound_duration {
 }
 
 impl BoardConfig {
-    /// The longest encoded configuration: the key, then every field at its
-    /// largest size (postcard encodes the intervals and the port as varints).
-    pub const MAX_LEN: usize = 8 + 1 + Sensor::COUNT * (1 + 10 + 5) + 1 + (1 + 16 + 3) + (10 + 5);
+    /// The longest encoded configuration: the key, then the configuration.
+    pub const MAX_LEN: usize = 8 + max_encoded_len::<BoardConfig>();
 
     /// Encode the configuration for storage in flash: a key derived from the
     /// layout of this type, then the postcard encoding. `None` if `buf` is
@@ -213,7 +214,7 @@ mod tests {
     }
 
     #[test]
-    fn longest_config_has_max_len() {
+    fn longest_config_fits() {
         let mut longest = config();
         longest.board_id = u8::MAX;
         longest.pushgateway = Some(SocketAddrV6::new([0xffff; 8].into(), u16::MAX, 0, 0));
@@ -223,8 +224,7 @@ mod tests {
                 poll_interval: Duration::MAX,
             });
         }
-        let mut buf = [0; 2 * BoardConfig::MAX_LEN];
-        let encoded = longest.encode(&mut buf).unwrap();
-        assert_eq!(encoded.len(), BoardConfig::MAX_LEN);
+        let mut buf = [0; BoardConfig::MAX_LEN];
+        assert!(longest.encode(&mut buf).is_some());
     }
 }
