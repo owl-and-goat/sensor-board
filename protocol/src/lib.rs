@@ -54,6 +54,7 @@ endpoints! {
     | DiscoverBoards       | ()            | NetworkResult     | "network/discover"           |
     | GetRegistration      | ()            | Registration      | "network/registration"       |
     | GetDeviceMode        | ()            | DeviceModeResult  | "network/mode"               |
+    | GetBuildCommit       | ()            | BuildCommit       | "board/commit"               |
 }
 
 topics! {
@@ -82,6 +83,19 @@ pub struct BoardInfo {
     /// When the running firmware was built, in the build machine's local
     /// time. It shows which image is running after a reflash.
     pub firmware_built: heapless::String<24>,
+}
+
+/// The Git commit that the running firmware was built from: the abbreviated
+/// hash, with `-dirty` if the firmware or `protocol` had uncommitted changes.
+/// `unknown` if it was built outside a Git checkout.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Schema)]
+#[cfg_attr(feature = "defmt", derive(defmt::Format))]
+pub struct BuildCommit(pub heapless::String<24>);
+
+impl fmt::Display for BuildCommit {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        self.0.fmt(f)
+    }
 }
 
 /// Identifies a build of the firmware: its build time as a Unix timestamp.

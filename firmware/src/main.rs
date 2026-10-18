@@ -247,7 +247,11 @@ async fn main(spawner: Spawner) {
     if power_mode == PowerMode::Battery {
         start_smps();
     }
-    defmt::info!("sensor-board (built {})", env!("BUILD_STAMP"));
+    defmt::info!(
+        "sensor-board (built {} from {})",
+        env!("BUILD_STAMP"),
+        env!("BUILD_COMMIT")
+    );
 
     // Option-validity error is set after FUS/bootloader activity; ST clears it
     // first thing in every WB application before any flash use.

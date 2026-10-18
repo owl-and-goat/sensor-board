@@ -18,16 +18,16 @@ use postcard_rpc::{
 use postcard_rpc::server::impls::embassy_usb_v0_6::dispatch_impl::spawn_fn;
 use protocol::{
     AddressesResult, ApplyUpdate, BeginInstall, BeginUpdate, BoardConfigResult, BoardDiscovered,
-    BoardId, BoardInfo, ConfigFor, ConfigResult, CoprocessorResult, CoprocessorStatus, Dataset,
-    DeviceModeResult, DiscoverBoards, ENDPOINT_LIST, EnterBootloader, FinishInstall, FinishUpdate,
-    FirmwareStatus, GetBoardConfig, GetBoardInfo, GetCoprocessorStatus, GetDeviceMode,
-    GetFirmwareStatus, GetMetrics, GetNetworkAddresses, GetNetworkDataset, GetNetworkNeighbors,
-    GetNetworkStatus, GetOfferProgress, GetRegistration, ImageChunk, ImageSize, JoinNetwork,
-    LeaveNetwork, MeasureTempRh, Member, MetricsChunk, NeighborsResult, NetworkResult,
-    NetworkStatus, OfferProgress, ReadSensorValue, Registration, Report, ReportReceived,
-    SensorReadError, SensorReadReq, SensorReadResult, SetBoardConfig, StartCollecting,
-    StartOffering, StopCollecting, StopOffering, TOPICS_IN_LIST, TOPICS_OUT_LIST, TempRhReq,
-    TempRhResult, UninstallStack, UpdateImage, UpdateResult, WriteInstall, WriteUpdate,
+    BoardId, BoardInfo, BuildCommit, ConfigFor, ConfigResult, CoprocessorResult, CoprocessorStatus,
+    Dataset, DeviceModeResult, DiscoverBoards, ENDPOINT_LIST, EnterBootloader, FinishInstall,
+    FinishUpdate, FirmwareStatus, GetBoardConfig, GetBoardInfo, GetBuildCommit,
+    GetCoprocessorStatus, GetDeviceMode, GetFirmwareStatus, GetMetrics, GetNetworkAddresses,
+    GetNetworkDataset, GetNetworkNeighbors, GetNetworkStatus, GetOfferProgress, GetRegistration,
+    ImageChunk, ImageSize, JoinNetwork, LeaveNetwork, MeasureTempRh, Member, MetricsChunk,
+    NeighborsResult, NetworkResult, NetworkStatus, OfferProgress, ReadSensorValue, Registration,
+    Report, ReportReceived, SensorReadError, SensorReadReq, SensorReadResult, SetBoardConfig,
+    StartCollecting, StartOffering, StopCollecting, StopOffering, TOPICS_IN_LIST, TOPICS_OUT_LIST,
+    TempRhReq, TempRhResult, UninstallStack, UpdateImage, UpdateResult, WriteInstall, WriteUpdate,
 };
 
 use crate::{
@@ -94,6 +94,7 @@ define_dispatch! {
         | DiscoverBoards       | async    | discover_boards    |
         | GetRegistration      | blocking | registration       |
         | GetDeviceMode        | blocking | device_mode        |
+        | GetBuildCommit       | blocking | build_commit       |
     };
     topics_in: {
         list: TOPICS_IN_LIST;
@@ -162,6 +163,11 @@ fn board_info(_context: &mut Context, _header: VarHeader, (): ()) -> BoardInfo {
         // report an empty string instead of a truncated one.
         firmware_built: env!("BUILD_STAMP").try_into().unwrap_or_default(),
     }
+}
+
+fn build_commit(_context: &mut Context, _header: VarHeader, (): ()) -> BuildCommit {
+    // A hash with the suffix is 18 characters.
+    BuildCommit(env!("BUILD_COMMIT").try_into().unwrap_or_default())
 }
 
 fn enter_bootloader(context: &mut Context, _header: VarHeader, (): ()) {

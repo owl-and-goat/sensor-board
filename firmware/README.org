@@ -86,7 +86,9 @@ can answer (see "metrics").
 - the command cannot see which build a board runs. it lists the boards that
   fetched the image, and ends once no board has asked for anything for half
   a minute. =firmware status= and the =sensor_board_firmware_build= metric
-  show what a board runs afterwards.
+  show what a board runs afterwards. both give the git commit the build was
+  made from, with =-dirty= if =firmware/= or =protocol/= had uncommitted
+  changes. =list= shows it too.
 - a board that runs the image already, or on which the image failed before,
   does not ask for it.
 - the offer goes to every device that the border router lists, and to every

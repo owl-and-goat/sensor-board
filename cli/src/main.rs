@@ -18,7 +18,8 @@ use clap::{Args, Parser, Subcommand};
 use board::Board;
 use network::SavedDataset;
 use protocol::{
-    BoardId, HeaterDuration, HeaterPower, Precision, Sensor, SensorValue, TempRh, TempRhReq,
+    BoardId, BuildCommit, HeaterDuration, HeaterPower, Precision, Sensor, SensorValue, TempRh,
+    TempRhReq,
 };
 
 #[derive(Parser)]
@@ -314,12 +315,22 @@ async fn list() -> Result<()> {
 async fn summary(device: &nusb::DeviceInfo) -> Result<String> {
     let board = Board::open(device).await?;
     let info = board.info().await?;
+    let commit = board.commit().await;
     let status = board.network_status().await?;
     Ok(format!(
-        "built {}  {}",
+        "built {}{}  {}",
         info.firmware_built,
+        describe_commit(commit),
         network::describe(&status)
     ))
+}
+
+/// " from <commit>", or nothing for a firmware that does not report its
+/// commit.
+fn describe_commit(commit: Option<BuildCommit>) -> String {
+    commit
+        .map(|commit| format!(" from {commit}"))
+        .unwrap_or_default()
 }
 
 #[tokio::main]
@@ -368,12 +379,14 @@ async fn main() -> Result<()> {
         Command::Firmware(FirmwareCommand::Status(target)) => {
             let board = target.board().await?;
             let info = board.info().await?;
+            let commit = board.commit().await;
             let status = board.firmware_status().await?;
             println!(
-                "{}  build {} (built {})  {}",
+                "{}  build {} (built {}{})  {}",
                 board.serial(),
                 status.build,
                 info.firmware_built,
+                describe_commit(commit),
                 firmware::describe(&status.update)
             );
             Ok(())

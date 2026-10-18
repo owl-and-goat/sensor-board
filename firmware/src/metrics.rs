@@ -119,6 +119,22 @@ impl FmtLabels for BoardLabels {
     }
 }
 
+/// Labels of the firmware build metric: the board, and the Git commit the
+/// firmware was built from.
+#[derive(PartialEq)]
+struct BuildLabels(BoardId);
+
+impl FmtLabels for BuildLabels {
+    fn fmt_labels(&self, writer: &mut impl fmt::Write) -> fmt::Result {
+        write!(
+            writer,
+            "board=\"{}\",commit=\"{}\"",
+            self.0,
+            env!("BUILD_COMMIT")
+        )
+    }
+}
+
 /// Labels of a per-channel sensor metric.
 #[derive(PartialEq)]
 struct ChannelLabels<C> {
@@ -141,7 +157,7 @@ type CapacitanceFamily<M> = MetricFamily<'static, M, { CAPACITANCE.len() }, Chan
 type ColorFamily<M> = MetricFamily<'static, M, { COLOR.len() }, ChannelLabels<&'static str>>;
 
 struct Metrics {
-    firmware_build: BoardFamily<IntGauge>,
+    firmware_build: MetricFamily<'static, IntGauge, 1, BuildLabels>,
     battery_low: BoardFamily<IntGauge>,
     capacitance: CapacitanceFamily<IntGauge>,
     capacitance_errors: CapacitanceFamily<Counter>,
@@ -162,7 +178,7 @@ impl Metrics {
     fn new() -> Self {
         Metrics {
             firmware_build: MetricBuilder::new("sensor_board_firmware_build")
-                .with_help("Build time of the running firmware, as a Unix timestamp.")
+                .with_help("Build time of the running firmware, as a Unix timestamp, labeled with its Git commit.")
                 .build_labeled(),
             battery_low: MetricBuilder::new("sensor_board_battery_low")
                 .with_help("1 if the supply voltage has been low since the board started, else 0.")
@@ -428,7 +444,7 @@ impl Exporter {
         // Drop the metrics recorded under the previous configuration.
         self.metrics.reset();
         self.metrics.with(|metrics| {
-            if let Some(build) = metrics.firmware_build.register(BoardLabels(self.board)) {
+            if let Some(build) = metrics.firmware_build.register(BuildLabels(self.board)) {
                 build.set_value(update::build().0 as usize);
             }
         });

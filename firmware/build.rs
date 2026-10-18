@@ -29,4 +29,36 @@ fn main() {
         "cargo:rustc-env=BUILD_STAMP={}",
         stamp.unwrap_or_else(|| "unknown".into())
     );
+
+    println!("cargo:rustc-env=BUILD_COMMIT={}", commit());
+}
+
+/// The Git commit that the firmware is built from: the abbreviated hash,
+/// with `-dirty` if the firmware or `protocol` has uncommitted changes.
+/// `unknown` outside a Git checkout.
+fn commit() -> String {
+    let git = |args: &[&str]| {
+        let output = Command::new("git").args(args).output().ok()?;
+        output
+            .status
+            .success()
+            .then(|| String::from_utf8_lossy(&output.stdout).trim().to_string())
+    };
+    let Some(hash) = git(&["rev-parse", "--short=12", "HEAD"]) else {
+        return "unknown".into();
+    };
+
+    // Run again when the checked-out commit or the staged files change: a
+    // commit changes neither the sources nor their modification times.
+    for path in ["HEAD", "logs/HEAD", "index"] {
+        if let Some(path) = git(&["rev-parse", "--git-path", path]) {
+            println!("cargo:rerun-if-changed={path}");
+        }
+    }
+    println!("cargo:rerun-if-changed=../protocol");
+
+    match git(&["status", "--porcelain", "--", ".", "../protocol"]) {
+        Some(changes) if changes.is_empty() => hash,
+        _ => format!("{hash}-dirty"),
+    }
 }

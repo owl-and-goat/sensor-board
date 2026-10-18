@@ -11,12 +11,12 @@ use postcard_rpc::{
 };
 use protocol::{
     Addresses, ApplyUpdate, BeginInstall, BeginUpdate, BoardConfig, BoardDiscovered, BoardId,
-    BoardInfo, ConfigError, ConfigFor, CoprocessorResult, CoprocessorStatus, Dataset, DeviceMode,
-    DiscoverBoards, EnterBootloader, FinishInstall, FinishUpdate, FirmwareStatus, GetBoardConfig,
-    GetBoardInfo, GetCoprocessorStatus, GetDeviceMode, GetFirmwareStatus, GetMetrics,
-    GetNetworkAddresses, GetNetworkDataset, GetNetworkNeighbors, GetNetworkStatus,
-    GetOfferProgress, GetRegistration, ImageChunk, ImageSize, JoinNetwork, LeaveNetwork,
-    MeasureTempRh, Member, NeighborTable, NetworkError, NetworkStatus, OfferProgress,
+    BoardInfo, BuildCommit, ConfigError, ConfigFor, CoprocessorResult, CoprocessorStatus, Dataset,
+    DeviceMode, DiscoverBoards, EnterBootloader, FinishInstall, FinishUpdate, FirmwareStatus,
+    GetBoardConfig, GetBoardInfo, GetBuildCommit, GetCoprocessorStatus, GetDeviceMode,
+    GetFirmwareStatus, GetMetrics, GetNetworkAddresses, GetNetworkDataset, GetNetworkNeighbors,
+    GetNetworkStatus, GetOfferProgress, GetRegistration, ImageChunk, ImageSize, JoinNetwork,
+    LeaveNetwork, MeasureTempRh, Member, NeighborTable, NetworkError, NetworkStatus, OfferProgress,
     ReadSensorValue, Registration, Report, ReportReceived, SLEEPY_POLL_PERIOD, Sensor,
     SensorReadReq, SensorReadResult, SetBoardConfig, StartCollecting, StartOffering,
     StopCollecting, StopOffering, TempRhReq, TempRhResult, USB_PID, USB_VID, UninstallStack,
@@ -129,6 +129,12 @@ impl Board {
 
     pub async fn info(&self) -> Result<BoardInfo> {
         self.call::<GetBoardInfo>(&()).await
+    }
+
+    /// The Git commit that the board's firmware was built from. `None` if
+    /// the firmware predates the endpoint.
+    pub async fn commit(&self) -> Option<BuildCommit> {
+        self.call::<GetBuildCommit>(&()).await.ok()
     }
 
     pub async fn network_status(&self) -> Result<NetworkStatus> {
