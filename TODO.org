@@ -279,3 +279,6 @@ clips. so the pogo pins have to be held in place by hand, and SWDIO/SWCLK
 lose contact (the probe then still reads the target voltage and can reset
 the board, because VCC, reset and GND are on the other row). use a footprint
 that the clips or the cable's legs can hold on to, or another connector.
+** TODO re-route board after edits
+** TODO re-index cap silkscreen from zero
+** TODO add +/- silkscreen for battery holder
