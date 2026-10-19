@@ -99,6 +99,17 @@ gdb:
     trap 'kill $(jobs -p)' EXIT
     gdb {{ elf_firmware }} -ex 'target extended-remote :1337'
 
+test-protocol *args:
+    ( cd protocol && cargo test {{ args }} )
+
+test-cli *args:
+    ( cd cli && cargo test {{ args }} )
+
+[default]
+test *args:
+    {{ just_executable() }} test-protocol {{ args }}
+    {{ just_executable() }} test-cli {{ args }}
+
 build *args:
     ( cd protocol && cargo build {{ args }} )
     ( cd firmware && cargo build {{ args }} )
