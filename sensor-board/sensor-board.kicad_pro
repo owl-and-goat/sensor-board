@@ -643,6 +643,9 @@
       "/board rf": [
         "62R"
       ],
+      "GNDPWR": [
+        "power"
+      ],
       "Net-(AE1-A)": [
         "50R"
       ],
@@ -660,6 +663,9 @@
       ],
       "Net-(U1-IN)": [
         "62R"
+      ],
+      "VBUS": [
+        "power"
       ],
       "usb_d+": [
         "USB"
@@ -807,7 +813,7 @@
         "uuid": "51c2f14d-61ea-40ae-9b85-8b2a49be52ac"
       }
     ],
-    "used_designators": "U1-11,D1-2,C1-35,BT1,H1-2,Q1-3,L1-8,SW1-2,AE1,R1-17,R20-21,JP1-2,TP1-13,#PWR1-81,Y1-2,J1-12,K1,#FLG1-3,MIC1",
+    "used_designators": "#PWR1-83,Y1-2,TP1-13,JP1-2,R1-17,R20-23,MIC1,#FLG1-3,K1,J1-12,Q1-4,U1-11,D1-3,C1-35,BT1,H1-2,L1-8,AE1,SW1-2",
     "variants": []
   },
   "sheets": [
