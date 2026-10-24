@@ -266,6 +266,14 @@ either on usb or on battery, never both, and a board on battery can only be
 reached over the network. replace the jumper with a power path that keeps
 VBUS off the rail: for example the regulator on VBUS only, and the cell
 behind an ideal diode or a load switch.
+** TODO decouple the motion sensor's supply
+reading the chip over swd makes the pir (U10) trigger: on 2026-10-24, with
+the sensor covered and probe-rs polling PA2 every half second, its output
+went high every second or two, and it went quiet once the reads stopped. its
+datasheet asks for a stable supply and a capacitor at its power pin, because
+supply noise causes false detections. U10 has none of its own: the nearest
+capacitor on +3V0 is C21 (0.1 µF), 7.8 mm away. put one right at U10 pin 1,
+and consider an rc filter or a ferrite between +3V0 and the sensor.
 ** TODO give the debug connector a footprint that holds the cable
 J4 is the Tag-Connect TC2030-NL footprint, which has no spots for the cable's
 clips. so the pogo pins have to be held in place by hand, and SWDIO/SWCLK

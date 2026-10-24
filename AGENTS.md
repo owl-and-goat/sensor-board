@@ -379,6 +379,13 @@ battery stays in Stop mode until there is motion. `motion_enabled` in
   has stayed low for a whole hold. A restart in front of someone used to
   report "no motion" for a few seconds (seen on 4D0021 on 2026-10-24),
   because the output happened to be low at the end of the warm-up.
+- Reading the chip over SWD makes the sensor trigger. On 2026-10-24, with
+  the sensor covered and `probe-rs read` polling PA2 every half second, its
+  output went high every second or two, and the detection never ended. It
+  ended 20 s after the reads stopped. A probe that is connected and not
+  used does no harm. The datasheet asks for a stable supply with a
+  capacitor at the sensor's power pin. The nearest one on the 3 V rail is
+  C21 (0.1 µF), 7.8 mm from U10.
 - R17 (100 kΩ) pulls the pin down, so it stays low on a board without the
   sensor, and the firmware doesn't turn on the chip's own pull-down. R17
   draws 30 µA while the output is high.
