@@ -348,6 +348,99 @@ from TI's example, which uses the same tank circuit. The oscillation
 amplitude should be 1.2 to 1.8 V peak, and it hasn't been measured with an
 electrode attached.
 
+## The motion sensor
+
+The motion sensor is an EKMB130711, a passive infrared sensor whose output
+goes high while it detects motion. It's on PA2. `firmware/src/sensor/motion.rs`
+waits for the output with an interrupt instead of polling it, so a board on
+battery stays in Stop mode until there is motion. `motion_enabled` in
+`BoardConfig` turns it on (`config set --motion-sensor true`). It is not in
+`Sensor`, because it has no poll interval.
+
+- A detection starts when the output goes high, and ends once the output has
+  stayed low for a minute (`HOLD`). Motion that goes on, or comes back
+  within the minute, is one detection.
+- The metrics export `sensor_board_motion`, which is 1 during a detection,
+  and `sensor_board_motion_detections_total`. The Pushgateway only keeps the
+  last value pushed, so a detection that started and ended between two
+  scrapes of it would be missing from the gauge. Use the counter
+  (`increase(...)`) to count detections.
+- A board on battery pushes when a detection starts and when it ends, as
+  well as after every sensor read. A board on aux power records the change
+  for its next scrape.
+- The output goes high with each movement and low in between, even while
+  someone is in front of the sensor. The hold bridges those gaps, so a
+  person at a desk next to the board keeps a detection going for as long as
+  they're there. That's what Home Assistant expects of a motion sensor.
+- The sensor's output is undefined for 10 s after power-up (the datasheet's
+  `Twu`), so the task waits that long before it watches the pin. After
+  that, it treats the start like the end of a detection: it publishes
+  "motion" at the first rising edge, but "no motion" only once the output
+  has stayed low for a whole hold. A restart in front of someone used to
+  report "no motion" for a few seconds (seen on 4D0021 on 2026-10-24),
+  because the output happened to be low at the end of the warm-up.
+- R17 (100 kΩ) pulls the pin down, so it stays low on a board without the
+  sensor, and the firmware doesn't turn on the chip's own pull-down. R17
+  draws 30 µA while the output is high.
+
+### Home Assistant
+
+A board whose configuration has a Home Assistant server
+(`config set --home-assistant '[address]:8123'`) reports every change of
+the gauge to it, in both power modes. It sends `POST
+/api/webhook/sensor-board-<serial>` with `{"motion":true}` or
+`{"motion":false}`. The webhook ID comes from the serial number, so the
+configuration only holds the address. Home Assistant runs on cerberus, next to
+the border router, and the firewall there trusts the Thread interface, so a
+board reaches port 8123 directly.
+
+- The report goes out before the sensor reads and the push, because an
+  automation may be waiting for it.
+- A failed report is tried again after a minute until Home Assistant takes
+  it. Otherwise a lost "clear" would leave Home Assistant showing motion
+  until the next detection. Home Assistant answers 200 even for a webhook it
+  doesn't know, so a wrong webhook ID shows up only as a missing entity.
+- After a configuration change, the board reports the current state. After
+  a restart, it reports at the first motion, or after a minute without any.
+
+Each board needs a trigger-based template binary sensor in Home Assistant's
+`configuration.yaml`, which keeps its state across Home Assistant restarts:
+
+```yaml
+template:
+  - triggers:
+      - trigger: webhook
+        webhook_id: sensor-board-4D0021000350475532303120
+        allowed_methods: [POST]
+        local_only: true
+    binary_sensor:
+      - name: Sensor board 4D0021 motion
+        unique_id: sensor_board_4D0021_motion
+        device_class: motion
+        state: "{{ trigger.json.motion }}"
+```
+
+`local_only` accepts the boards, because Home Assistant counts the `fd94:…`
+ULA addresses as local.
+
+With `home_assistant` in `BoardConfig`, the longest `ConfigMessage` is 265
+bytes, so `MAX_DATAGRAM_LEN` in `thread/ot.rs` went from 256 to 320. A
+firmware from before then drops a longer datagram, but a real configuration
+is far shorter.
+
+- A configuration that's the same as the stored one isn't stored again, so
+  it doesn't make the board report. To make a board report, clear the
+  address with `--home-assistant none` and set it again.
+- A report that arrives before the webhook exists in Home Assistant is lost,
+  because Home Assistant answers 200 anyway. The entity then stays unknown
+  until the next change.
+
+Tested on board 4D0021 on 2026-10-18, with Home Assistant 2026.10.1 on
+cerberus: changes from the motion sensor reached the entity, and a report
+made by setting the address arrived about 0.1 s after the `config set`
+returned. Not tested: a board on battery, and a report retried after a
+failure.
+
 ## CPU2: FUS and the Thread stack
 
 ST's images are in STM32CubeWB, under

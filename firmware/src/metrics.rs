@@ -3,17 +3,22 @@
 //!
 //! - `Aux`: it serves them at `GET /metrics` on [`SCRAPE_PORT`].
 //! - `Battery`: it pushes them to the configured Pushgateway after every
-//!   sensor read. It has no scrape endpoint, so it registers a service of
+//!   sensor read, and when the motion sensor detects motion or stops
+//!   detecting it. It has no scrape endpoint, so it registers a service of
 //!   its own for the CLI to find it by.
 //!
 //! A board without a configuration is taken to be on aux power, and reads no
 //! sensors. The configuration also sets which sensors are read and how often.
+//!
+//! In both modes, a board with a Home Assistant server in its configuration
+//! reports each change in what the motion sensor detects to the webhook
+//! `sensor-board-<serial>` there.
 
 use core::cell::RefCell;
 use core::fmt::{self, Write as _};
 use core::net::SocketAddrV6;
 
-use embassy_futures::select::{Either, select};
+use embassy_futures::select::{Either, Either3, Either4, select, select3, select4};
 use embassy_sync::blocking_mutex::{Mutex, raw::ThreadModeRawMutex};
 use embassy_time::{Duration, Instant, Timer, with_timeout};
 use fixed::{
@@ -34,6 +39,7 @@ use crate::{
         capacitance::{self, CapacitanceSensor},
         color::{self, ColorSensor},
         mic::Mic,
+        motion,
         temp_rh::TempRhSensor,
     },
     supply, thread, update,
@@ -66,7 +72,8 @@ const BOARD_SERVICE: thread::SrpService = thread::SrpService {
 /// The Pushgateway job name. The instance is the board's serial number.
 const JOB: &str = "sensor_board";
 
-/// Delay before the next push after a failed one.
+/// Delay before the next push after a failed one, and before reporting to
+/// Home Assistant again after a failed report.
 const PUSH_RETRY: Duration = Duration::from_secs(60);
 
 /// How long a board that pushes waits for its network before it measures.
@@ -250,6 +257,8 @@ struct Metrics {
     temp_rh_errors: BoardFamily<Counter>,
     sound_level: BoardFamily<FixedGauge<Decimal>>,
     sound_errors: BoardFamily<Counter>,
+    motion: BoardFamily<IntGauge>,
+    motion_detections: BoardFamily<Counter>,
     scrapes: BoardFamily<Counter>,
     pushes: BoardFamily<Counter>,
     push_failures: BoardFamily<Counter>,
@@ -292,6 +301,12 @@ impl Metrics {
             sound_errors: MetricBuilder::new("sensor_board_sound_errors_total")
                 .with_help("Failed measurements of the sound level.")
                 .build_labeled(),
+            motion: MetricBuilder::new("sensor_board_motion")
+                .with_help("1 if the motion sensor has detected motion in the last minute, else 0.")
+                .build_labeled(),
+            motion_detections: MetricBuilder::new("sensor_board_motion_detections_total")
+                .with_help("Times the motion sensor has detected motion after a minute without.")
+                .build_labeled(),
             scrapes: MetricBuilder::new("sensor_board_scrapes_total")
                 .with_help("Scrapes of the board's metrics endpoint.")
                 .build_labeled(),
@@ -322,6 +337,8 @@ impl Metrics {
         self.temp_rh_errors.fmt_metric(text)?;
         self.sound_level.fmt_metric(text)?;
         self.sound_errors.fmt_metric(text)?;
+        self.motion.fmt_metric(text)?;
+        self.motion_detections.fmt_metric(text)?;
         self.scrapes.fmt_metric(text)?;
         self.pushes.fmt_metric(text)?;
         self.push_failures.fmt_metric(text)?;
@@ -402,6 +419,7 @@ pub struct Builder {
     pub color: Option<&'static sensor::Shared<ColorSensor<'static>>>,
     pub temp_rh: Option<&'static sensor::Shared<TempRhSensor<'static>>>,
     pub mic: &'static sensor::Shared<Mic<'static>>,
+    pub motion: motion::Monitor,
 }
 
 impl Builder {
@@ -421,6 +439,11 @@ impl Builder {
                 color: self.color,
                 temp_rh: self.temp_rh,
                 mic: self.mic,
+                motion: self.motion,
+                motion_enabled: false,
+                home_assistant: None,
+                reported: None,
+                report_retry: None,
                 supply: self.supply,
                 board,
                 metrics: shared,
@@ -507,6 +530,16 @@ impl Task {
     }
 }
 
+/// What a board that pushes wakes up for.
+enum Wake {
+    /// To read the sensor at this index in [`SENSORS`].
+    Read(usize),
+    /// For a change in what the motion sensor detects.
+    Motion,
+    /// To report to Home Assistant again after a failure.
+    Report,
+}
+
 /// A sensor's polling schedule: when it is next due, and its interval.
 #[derive(Clone, Copy)]
 struct Poll {
@@ -520,6 +553,17 @@ struct Exporter {
     color: Option<&'static sensor::Shared<ColorSensor<'static>>>,
     temp_rh: Option<&'static sensor::Shared<TempRhSensor<'static>>>,
     mic: &'static sensor::Shared<Mic<'static>>,
+    motion: motion::Monitor,
+    /// Whether the configuration enables the motion sensor.
+    motion_enabled: bool,
+    /// The Home Assistant server to report the motion sensor's state to.
+    home_assistant: Option<SocketAddrV6>,
+    /// Whether Home Assistant was last told that there is motion. `None`
+    /// until a report has been accepted.
+    reported: Option<bool>,
+    /// When to report to Home Assistant again. `None` until the motion
+    /// sensor's state changes.
+    report_retry: Option<Instant>,
     supply: supply::Monitor,
     /// This board's ID.
     board: BoardId,
@@ -545,6 +589,12 @@ impl Exporter {
         });
 
         self.sound_duration = board_config::sound_duration(config);
+        self.motion_enabled = config.is_some_and(|config| config.motion_enabled);
+        self.record_motion();
+        // Report the current state, which a new server does not have yet.
+        self.home_assistant = config.and_then(|config| config.home_assistant);
+        self.reported = None;
+        self.report_retry = Some(Instant::now());
         let now = Instant::now();
         for (poll, sensor) in self.polls.iter_mut().zip(SENSORS) {
             let sensor = config.and_then(|config| config.sensor_config.0[sensor]);
@@ -580,17 +630,25 @@ impl Exporter {
         }
     }
 
-    /// Serve the scrape endpoint and poll the sensors.
+    /// Serve the scrape endpoint, poll the sensors, and record and report
+    /// what the motion sensor detects.
     async fn serve(&mut self) -> ! {
         self.count(|metrics| &metrics.scrapes, 0);
         loop {
-            let next = select(
+            let next = select4(
                 Self::wait_until_due(&self.polls),
                 Self::accept_scrape(&mut self.tcp),
+                Self::motion_changed(&mut self.motion, self.motion_enabled),
+                Self::wait_for(self.report_retry),
             );
             match next.await {
-                Either::First(sensor) => self.read(sensor).await,
-                Either::Second(()) => self.handle_scrape().await,
+                Either4::First(sensor) => self.read(sensor).await,
+                Either4::Second(()) => self.handle_scrape().await,
+                Either4::Third(()) => {
+                    self.record_motion();
+                    self.report_motion().await;
+                }
+                Either4::Fourth(()) => self.report_motion().await,
             }
         }
     }
@@ -642,8 +700,9 @@ impl Exporter {
         self.tcp.close().await;
     }
 
-    /// Poll the sensors, and push the metrics to `gateway` after each read.
-    /// Without a gateway, only poll.
+    /// Poll the sensors, and push the metrics to `gateway` after each read
+    /// and each change in what the motion sensor detects. Without a gateway,
+    /// only poll. In between, the board waits, and stops if it can.
     async fn push(&mut self, gateway: Option<SocketAddrV6>) -> ! {
         // No push before this time. Set after a failed push.
         let mut not_before = Instant::now();
@@ -653,15 +712,34 @@ impl Exporter {
                 let outcome = self.tcp.register(Some(BOARD_SERVICE)).await;
                 registered = outcome.is_ok();
             }
-            let due = Self::wait_until_due(&self.polls);
-            let sensor = if registered {
-                due.await
+            let next = async {
+                let next = select3(
+                    Self::wait_until_due(&self.polls),
+                    Self::motion_changed(&mut self.motion, self.motion_enabled),
+                    Self::wait_for(self.report_retry),
+                );
+                match next.await {
+                    Either3::First(sensor) => Wake::Read(sensor),
+                    Either3::Second(()) => Wake::Motion,
+                    Either3::Third(()) => Wake::Report,
+                }
+            };
+            let wake = if registered {
+                next.await
             } else {
-                match select(due, Timer::after(RETRY)).await {
-                    Either::First(sensor) => sensor,
+                match select(next, Timer::after(RETRY)).await {
+                    Either::First(wake) => wake,
                     Either::Second(()) => continue,
                 }
             };
+            // Home Assistant first, because an automation may be waiting
+            // for it. A sound measurement would delay it by a second.
+            if !matches!(wake, Wake::Read(_)) {
+                self.report_motion().await;
+            }
+            if let Wake::Report = wake {
+                continue;
+            }
             // A reading that cannot be pushed is of no use, so wait for the
             // network first. That matters when the board starts: a sensor is
             // due at once, a few seconds before the board has attached.
@@ -670,7 +748,9 @@ impl Exporter {
                 let _ = with_timeout(NETWORK_WAIT, self.tcp.ready(*gateway.ip())).await;
             }
 
-            self.read(sensor).await;
+            if let Wake::Read(sensor) = wake {
+                self.read(sensor).await;
+            }
             // Also read every other sensor that is due, so that one push
             // covers them all.
             let now = Instant::now();
@@ -680,6 +760,9 @@ impl Exporter {
                 }
             }
 
+            // The motion sensor's state may have changed while the board
+            // waited for the network.
+            self.record_motion();
             if let Some(gateway) = gateway
                 && !self.push_to(gateway).await
             {
@@ -729,6 +812,80 @@ impl Exporter {
             }
             None => core::future::pending().await,
         }
+    }
+
+    /// Report the motion sensor's state to Home Assistant, unless it has it
+    /// already. After a failure, try again after [`PUSH_RETRY`].
+    async fn report_motion(&mut self) {
+        self.report_retry = None;
+        let state = self.motion.state().filter(|_| self.motion_enabled);
+        let (Some(server), Some(state)) = (self.home_assistant, state) else {
+            return;
+        };
+        if self.reported == Some(state.detected) {
+            return;
+        }
+
+        let _ = with_timeout(NETWORK_WAIT, self.tcp.ready(*server.ip())).await;
+        let mut path: heapless::String<64> = heapless::String::new();
+        // Cannot fail: the path is 50 characters long.
+        let _ = write!(path, "/api/webhook/sensor-board-{}", self.board);
+        let body = match state.detected {
+            true => r#"{"motion":true}"#,
+            false => r#"{"motion":false}"#,
+        };
+        let status = http::post_json(&mut self.tcp, server, &path, body).await;
+        self.tcp.close().await;
+        // Home Assistant answers 200 even for a webhook that it does not
+        // know, so that the response does not tell which ones exist.
+        match status {
+            Ok(200..300) => self.reported = Some(state.detected),
+            Ok(status) => {
+                defmt::warn!("metrics: Home Assistant answered {}", status);
+                self.report_retry = Some(Instant::now() + PUSH_RETRY);
+            }
+            Err(e) => {
+                defmt::debug!("metrics: report to Home Assistant failed: {}", e);
+                self.report_retry = Some(Instant::now() + PUSH_RETRY);
+            }
+        }
+    }
+
+    /// Wait until `at`. Never returns for `None`.
+    async fn wait_for(at: Option<Instant>) {
+        match at {
+            Some(at) => Timer::at(at).await,
+            None => core::future::pending().await,
+        }
+    }
+
+    /// Wait for the motion sensor's state to change. Never returns if the
+    /// sensor is disabled.
+    async fn motion_changed(motion: &mut motion::Monitor, enabled: bool) {
+        match enabled {
+            true => {
+                motion.changed().await;
+            }
+            false => core::future::pending().await,
+        }
+    }
+
+    /// Record the motion sensor's current state, if the sensor is enabled
+    /// and has published one.
+    fn record_motion(&self) {
+        let Some(state) = self.motion.state().filter(|_| self.motion_enabled) else {
+            return;
+        };
+        self.metrics.with(|metrics| {
+            if let Some(gauge) = metrics.motion.register(BoardLabels(self.board)) {
+                gauge.set_value(usize::from(state.detected));
+            }
+            let counter = metrics.motion_detections.register(BoardLabels(self.board));
+            if let Some(counter) = counter {
+                // The state has the count since the board started.
+                counter.fetch_add(state.detections.wrapping_sub(counter.value()));
+            }
+        });
     }
 
     /// Read the sensor at index `sensor` in [`SENSORS`], and record the

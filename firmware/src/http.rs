@@ -1,5 +1,6 @@
-//! HTTP for Prometheus over the Thread TCP connection: a server for scrape
-//! requests, and a client for `PUT` requests to a Pushgateway. nanofish
+//! HTTP over the Thread TCP connection: a server for Prometheus's scrape
+//! requests, and a client for `PUT` requests to a Pushgateway and `POST`
+//! requests to Home Assistant's webhooks. nanofish
 //! implements HTTP/1.1, and this module runs it on a [`Tcp`] connection.
 //! Every request uses its own connection, which is closed after the response.
 
@@ -16,6 +17,9 @@ use crate::thread::{Tcp, TcpChunk, TcpError};
 
 /// The `Content-Type` of Prometheus's text format, for responses and pushes.
 const CONTENT_TYPE: &str = "text/plain; version=0.0.4; charset=utf-8";
+
+/// The `Content-Type` of a JSON body.
+const JSON: &str = "application/json";
 
 /// The longest body of a response. nanofish copies a response into one
 /// buffer before it sends it.
@@ -143,16 +147,40 @@ pub async fn serve(tcp: &mut Tcp, handler: &mut impl HttpHandler) -> Result<(), 
     Ok(())
 }
 
-/// Send `body` to `to` in a `PUT` request for `path`. Returns the status code
-/// of the response.
+/// Send `body`, in Prometheus's text format, to `to` in a `PUT` request for
+/// `path`. Returns the status code of the response.
 pub async fn put(tcp: &mut Tcp, to: SocketAddrV6, path: &str, body: &str) -> Result<u16, Error> {
+    request(tcp, HttpMethod::PUT, to, path, CONTENT_TYPE, body).await
+}
+
+/// Send `body`, which is JSON, to `to` in a `POST` request for `path`.
+/// Returns the status code of the response.
+pub async fn post_json(
+    tcp: &mut Tcp,
+    to: SocketAddrV6,
+    path: &str,
+    body: &str,
+) -> Result<u16, Error> {
+    request(tcp, HttpMethod::POST, to, path, JSON, body).await
+}
+
+/// Send `body` to `to` in a request for `path`. Returns the status code of
+/// the response.
+async fn request(
+    tcp: &mut Tcp,
+    method: HttpMethod,
+    to: SocketAddrV6,
+    path: &str,
+    content_type: &str,
+    body: &str,
+) -> Result<u16, Error> {
     let mut host: heapless::String<64> = heapless::String::new();
     write!(host, "{to}").map_err(|_| Error::Malformed)?;
     let request = HttpClientRequest {
-        method: HttpMethod::PUT,
+        method,
         host: &host,
         path,
-        headers: &[HttpHeader::content_type(CONTENT_TYPE)],
+        headers: &[HttpHeader::content_type(content_type)],
         body: Some(body.as_bytes()),
     };
     // A failed read is not tried again: `Tcp` has already waited for the

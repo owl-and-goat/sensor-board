@@ -13,6 +13,7 @@ use protocol::SensorReadError;
 pub mod capacitance;
 pub mod color;
 pub mod mic;
+pub mod motion;
 pub mod temp_rh;
 
 /// A sensor that several tasks read: the RPC handlers and the metrics.

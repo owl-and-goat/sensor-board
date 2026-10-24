@@ -43,6 +43,7 @@ use crate::sensor::{
         Mic,
         pdm::{self, Pdm},
     },
+    motion,
     temp_rh::TempRhSensor,
 };
 
@@ -191,6 +192,11 @@ async fn metrics(task: metrics::Task) -> ! {
 }
 
 #[embassy_executor::task]
+async fn motion(task: motion::Task) -> ! {
+    task.run().await
+}
+
+#[embassy_executor::task]
 async fn watchdog(iwdg: Peri<'static, peripherals::IWDG>) -> ! {
     // 32 s because this chip pins the IWDG prescaler at /256 whatever is written, and that is the
     // period /256 expresses with the driver's reload maths (measurements in AGENTS.md).
@@ -333,6 +339,13 @@ async fn main(spawner: Spawner) {
     static MIC: StaticCell<sensor::Shared<Mic<'static>>> = StaticCell::new();
     let mic = &*MIC.init(Mutex::new(Mic::new(pdm)));
 
+    let (motion_task, motion_monitor) = motion::Builder {
+        pin: p.PA2,
+        exti: p.EXTI2,
+    }
+    .init();
+    spawner.spawn(motion(motion_task).unwrap());
+
     let (discovery_task, discovery_handle) = discovery::Builder {
         socket: discovery_socket,
         network: thread_handle.monitor(),
@@ -347,6 +360,7 @@ async fn main(spawner: Spawner) {
         color,
         temp_rh,
         mic,
+        motion: motion_monitor,
     }
     .init();
     spawner.spawn(metrics(metrics_task).unwrap());
