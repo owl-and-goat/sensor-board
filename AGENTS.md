@@ -358,8 +358,8 @@ battery stays in Stop mode until there is motion. `motion_enabled` in
 `Sensor`, because it has no poll interval.
 
 - A detection starts when the output goes high, and ends once the output has
-  stayed low for a minute (`HOLD`). Motion that goes on, or comes back
-  within the minute, is one detection.
+  stayed low for 20 s (`HOLD`). Motion that goes on, or comes back
+  within the 20 s, is one detection. It was a minute until 2026-10-24.
 - The metrics export `sensor_board_motion`, which is 1 during a detection,
   and `sensor_board_motion_detections_total`. The Pushgateway only keeps the
   last value pushed, so a detection that started and ended between two
@@ -401,7 +401,7 @@ board reaches port 8123 directly.
   until the next detection. Home Assistant answers 200 even for a webhook it
   doesn't know, so a wrong webhook ID shows up only as a missing entity.
 - After a configuration change, the board reports the current state. After
-  a restart, it reports at the first motion, or after a minute without any.
+  a restart, it reports at the first motion, or after 20 s without any.
 
 Each board needs a trigger-based template binary sensor in Home Assistant's
 `configuration.yaml`, which keeps its state across Home Assistant restarts:

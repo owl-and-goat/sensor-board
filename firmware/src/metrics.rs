@@ -302,10 +302,10 @@ impl Metrics {
                 .with_help("Failed measurements of the sound level.")
                 .build_labeled(),
             motion: MetricBuilder::new("sensor_board_motion")
-                .with_help("1 if the motion sensor has detected motion in the last minute, else 0.")
+                .with_help("1 if the motion sensor has detected motion in the last 20 seconds, else 0.")
                 .build_labeled(),
             motion_detections: MetricBuilder::new("sensor_board_motion_detections_total")
-                .with_help("Times the motion sensor has detected motion after a minute without.")
+                .with_help("Times the motion sensor has detected motion after 20 seconds without.")
                 .build_labeled(),
             scrapes: MetricBuilder::new("sensor_board_scrapes_total")
                 .with_help("Scrapes of the board's metrics endpoint.")

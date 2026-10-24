@@ -28,11 +28,14 @@ bind_interrupts!(struct Irqs {
     EXTI2 => exti::InterruptHandler<interrupt::typelevel::EXTI2>;
 });
 
-/// How long a detection lasts after the output was last high. It's as long
-/// as the default Prometheus scrape interval, so that a scrape of the board
-/// or of the Pushgateway sees every detection in the gauge. A longer hold
-/// also means fewer pushes when there's motion on and off.
-pub const HOLD: Duration = Duration::from_secs(60);
+/// How long a detection lasts after the output was last high. The output is
+/// low between someone's movements, and the hold bridges those gaps, so that
+/// someone who sits still for a moment doesn't end the detection. A longer
+/// hold also means fewer reports when there's motion on and off. A shorter
+/// one means Home Assistant learns sooner that the room is empty. A detection
+/// that's shorter than the scrape interval can be missing from the gauge,
+/// but the counter still counts it.
+pub const HOLD: Duration = Duration::from_secs(20);
 
 /// From the datasheet:
 ///
