@@ -1549,6 +1549,8 @@ mod tests {
             power_mode: PowerMode::Battery,
             pushgateway: Some(SocketAddrV6::new([0xffff; 8].into(), u16::MAX, 0, 0)),
             sound_duration: core::time::Duration::MAX,
+            motion_enabled: true,
+            home_assistant: Some(SocketAddrV6::new([0xffff; 8].into(), u16::MAX, 0, 0)),
         }
     }
 

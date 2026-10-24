@@ -144,8 +144,11 @@ impl UdpBuffer {
     }
 }
 
-/// The longest payload a UDP socket sends or receives.
-pub const MAX_DATAGRAM_LEN: usize = 256;
+/// The longest payload a UDP socket sends or receives. It has room for the
+/// longest `ConfigMessage` (265 bytes, with every interval at its maximum).
+/// Firmware from before `home_assistant` had 256, and drops a longer
+/// message. A real configuration is far shorter than that.
+pub const MAX_DATAGRAM_LEN: usize = 320;
 
 /// The payload of a UDP datagram.
 pub type Datagram = heapless::Vec<u8, MAX_DATAGRAM_LEN>;

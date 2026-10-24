@@ -4,6 +4,7 @@
 //! border router reaches.
 
 use std::{
+    fmt::{self, Display},
     net::{Ipv6Addr, SocketAddrV6},
     time::Duration,
 };
@@ -50,18 +51,28 @@ pub struct Changes {
 
     /// The Prometheus Pushgateway to push metrics to in battery mode, as in
     /// `[fd12:3456::1]:9091`, or `none` to clear it
-    #[arg(long, value_name = "[ADDRESS]:PORT", value_parser = pushgateway_change)]
-    pushgateway: Option<PushgatewayChange>,
+    #[arg(long, value_name = "[ADDRESS]:PORT", value_parser = address_change)]
+    pushgateway: Option<AddressChange>,
+
+    /// The Home Assistant server to report the motion sensor's state to, as in
+    /// `[fd12:3456::1]:8123`, or `none` to clear it. The board calls the webhook
+    /// `sensor-board-<serial>` there
+    #[arg(long, value_name = "[ADDRESS]:PORT", value_parser = address_change)]
+    home_assistant: Option<AddressChange>,
 
     /// How long the microphone listens for each sound measurement, as in `125ms` (from 10ms to
     /// 10s)
     #[arg(long, value_name = "DURATION", value_parser = parse_sound_duration)]
     sound_duration: Option<Duration>,
+
+    /// Whether or not to enable the motion sensor
+    #[arg(long)]
+    motion_sensor: Option<bool>,
 }
 
-/// The new Pushgateway setting. `None` clears it.
+/// The new setting of a server's address. `None` clears it.
 #[derive(Debug, Clone, PartialEq, Eq)]
-struct PushgatewayChange(Option<SocketAddrV6>);
+struct AddressChange(Option<SocketAddrV6>);
 
 /// The new configuration of one sensor. `None` disables the sensor.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -77,6 +88,8 @@ impl Changes {
             && self.sensors.is_empty()
             && self.pushgateway.is_none()
             && self.sound_duration.is_none()
+            && self.motion_sensor.is_none()
+            && self.home_assistant.is_none()
     }
 
     /// Apply the changes to `current`. If the board has no configuration
@@ -91,6 +104,8 @@ impl Changes {
                 power_mode,
                 pushgateway: None,
                 sound_duration: DEFAULT_SOUND_DURATION,
+                motion_enabled: false,
+                home_assistant: None,
             },
             (None, _, _) => bail!("it has no configuration yet: give it --id and --power-mode"),
         };
@@ -103,11 +118,17 @@ impl Changes {
         for change in &self.sensors {
             config.sensor_config.0[change.sensor] = change.config;
         }
-        if let Some(PushgatewayChange(pushgateway)) = self.pushgateway {
+        if let Some(AddressChange(pushgateway)) = self.pushgateway {
             config.pushgateway = pushgateway;
         }
         if let Some(duration) = self.sound_duration {
             config.sound_duration = duration;
+        }
+        if let Some(motion_sensor) = self.motion_sensor {
+            config.motion_enabled = motion_sensor;
+        }
+        if let Some(AddressChange(home_assistant)) = self.home_assistant {
+            config.home_assistant = home_assistant;
         }
         Ok(config)
     }
@@ -335,7 +356,7 @@ fn reply(datagram: &[u8], board: BoardId, question: u32) -> Option<Option<BoardC
 pub async fn show(mut route: Route, target: BoardId, stored: bool) -> Result<()> {
     match route.get(target).await? {
         Some(config) if stored => print!("{}", stored_array(&config)),
-        Some(config) => print!("Board {target}\n{}", describe(&config)),
+        Some(config) => print!("Board {target}\n{}", DescribeBoardConfig(&config)),
         None => println!("Board {target} has no configuration."),
     }
     Ok(())
@@ -361,8 +382,8 @@ fn stored_array(config: &BoardConfig) -> String {
 pub async fn set(mut route: Route, target: BoardId, changes: &Changes) -> Result<()> {
     if changes.is_empty() {
         bail!(
-            "nothing to change: give --id, --power-mode, --sensor, --pushgateway or \
-             --sound-duration"
+            "nothing to change: give --id, --power-mode, --sensor, --pushgateway, \
+             --sound-duration, --motion-sensor or --home-assistant"
         );
     }
     let current = route.get(target).await?;
@@ -371,38 +392,61 @@ pub async fn set(mut route: Route, target: BoardId, changes: &Changes) -> Result
         Err(e) => bail!("board {target}: {e}"),
     };
     route.set(target, &config).await?;
-    print!("Board {target} now has\n{}", describe(&config));
+    print!("Board {target} now has\n{}", DescribeBoardConfig(&config));
     Ok(())
 }
 
-/// Format the configuration as text, one setting per line.
-fn describe(config: &BoardConfig) -> String {
-    let BoardConfig {
-        board_id,
-        sensor_config,
-        power_mode,
-        pushgateway,
-        sound_duration,
-    } = config;
-    let mut text = format!("  {:<14}  {board_id}\n", "id");
-    text += &format!("  {:<14}  {}\n", "power mode", name(power_mode));
-    let pushgateway = pushgateway.map_or("none".to_owned(), |address| address.to_string());
-    text += &format!("  {:<14}  {pushgateway}\n", "pushgateway");
-    text += &format!(
-        "  {:<14}  {}\n",
-        "sound duration",
-        describe_interval(*sound_duration)
-    );
-    for (sensor, config) in &sensor_config.0 {
-        let read = match config {
-            Some(SensorConfig { poll_interval }) => {
-                format!("every {}", describe_interval(*poll_interval))
-            }
-            None => "off".to_owned(),
-        };
-        text += &format!("  {:<14}  {read}\n", name(&sensor));
+struct DescribeBoardConfig<'a>(&'a BoardConfig);
+
+impl<'a> Display for DescribeBoardConfig<'a> {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        let BoardConfig {
+            board_id,
+            sensor_config,
+            power_mode,
+            pushgateway,
+            sound_duration,
+            motion_enabled,
+            home_assistant,
+        } = self.0;
+        writeln!(f, "  {:<14}  {board_id}", "id")?;
+        writeln!(f, "  {:<14}  {}", "power mode", name(power_mode))?;
+
+        write!(f, "  {:<14}", "pushgateway")?;
+        match pushgateway {
+            None => writeln!(f, "  none")?,
+            Some(address) => writeln!(f, "  {address}")?,
+        }
+
+        writeln!(
+            f,
+            "  {:<14}  {}",
+            "sound duration",
+            describe_interval(*sound_duration)
+        )?;
+        for (sensor, config) in &sensor_config.0 {
+            write!(f, "  {:<14}  ", name(&sensor))?;
+            match config {
+                Some(SensorConfig { poll_interval }) => {
+                    writeln!(f, "every {}", describe_interval(*poll_interval))?
+                }
+                None => writeln!(f, "off")?,
+            };
+        }
+        writeln!(
+            f,
+            "  {:<14}  {}",
+            "motion sensor",
+            if *motion_enabled { "on" } else { "off" }
+        )?;
+        write!(f, "  {:<14}", "home assistant")?;
+        match home_assistant {
+            None => writeln!(f, "  none")?,
+            Some(address) => writeln!(f, "  {address}")?,
+        }
+
+        Ok(())
     }
-    text
 }
 
 /// The name of `value` on the command line.
@@ -445,13 +489,13 @@ fn parse_sound_duration(text: &str) -> Result<Duration, String> {
     Ok(duration)
 }
 
-/// Parse a `--pushgateway` argument.
-fn pushgateway_change(text: &str) -> Result<PushgatewayChange, String> {
+/// Parse a `--pushgateway` or `--home-assistant` argument.
+fn address_change(text: &str) -> Result<AddressChange, String> {
     if text == "none" {
-        return Ok(PushgatewayChange(None));
+        return Ok(AddressChange(None));
     }
     match text.parse() {
-        Ok(address) => Ok(PushgatewayChange(Some(address))),
+        Ok(address) => Ok(AddressChange(Some(address))),
         Err(_) => Err("expected [ADDRESS]:PORT with an IPv6 address, or none".to_owned()),
     }
 }
@@ -501,6 +545,44 @@ mod tests {
         })
     }
 
+    mod args {
+        use clap::Parser;
+
+        use super::*;
+
+        #[derive(clap::Parser)]
+        struct Params {
+            #[command(flatten)]
+            args: Changes,
+        }
+
+        #[test]
+        fn no_motion_sensor() {
+            let params = Params::parse_from::<[&'static str; 0], _>([]);
+            assert_eq!(params.args.motion_sensor, None)
+        }
+
+        #[test]
+        fn motion_sensor_true() {
+            let params = Params::parse_from(["cmd", "--motion-sensor=true"]);
+            assert_eq!(params.args.motion_sensor, Some(true))
+        }
+
+        #[test]
+        fn motion_sensor_false() {
+            let params = Params::parse_from(["cmd", "--motion-sensor=false"]);
+            assert_eq!(params.args.motion_sensor, Some(false));
+        }
+
+        #[test]
+        fn motion_settings_alone_are_changes() {
+            let params = Params::parse_from(["cmd", "--motion-sensor=true"]);
+            assert!(!params.args.is_empty());
+            let params = Params::parse_from(["cmd", "--home-assistant=none"]);
+            assert!(!params.args.is_empty());
+        }
+    }
+
     fn config() -> BoardConfig {
         let mut sensors = SensorsConfig::default();
         sensors.0[Sensor::Capacitance0] = every(Duration::from_secs(10));
@@ -511,6 +593,8 @@ mod tests {
             power_mode: PowerMode::Aux,
             pushgateway: None,
             sound_duration: DEFAULT_SOUND_DURATION,
+            motion_enabled: false,
+            home_assistant: None,
         }
     }
 
@@ -582,8 +666,10 @@ mod tests {
                 sensor_change("capacitance0=off").unwrap(),
                 sensor_change("humidity=1m").unwrap(),
             ],
-            pushgateway: Some(pushgateway_change("[fd12:3456::1]:9091").unwrap()),
+            pushgateway: Some(address_change("[fd12:3456::1]:9091").unwrap()),
             sound_duration: Some(Duration::from_millis(125)),
+            motion_sensor: None,
+            home_assistant: None,
         };
         let changed = changes.apply(Some(config())).unwrap();
 
@@ -609,6 +695,8 @@ mod tests {
             sensors: vec![sensor_change("capacitance0=10s").unwrap()],
             pushgateway: None,
             sound_duration: None,
+            motion_sensor: None,
+            home_assistant: None,
         };
         assert!(changes.apply(None).is_err());
 
@@ -621,7 +709,7 @@ mod tests {
 
     #[test]
     fn describes_one_setting_per_line() {
-        let text = describe(&config());
+        let text = DescribeBoardConfig(&config()).to_string();
         let lines: Vec<&str> = text.lines().collect();
         assert_eq!(
             lines[..5],
@@ -635,7 +723,9 @@ mod tests {
         );
         assert!(lines.contains(&"  capacitance1    off"), "{text}");
         assert!(lines.contains(&"  temperature     every 5m"), "{text}");
-        assert_eq!(lines.len(), 4 + Sensor::value_variants().len());
+        assert!(lines.contains(&"  motion sensor   off"), "{text}");
+        assert!(lines.contains(&"  home assistant  none"), "{text}");
+        assert_eq!(lines.len(), 6 + Sensor::value_variants().len());
     }
 
     #[test]
@@ -705,15 +795,15 @@ mod tests {
     }
 
     #[test]
-    fn parses_pushgateway_changes() {
+    fn parses_address_changes() {
         let address = SocketAddrV6::new("fd12:3456::1".parse().unwrap(), 9091, 0, 0);
         assert_eq!(
-            pushgateway_change("[fd12:3456::1]:9091"),
-            Ok(PushgatewayChange(Some(address)))
+            address_change("[fd12:3456::1]:9091"),
+            Ok(AddressChange(Some(address)))
         );
-        assert_eq!(pushgateway_change("none"), Ok(PushgatewayChange(None)));
+        assert_eq!(address_change("none"), Ok(AddressChange(None)));
         for malformed in ["fd12:3456::1", "192.168.1.2:9091", "pushgateway:9091", ""] {
-            assert!(pushgateway_change(malformed).is_err(), "{malformed}");
+            assert!(address_change(malformed).is_err(), "{malformed}");
         }
     }
 }
