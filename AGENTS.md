@@ -1037,6 +1037,14 @@ production calibration, and 80 mA at its start.
   higher brown-out level, which is an option byte.
 - Boards on aux power do not start it yet. It has only been tried on one
   board.
+- Erratum 2.2.21 in ES0394 (`doc/es0394.pdf`): "In Stop 2 mode and Stop 1
+  mode, during the switching between SMPS and SMPS bypass modes, the SMPS
+  may generate an unstable situation that may cause interruption of the
+  full system." The workaround is to use the SMPS only with Stop 0, or not
+  at all. It applies to silicon revision Y (`REV_ID` 0x2001 in
+  `DBGMCU_IDCODE`), not to revision X. Board 4D0021 is revision Y (read on
+  2026-10-25), so the boards very likely are. The firmware doesn't follow
+  the workaround yet, and no failure has been traced to it.
 
 Tested on board 4B002E on 2026-10-12, at 3.0 V: `PWR_SR2` showed the
 converter in step-down mode after the start, and still at a push on a board
