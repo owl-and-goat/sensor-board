@@ -78,7 +78,7 @@ features = ["defmt", "stm32wb55cg", "wb55_thread"]
 # (see "Stop mode" under "Boards on battery" in AGENTS.md).
 # https://github.com/glittershark/embassy/tree/wb55-stop
 [patch.crates-io]
-embassy-stm32 = { git = "https://github.com/glittershark/embassy.git", rev = "f5fbbd22b7086ee5f0fd9f0ed12e1388e8e7c809" }
+embassy-stm32 = { git = "https://github.com/glittershark/embassy.git", rev = "1bd16da6a6ff23138b7412817e5abb58c0ea7071" }
 
 [profile.release]
 debug = 2

@@ -445,8 +445,13 @@ is far shorter.
 Tested on board 4D0021 on 2026-10-18, with Home Assistant 2026.10.1 on
 cerberus: changes from the motion sensor reached the entity, and a report
 made by setting the address arrived about 0.1 s after the `config set`
-returned. Not tested: a board on battery, and a report retried after a
-failure.
+returned.
+
+Tested on 4D0021 on 2026-10-25, on a coin cell, with the probe off and the
+board in Stop mode (`sensor_board_stops` 1), after the fix to
+`stop_wakeup_alarm` (see "Stop mode"): a wave set the entity to "on" within
+the second, and it went "off" 20 s after the sensor's output had gone low.
+Not tested: a report retried after a failure.
 
 ## CPU2: FUS and the Thread stack
 
@@ -992,6 +997,15 @@ this. Each of these kept the firmware from working with Stop mode:
 - The chip's stop flags were never cleared.
 - It turned the SMPS off before every stop, and never on again (see "The
   SMPS").
+- When it resumed time after a stop, it cleared the RTC's line in EXTI's
+  pending register with a read-modify-write (`stop_wakeup_alarm` in
+  `rtc/low_power.rs`). The register is write-1-to-clear, so that cleared
+  every pending line, before the EXTI interrupt ran. A GPIO edge that woke
+  the chip was lost: the interrupt ran and found nothing pending, or never
+  happened. The motion sensor's detections then didn't start, or never
+  ended. The button's line and the supply monitor's had the same problem.
+  Found on 2026-10-25, with a temporary build that pushed the EXTI registers
+  every 10 s. embassy's main branch still has it, as of 2026-02-28.
 
 embassy's main branch, read on 2026-10-11, no longer stops with the time
 driver running. The others are still as in 0.6.0. The `wb55-stop` branch
