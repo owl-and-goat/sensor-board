@@ -248,6 +248,7 @@ type ColorFamily<M> = MetricFamily<'static, M, { COLOR.len() }, ChannelLabels<&'
 struct Metrics {
     firmware_build: MetricFamily<'static, IntGauge, 1, BuildLabels>,
     battery_low: BoardFamily<IntGauge>,
+    stops: BoardFamily<IntGauge>,
     capacitance: CapacitanceFamily<FixedGauge<Farads>>,
     capacitance_errors: CapacitanceFamily<Counter>,
     color: ColorFamily<IntGauge>,
@@ -273,6 +274,9 @@ impl Metrics {
                 .build_labeled(),
             battery_low: MetricBuilder::new("sensor_board_battery_low")
                 .with_help("1 if the supply voltage has been low since the board started, else 0.")
+                .build_labeled(),
+            stops: MetricBuilder::new("sensor_board_stops")
+                .with_help("1 if the chip enters Stop mode while the firmware waits, else 0. Decided when the board starts.")
                 .build_labeled(),
             capacitance: MetricBuilder::new("sensor_board_capacitance_farads")
                 .with_help("Capacitance on the electrode of a channel, in farads.")
@@ -328,6 +332,7 @@ impl Metrics {
     fn write(&self, text: &mut impl fmt::Write) -> fmt::Result {
         self.firmware_build.fmt_metric(text)?;
         self.battery_low.fmt_metric(text)?;
+        self.stops.fmt_metric(text)?;
         self.capacitance.fmt_metric(text)?;
         self.capacitance_errors.fmt_metric(text)?;
         self.color.fmt_metric(text)?;
@@ -420,6 +425,9 @@ pub struct Builder {
     pub temp_rh: Option<&'static sensor::Shared<TempRhSensor<'static>>>,
     pub mic: &'static sensor::Shared<Mic<'static>>,
     pub motion: motion::Monitor,
+    /// Whether the chip enters Stop mode while the firmware waits
+    /// (`power::stops`).
+    pub stops: bool,
 }
 
 impl Builder {
@@ -440,6 +448,7 @@ impl Builder {
                 temp_rh: self.temp_rh,
                 mic: self.mic,
                 motion: self.motion,
+                stops: self.stops,
                 motion_enabled: false,
                 home_assistant: None,
                 reported: None,
@@ -554,6 +563,8 @@ struct Exporter {
     temp_rh: Option<&'static sensor::Shared<TempRhSensor<'static>>>,
     mic: &'static sensor::Shared<Mic<'static>>,
     motion: motion::Monitor,
+    /// Whether the chip enters Stop mode while the firmware waits.
+    stops: bool,
     /// Whether the configuration enables the motion sensor.
     motion_enabled: bool,
     /// The Home Assistant server to report the motion sensor's state to.
@@ -585,6 +596,9 @@ impl Exporter {
         self.metrics.with(|metrics| {
             if let Some(build) = metrics.firmware_build.register(BuildLabels(self.board)) {
                 build.set_value(update::build().0 as usize);
+            }
+            if let Some(stops) = metrics.stops.register(BoardLabels(self.board)) {
+                stops.set_value(usize::from(self.stops));
             }
         });
 

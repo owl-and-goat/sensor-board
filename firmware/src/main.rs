@@ -361,6 +361,7 @@ async fn main(spawner: Spawner) {
         temp_rh,
         mic,
         motion: motion_monitor,
+        stops: power::stops(power_mode),
     }
     .init();
     spawner.spawn(metrics(metrics_task).unwrap());

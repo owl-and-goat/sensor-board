@@ -935,7 +935,9 @@ no peripheral is busy. The executor is embassy-stm32's (the `low-power`
 feature), which does this by itself: it pauses the time driver, has the RTC
 wake the chip for the next timer, and enters Stop 1. `power.rs` decides
 whether a board stops (`stops`). On a board that does not, its task holds a
-guard that keeps the executor from stopping.
+guard that keeps the executor from stopping. The metrics export the decision
+as `sensor_board_stops`, so that a board on battery shows whether it stops
+without a probe, which would change the answer.
 
 - The chip wakes for a timer (through the RTC), for a message from CPU2
   (the IPCC), and for the button. CPU2 stops and wakes by itself for its
