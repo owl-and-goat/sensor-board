@@ -1148,8 +1148,16 @@ impl Network<'_, '_> {
                 }
             }
             TcpRequest::Connect(peer) => {
+                // Every exchange ends with `Tcp::close`, so a connection
+                // that is still recorded here is left over from an earlier
+                // one. A callback for it can arrive after the abort and
+                // overwrite `Closed`. Refusing the connect then failed the
+                // first report after hours of quiet (seen on 4D0021 on
+                // 2026-10-26). Abort the leftover, as `Accept` does with a
+                // connection that never opened.
                 if self.tcp.connection != Connection::Closed {
-                    return Err(TcpError::OutOfSequence);
+                    defmt::debug!("thread: aborting a leftover TCP connection before connecting");
+                    self.tcp_close().await?;
                 }
                 self.ot.tcp_connect(buffer, peer).await?;
                 self.tcp.connection = Connection::Opening;

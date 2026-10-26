@@ -408,14 +408,17 @@ board reaches port 8123 directly.
   would leave Home Assistant showing motion until the next detection. Home
   Assistant answers 200 even for a webhook it doesn't know, so a wrong
   webhook ID shows up only as a missing entity.
-- The first exchange after hours without one sometimes fails, and one a few
-  seconds later succeeds. Not understood yet: on 2026-10-26, 4D0021's first
-  report after nine quiet hours failed, the push right after it succeeded,
-  and the retry a minute later got the report through. That's what the
-  short first retry is for. The metrics count failed reports and pushes by
-  their cause (`sensor_board_report_failures_total` and
+- The first exchange after hours without one sometimes failed, and one a
+  few seconds later succeeded. On 2026-10-26, 4D0021's first report after
+  nine quiet hours failed, the push right after it succeeded, and the retry
+  a minute later got the report through. The metrics count failed reports
+  and pushes by their cause (`sensor_board_report_failures_total` and
   `sensor_board_push_failures_total`, with an `error` label), so that a
-  board on battery shows why without a probe.
+  board on battery shows why without a probe. The next failure was
+  `out_of_sequence`: the Thread service still had a connection recorded,
+  and refused the connect (see "Things learned about the TCP API"). A
+  connect now aborts such a leftover. The short first retry stays, for
+  failures with other causes.
 - After a configuration change, the board reports the current state. After
   a restart, it reports at the first motion, or after 20 s without any.
 
@@ -663,6 +666,13 @@ Things learned about the TCP API:
 - An endpoint that closed its side first stays in TIME-WAIT and accepts no
   connection until it is aborted. For that reason every exchange ends with
   `Tcp::close`.
+- The Thread service can still have a connection recorded at the next
+  connect, although the last exchange ended with `Tcp::close`. It refused
+  the connect (`OutOfSequence`) until 2026-10-26, which failed the first
+  report after hours of quiet on 4D0021. Most likely a callback for the
+  aborted connection arrived after the abort and overwrote `Closed`, but
+  which one isn't known. A connect now aborts the leftover first. Not
+  tested on a board yet.
 - CPU2 reads sent data from the send buffer until the peer has acknowledged
   all of it. The firmware passes its 4 K send buffer to the stack with
   `otTcpSendByReference`, and adds later data after it with
