@@ -403,10 +403,19 @@ board reaches port 8123 directly.
 
 - The report goes out before the sensor reads and the push, because an
   automation may be waiting for it.
-- A failed report is tried again after a minute until Home Assistant takes
-  it. Otherwise a lost "clear" would leave Home Assistant showing motion
-  until the next detection. Home Assistant answers 200 even for a webhook it
-  doesn't know, so a wrong webhook ID shows up only as a missing entity.
+- A failed report is tried again until Home Assistant takes it: after 5 s
+  the first time, and after a minute from then on. Otherwise a lost "clear"
+  would leave Home Assistant showing motion until the next detection. Home
+  Assistant answers 200 even for a webhook it doesn't know, so a wrong
+  webhook ID shows up only as a missing entity.
+- The first exchange after hours without one sometimes fails, and one a few
+  seconds later succeeds. Not understood yet: on 2026-10-26, 4D0021's first
+  report after nine quiet hours failed, the push right after it succeeded,
+  and the retry a minute later got the report through. That's what the
+  short first retry is for. The metrics count failed reports and pushes by
+  their cause (`sensor_board_report_failures_total` and
+  `sensor_board_push_failures_total`, with an `error` label), so that a
+  board on battery shows why without a probe.
 - After a configuration change, the board reports the current state. After
   a restart, it reports at the first motion, or after 20 s without any.
 

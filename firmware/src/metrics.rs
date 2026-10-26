@@ -42,7 +42,9 @@ use crate::{
         motion,
         temp_rh::TempRhSensor,
     },
-    supply, thread, update,
+    supply, thread,
+    thread::TcpError,
+    update,
 };
 
 /// TCP port of the scrape endpoint.
@@ -73,8 +75,13 @@ const BOARD_SERVICE: thread::SrpService = thread::SrpService {
 const JOB: &str = "sensor_board";
 
 /// Delay before the next push after a failed one, and before reporting to
-/// Home Assistant again after a failed report.
+/// Home Assistant again after a report has failed twice.
 const PUSH_RETRY: Duration = Duration::from_secs(60);
+
+/// Delay before reporting to Home Assistant again after a first failure. The
+/// first exchange after hours without one sometimes fails, and the next one
+/// a few seconds later succeeds (seen on 4D0021 on 2026-10-26).
+const QUICK_REPORT_RETRY: Duration = Duration::from_secs(5);
 
 /// How long a board that pushes waits for its network before it measures.
 /// After that it goes on without, and the push fails if the network is not
@@ -140,6 +147,74 @@ impl FmtLabels for BuildLabels {
             self.0,
             env!("BUILD_COMMIT")
         )
+    }
+}
+
+/// Why a push or a report to Home Assistant failed.
+#[derive(Clone, Copy, PartialEq)]
+enum Failure {
+    /// The peer or the stack did not respond in time.
+    TimedOut,
+    /// The peer refused the connection.
+    Refused,
+    /// The peer reset the connection.
+    Reset,
+    /// The connection was not in a state for the request.
+    OutOfSequence,
+    /// Thread is not running, or the stack returned an error.
+    Network,
+    /// The request could not be built, or the response was not valid HTTP.
+    Malformed,
+    /// The server answered with a status other than 2xx.
+    Status,
+}
+
+impl Failure {
+    /// Every cause, for the size of the families that count them.
+    const COUNT: usize = 7;
+
+    /// What went wrong in an exchange that ended with `outcome`. `None` if
+    /// the server accepted the request.
+    fn of(outcome: Result<u16, http::Error>) -> Option<Failure> {
+        match outcome {
+            Ok(200..300) => None,
+            Ok(_) => Some(Failure::Status),
+            Err(http::Error::Malformed) => Some(Failure::Malformed),
+            Err(http::Error::Tcp(e)) => Some(match e {
+                TcpError::TimedOut => Failure::TimedOut,
+                TcpError::Refused => Failure::Refused,
+                TcpError::Reset => Failure::Reset,
+                TcpError::OutOfSequence => Failure::OutOfSequence,
+                TcpError::Network(_) => Failure::Network,
+            }),
+        }
+    }
+
+    /// The cause as the value of the `error` label.
+    fn name(self) -> &'static str {
+        match self {
+            Failure::TimedOut => "timed_out",
+            Failure::Refused => "refused",
+            Failure::Reset => "reset",
+            Failure::OutOfSequence => "out_of_sequence",
+            Failure::Network => "network",
+            Failure::Malformed => "malformed",
+            Failure::Status => "status",
+        }
+    }
+}
+
+/// Labels of a failure counter: the board, and why the exchange failed.
+#[derive(PartialEq)]
+struct FailureLabels {
+    board: BoardId,
+    failure: Failure,
+}
+
+impl FmtLabels for FailureLabels {
+    fn fmt_labels(&self, writer: &mut impl fmt::Write) -> fmt::Result {
+        let FailureLabels { board, failure } = self;
+        write!(writer, "board=\"{board}\",error=\"{}\"", failure.name())
     }
 }
 
@@ -242,6 +317,7 @@ impl<W: fmt::Write> fmt::Write for Samples<'_, W> {
 type Text = heapless::String<{ http::MAX_BODY }>;
 
 type BoardFamily<M> = MetricFamily<'static, M, 1, BoardLabels>;
+type FailureFamily = MetricFamily<'static, Counter, { Failure::COUNT }, FailureLabels>;
 type CapacitanceFamily<M> = MetricFamily<'static, M, { CAPACITANCE.len() }, ChannelLabels<usize>>;
 type ColorFamily<M> = MetricFamily<'static, M, { COLOR.len() }, ChannelLabels<&'static str>>;
 
@@ -262,7 +338,8 @@ struct Metrics {
     motion_detections: BoardFamily<Counter>,
     scrapes: BoardFamily<Counter>,
     pushes: BoardFamily<Counter>,
-    push_failures: BoardFamily<Counter>,
+    push_failures: FailureFamily,
+    report_failures: FailureFamily,
     push_status: BoardFamily<IntGauge>,
 }
 
@@ -318,7 +395,10 @@ impl Metrics {
                 .with_help("Push attempts to the Pushgateway.")
                 .build_labeled(),
             push_failures: MetricBuilder::new("sensor_board_push_failures_total")
-                .with_help("Failed pushes to the Pushgateway.")
+                .with_help("Failed pushes to the Pushgateway, by why they failed.")
+                .build_labeled(),
+            report_failures: MetricBuilder::new("sensor_board_report_failures_total")
+                .with_help("Failed reports to Home Assistant, by why they failed.")
                 .build_labeled(),
             push_status: MetricBuilder::new("sensor_board_push_status")
                 .with_help(
@@ -347,6 +427,7 @@ impl Metrics {
         self.scrapes.fmt_metric(text)?;
         self.pushes.fmt_metric(text)?;
         self.push_failures.fmt_metric(text)?;
+        self.report_failures.fmt_metric(text)?;
         self.push_status.fmt_metric(text)
     }
 
@@ -453,6 +534,7 @@ impl Builder {
                 home_assistant: None,
                 reported: None,
                 report_retry: None,
+                failed_reports: 0,
                 supply: self.supply,
                 board,
                 metrics: shared,
@@ -575,6 +657,8 @@ struct Exporter {
     /// When to report to Home Assistant again. `None` until the motion
     /// sensor's state changes.
     report_retry: Option<Instant>,
+    /// Failed reports in a row, for the delay before the next one.
+    failed_reports: u32,
     supply: supply::Monitor,
     /// This board's ID.
     board: BoardId,
@@ -609,6 +693,7 @@ impl Exporter {
         self.home_assistant = config.and_then(|config| config.home_assistant);
         self.reported = None;
         self.report_retry = Some(Instant::now());
+        self.failed_reports = 0;
         let now = Instant::now();
         for (poll, sensor) in self.polls.iter_mut().zip(SENSORS) {
             let sensor = config.and_then(|config| config.sensor_config.0[sensor]);
@@ -802,17 +887,32 @@ impl Exporter {
         let status = pushed.await;
         self.tcp.close().await;
 
-        let accepted = matches!(status, Ok(200..300));
         if let Err(e) = status {
             defmt::debug!("metrics: push failed: {}", e);
         }
-        self.count(|metrics| &metrics.push_failures, usize::from(!accepted));
+        let failure = Failure::of(status);
+        if let Some(failure) = failure {
+            self.count_failure(|metrics| &metrics.push_failures, failure);
+        }
         self.metrics.with(|metrics| {
             if let Some(last) = metrics.push_status.register(BoardLabels(self.board)) {
                 last.set_value(status.map_or(0, usize::from));
             }
         });
-        accepted
+        failure.is_none()
+    }
+
+    /// Count a failed exchange in `counter`, under its cause.
+    fn count_failure(&self, counter: impl FnOnce(&Metrics) -> &FailureFamily, failure: Failure) {
+        self.metrics.with(|metrics| {
+            let labels = FailureLabels {
+                board: self.board,
+                failure,
+            };
+            if let Some(counter) = counter(metrics).register(labels) {
+                counter.fetch_add(1);
+            }
+        });
     }
 
     /// Wait until a sensor is due. Returns its index in [`SENSORS`].
@@ -853,14 +953,25 @@ impl Exporter {
         // Home Assistant answers 200 even for a webhook that it does not
         // know, so that the response does not tell which ones exist.
         match status {
-            Ok(200..300) => self.reported = Some(state.detected),
-            Ok(status) => {
-                defmt::warn!("metrics: Home Assistant answered {}", status);
-                self.report_retry = Some(Instant::now() + PUSH_RETRY);
+            Ok(status) if !(200..300).contains(&status) => {
+                defmt::warn!("metrics: Home Assistant answered {}", status)
             }
-            Err(e) => {
-                defmt::debug!("metrics: report to Home Assistant failed: {}", e);
-                self.report_retry = Some(Instant::now() + PUSH_RETRY);
+            Err(e) => defmt::debug!("metrics: report to Home Assistant failed: {}", e),
+            Ok(_) => {}
+        }
+        match Failure::of(status) {
+            None => {
+                self.reported = Some(state.detected);
+                self.failed_reports = 0;
+            }
+            Some(failure) => {
+                self.count_failure(|metrics| &metrics.report_failures, failure);
+                let delay = match self.failed_reports {
+                    0 => QUICK_REPORT_RETRY,
+                    _ => PUSH_RETRY,
+                };
+                self.failed_reports = self.failed_reports.saturating_add(1);
+                self.report_retry = Some(Instant::now() + delay);
             }
         }
     }
