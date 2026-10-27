@@ -16,10 +16,7 @@ use clap::{Args, Parser, Subcommand};
 
 use board::Board;
 use network::SavedDataset;
-use protocol::{
-    BoardId, BuildCommit, Capacitance, CapacitanceChannel, HeaterDuration, HeaterPower, Precision,
-    TempRh, TempRhReq,
-};
+use protocol::{BoardId, BuildCommit};
 
 #[derive(Parser)]
 #[command(version, about = "Talk to sensor boards attached over USB")]
@@ -40,8 +37,6 @@ enum Command {
     Coprocessor(CoprocessorCommand),
     /// Reboot a board into its ROM bootloader, to flash it over USB DFU
     Bootloader(Target),
-    #[command(subcommand)]
-    Sensor(SensorCommand),
     /// Inspect a board's Prometheus metrics
     #[command(subcommand)]
     Metrics(MetricsCommand),
@@ -91,29 +86,17 @@ enum FirmwareCommand {
     },
     /// Update every board on the network
     ///
-    /// An attached board receives the image and offers it to the others, which fetch it over
-    /// the network. That board is updated last. With no board attached, this machine offers
-    /// the image itself, through the border router. It then cannot tell which build each
-    /// board runs, and reports the boards that fetched the image
+    /// This machine offers the image to every device that the border router lists, and to every
+    /// board it finds over mDNS. Those that run another build fetch it over the network and
+    /// restart into it. It shows the build each board runs, and reports which boards kept the
+    /// image and which rolled it back
     Push {
         /// The image, as built by `just firmware-image`
         image: PathBuf,
 
-        /// The attached board to push through: its serial number, or the start of it. Without
-        /// it, the first attached board that is on a network
-        #[arg(long, value_name = "SERIAL")]
-        board: Option<String>,
-
-        /// Push through the border router whose REST API is at this address, or at
-        /// cerberus:8081 if no address is given, even if a board is attached
-        #[arg(
-            long,
-            value_name = "HOST:PORT",
-            num_args = 0..=1,
-            default_missing_value = border_router::DEFAULT_ADDRESS,
-            conflicts_with = "board"
-        )]
-        border_router: Option<String>,
+        /// The border router whose REST API is at this address
+        #[arg(long, value_name = "HOST:PORT", default_value = border_router::DEFAULT_ADDRESS)]
+        border_router: String,
     },
 }
 
@@ -199,43 +182,6 @@ enum CoprocessorCommand {
     Uninstall(Target),
 }
 
-/// Commands to interact with sensors
-#[derive(Subcommand)]
-enum SensorCommand {
-    /// Measure the capacitance on a channel's electrode
-    Capacitance {
-        /// Which channel to measure
-        #[arg(long)]
-        channel: CapacitanceChannel,
-
-        #[command(flatten)]
-        target: Target,
-    },
-    /// Measure temperature and relative humidity
-    TempRh {
-        /// How precisely to measure
-        #[arg(long, default_value = "high", conflicts_with = "heat")]
-        precision: Precision,
-
-        /// Heat the sensor first, at this power, to drive off condensation. What is then measured,
-        /// at high precision, is the heated sensor rather than the air
-        #[arg(long, value_name = "POWER")]
-        heat: Option<HeaterPower>,
-
-        /// How long to heat the sensor for
-        #[arg(
-            long,
-            value_name = "DURATION",
-            default_value = "100ms",
-            requires = "heat"
-        )]
-        heat_for: HeaterDuration,
-
-        #[command(flatten)]
-        target: Target,
-    },
-}
-
 /// The board a command should target.
 #[derive(Args)]
 struct Target {
@@ -275,23 +221,6 @@ impl ConfigTarget {
     async fn route(&self) -> Result<(config::Route, BoardId)> {
         config::route(self.board.as_deref(), self.border_router.as_deref()).await
     }
-}
-
-/// The border router for `firmware push` to go through instead of an attached board, if any: the
-/// one that the command names, or the default one if it names no board either and none is
-/// attached.
-async fn border_router_for(
-    border_router: &Option<String>,
-    board: &Option<String>,
-) -> Result<Option<String>> {
-    Ok(match border_router {
-        Some(address) => Some(address.clone()),
-        // With nothing attached, the border router is the only way.
-        None if board.is_none() && board::devices().await?.is_empty() => {
-            Some(border_router::DEFAULT_ADDRESS.to_owned())
-        }
-        None => None,
-    })
 }
 
 async fn list() -> Result<()> {
@@ -394,14 +323,10 @@ async fn main() -> Result<()> {
         }
         Command::Firmware(FirmwareCommand::Push {
             image,
-            board,
             border_router,
         }) => {
             let image = firmware::Image::read(&image)?;
-            match border_router_for(&border_router, &board).await? {
-                Some(address) => firmware::push_through_border_router(&address, &image).await,
-                None => firmware::push(firmware::gateway(board.as_deref()).await?, &image).await,
-            }
+            firmware::push_through_border_router(&border_router, &image).await
         }
         Command::Network(NetworkCommand::Addresses(target)) => {
             let board = target.board().await?;
@@ -441,12 +366,6 @@ async fn main() -> Result<()> {
             print!("{}", target.board().await?.metrics().await?);
             Ok(())
         }
-        Command::Sensor(SensorCommand::Capacitance { channel, target }) => {
-            let board = target.board().await?;
-            let Capacitance { picofarads } = board.read_capacitance(channel).await??;
-            println!("{picofarads:.2} pF");
-            Ok(())
-        }
         Command::Config(ConfigCommand::Show { stored, target }) => {
             let (route, board) = target.route().await?;
             config::show(route, board, stored).await
@@ -454,28 +373,6 @@ async fn main() -> Result<()> {
         Command::Config(ConfigCommand::Set { changes, target }) => {
             let (route, board) = target.route().await?;
             config::set(route, board, &changes).await
-        }
-        Command::Sensor(SensorCommand::TempRh {
-            precision,
-            heat,
-            heat_for,
-            target,
-        }) => {
-            let req = match heat {
-                None => TempRhReq::Plain(precision),
-                Some(power) => TempRhReq::Heated {
-                    power,
-                    duration: heat_for,
-                },
-            };
-            let board = target.board().await?;
-            let TempRh {
-                temperature,
-                humidity,
-            } = board.measure_temp_rh(req).await??;
-            println!("Temperature: {temperature:.2} °C");
-            println!("Humidity: {humidity:.2} %RH");
-            Ok(())
         }
     }
 }

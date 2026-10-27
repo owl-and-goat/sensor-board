@@ -54,8 +54,8 @@ update-all: firmware-image
     done
 
 # Update every board on the network
-push *board: firmware-image
-    {{ just_executable() }} cli firmware push {{ firmware_image }} {{ board }}
+push *args: firmware-image
+    {{ just_executable() }} cli firmware push {{ firmware_image }} {{ args }}
 
 # Flash the bootloader and the firmware over USB through the ROM bootloader.
 dfu-flash *board: _flash-image

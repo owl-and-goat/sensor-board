@@ -10,16 +10,14 @@ update (see below) and starts the firmware. from the top of the repository:
   just flash                  # both, through the st-link on the jtag port
   just update                 # the firmware, over usb, through the running firmware
   just update-all             # the same for every attached board, one after the other
-  just push                   # the firmware, to every board on the network, through an attached one or the border router
+  just push                   # the firmware, to every board on the network, through the border router
   just dfu-flash              # both, over usb, through the rom bootloader
   just dfu-flash-all          # the same for every attached board, one after the other
 #+end_src
 
 with several boards attached, =just update= and =just dfu-flash= take
-=--board <serial>=. =just push= goes through the first attached board that is
-on a network, unless it is given =--board=, and through the border router if
-no board is attached. to flash only the firmware through the probe and
-watch the board's log (the bootloader has to be on the board already):
+=--board <serial>=. to flash only the firmware through the probe and watch
+the board's log (the bootloader has to be on the board already):
 
 #+begin_src sh
   cargo run --release         # flash, reset, stay attached (ctrl-c to leave)
@@ -40,22 +38,27 @@ within five minutes, the bootloader restores the old firmware. =firmware
 status= shows which build is running and the state of the update.
 
 =just push= runs =firmware push <image>=, which updates every board on the
-network without plugging any of them in. the attached board receives the
-image over usb and offers it to the others every ten seconds. a board that
-runs another build fetches the image from the attached board in small
-chunks, verifies it, and restarts into it in the same way, including the
-trial. every board replies to the offer with the build it runs, and the
-command asks the attached board for those builds. it updates the attached
-board last, once every board it has heard from runs the image. a board whose trial of a build failed does not
-fetch that build again.
+network without plugging any of them in. it reads the devices on the network
+from the border router's rest api (at =cerberus:8081=, or at the address
+given to =--border-router=), and finds the boards on battery over mdns. it
+sends an offer of the image to the routable address of each one every ten
+seconds, and answers the boards that fetch it. a board that runs another
+build fetches the image in small chunks, verifies it, and restarts into it in
+the same way as with =just update=, including the trial. this machine needs
+an address that the boards can answer (see "metrics").
 
-during a push, the command shows a summary line with the number of boards
-that run the image, and below it a progress bar for each board that is
-fetching. the bars are based on the chunks that the boards request from the
-attached board:
+every board replies to each offer with the build it runs, and the command
+prints each board's build as it hears it. it looks the boards up again every
+half minute, because a board gets a new address when it restarts. a board
+that fetched the image is listed as =updated= when it comes back with the
+new build, and as having rolled it back when it comes back with the old one.
+
+during a push, the command shows a summary line, and below it a progress bar
+for each board that is fetching, based on the chunks that the board
+requests:
 
 #+begin_example
-  ⠙ 1 of 3 other boards run build 1791154812 (2m)
+  ⠙ Offering build 1791154812: 1 of 4 boards run it, 1 fetched it, 2 fetching (2m)
   4B0041000350475532303120 ███████████████░░░░░░░░░░░░░  56%    1.85 KiB/s  eta 48s
   a board                  ███░░░░░░░░░░░░░░░░░░░░░░░░░  12%    1.71 KiB/s  eta  2m
   4D0021000350475532303120 ████████████████████████████ 100%  restarting
@@ -63,34 +66,29 @@ attached board:
 
 a bar shows the board's serial number once the board has sent its id.
 firmware from before 2026-10-04 does not send it, so such a board is shown
-as "a board". a board that has the whole image keeps its bar for half a
-minute while it verifies the image, restarts and swaps, and is listed as
-=updated= when it replies to an offer with the new build. the bars are only drawn on a terminal (and not
-if =TERM= is =dumb=), and only if the attached board's firmware can report
-progress (run =just update= first if it cannot).
+as "a board". the bars are only drawn on a terminal (and not if =TERM= is
+=dumb=).
 
-all boards fetch at the same time, even when they relay for each other (see
-=TODO.org=). a board can only be updated this way once it runs a firmware
-that supports it, so its first such firmware has to come over usb.
-
-with no board attached, or with =--border-router=, =firmware push= offers the
-image itself. it reads the devices on the network from the border router's
-rest api (at =cerberus:8081=, or at the address given to =--border-router=),
-sends the offer to the routable address of each one every ten seconds, and
-answers the boards that fetch. this machine needs an address that the boards
-can answer (see "metrics").
-
-- the command cannot see which build a board runs. it lists the boards that
-  fetched the image, and ends once no board has asked for anything for half
-  a minute. =firmware status= and the =sensor_board_firmware_build= metric
-  show what a board runs afterwards. both give the git commit the build was
-  made from, with =-dirty= if =firmware/= or =protocol/= had uncommitted
-  changes. =list= shows it too.
+- the command ends once no board has asked for anything for half a minute
+  and every board that fetched the image has come back, or has had seven
+  minutes to. it then lists the boards that kept the image, rolled it back
+  or didn't come back, and the boards that run another build without asking
+  for it. it fails if a board rolled the image back or didn't come back.
+- =firmware status= and the =sensor_board_firmware_build= metric show what a
+  board runs. both give the git commit the build was made from, with
+  =-dirty= if =firmware/= or =protocol/= had uncommitted changes. =list=
+  shows it too.
 - a board that runs the image already, or on which the image failed before,
   does not ask for it.
 - the offer goes to every device that the border router lists, and to every
   board that is advertised over mdns (see "boards on battery"). a device
   that is not a sensor board ignores it.
+- all boards fetch at the same time, even when they relay for each other
+  (see =TODO.org=). a board can only be updated this way once it runs a
+  firmware that supports it, so its first such firmware has to come over
+  usb.
+- until 2026-10-27 the command could also push through an attached board,
+  which offered the image to the others. that was removed to save flash.
 
 tested on 2026-10-11 with the two attached boards as the only targets: both
 fetched from this machine at the same time, at about 2 KiB/s each, restarted

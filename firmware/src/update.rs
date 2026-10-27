@@ -5,11 +5,15 @@
 //! board is back on its network. If the board resets before that, or does
 //! not rejoin in time, the bootloader swaps the old firmware back.
 //!
+//! An image comes from the host over USB, or from the network: a host offers
+//! it to each board through a border router, and a board that runs another
+//! build fetches it.
+//!
 //! [`init`] returns the [`Handle`] for the rest of the firmware and the
 //! [`Service`]. The service runs inside the coprocessor task, because flash
 //! writes have to be coordinated with CPU2.
 
-use core::cell::{Cell, RefCell};
+use core::cell::Cell;
 use core::ptr::read_volatile;
 
 use embassy_boot::{AlignedBuffer, FirmwareState, FirmwareUpdaterConfig, State};
@@ -22,9 +26,8 @@ use embassy_sync::blocking_mutex::{
 use embassy_time::{Duration, Instant, Timer};
 use embedded_storage_async::nor_flash::{NorFlash, ReadNorFlash};
 use protocol::{
-    BoardId, BuildId, BuildMarker, Fetcher, ImageChunk, NetworkError, NetworkStatus, OfferProgress,
-    RunningBuild, RunningBuilds, UpdateError, UpdateImage, UpdateMessage, UpdateResult,
-    UpdateStatus,
+    BoardId, BuildId, BuildMarker, ImageChunk, NetworkError, NetworkStatus, UpdateError,
+    UpdateImage, UpdateMessage, UpdateResult, UpdateStatus,
 };
 use sha2::{Digest, Sha256};
 use static_cell::StaticCell;
@@ -78,25 +81,14 @@ const TRIAL_POLL: Duration = Duration::from_secs(1);
 /// caller.
 const RESET_DELAY: Duration = Duration::from_millis(200);
 
-/// The interval between offers of the staged image.
-const OFFER_INTERVAL: Duration = Duration::from_secs(10);
-
 /// How long a fetching board waits for a requested chunk before it asks
 /// again, and how many times in a row it asks. After that it stops until
 /// the next offer.
 const CHUNK_TIMEOUT: Duration = Duration::from_millis(1500);
 const MAX_ATTEMPTS: u8 = 8;
 
-/// A board that has requested no chunk for this long no longer counts as
-/// fetching.
-const FETCHER_TIMEOUT: Duration = Duration::from_secs(30);
-
-/// Wait until the earlier of two instants. `None` means never.
-async fn until_earlier(a: Option<Instant>, b: Option<Instant>) {
-    let at = match (a, b) {
-        (Some(a), Some(b)) => Some(a.min(b)),
-        (a, b) => a.or(b),
-    };
+/// Wait until `at`. `None` means never.
+async fn until(at: Option<Instant>) {
     match at {
         Some(at) => Timer::at(at).await,
         None => core::future::pending().await,
@@ -108,8 +100,6 @@ enum Request {
     Write(ImageChunk),
     Finish,
     Apply,
-    /// Start or stop offering the staged image to the boards on the network.
-    Offer(bool),
 }
 
 /// The last published update status.
@@ -125,18 +115,9 @@ impl Status {
     }
 }
 
-/// The last published progress of the boards that are fetching the image
-/// this board offers.
-struct Progress(Mutex<ThreadModeRawMutex, RefCell<OfferProgress>>);
-
-/// The builds that the boards which received this board's offer run.
-struct Builds(Mutex<ThreadModeRawMutex, RefCell<RunningBuilds>>);
-
 struct Shared {
     requests: request::Channel<Request, UpdateResult>,
     status: Status,
-    progress: Progress,
-    builds: Builds,
 }
 
 /// Create the [`Handle`] and the [`Service`]. Panics if called a second time.
@@ -145,49 +126,29 @@ pub fn init() -> (Handle, Service) {
     let shared: &'static Shared = SHARED.init(Shared {
         requests: request::Channel::new(),
         status: Status(Mutex::new(Cell::new(UpdateStatus::Starting))),
-        progress: Progress(Mutex::new(RefCell::new(OfferProgress::default()))),
-        builds: Builds(Mutex::new(RefCell::new(RunningBuilds::default()))),
     });
 
     let (client, server) = shared.requests.split();
     let handle = Handle {
         requests: client,
         status: &shared.status,
-        progress: &shared.progress,
-        builds: &shared.builds,
     };
     let service = Service {
         requests: server,
         status: &shared.status,
-        progress: &shared.progress,
-        builds: &shared.builds,
     };
     (handle, service)
 }
 
-/// Stages, applies and offers updates for the rest of the firmware.
+/// Stages and applies updates for the rest of the firmware.
 pub struct Handle {
     requests: request::Client<Request, UpdateResult>,
     status: &'static Status,
-    progress: &'static Progress,
-    builds: &'static Builds,
 }
 
 impl Handle {
     pub fn status(&self) -> UpdateStatus {
         self.status.get()
-    }
-
-    /// The progress of the boards that are fetching the image this board
-    /// offers.
-    pub fn offer_progress(&self) -> OfferProgress {
-        self.progress.0.lock(|progress| progress.borrow().clone())
-    }
-
-    /// The builds that the boards which received this board's offer run, as
-    /// they have told it since it started to offer.
-    pub fn running_builds(&self) -> RunningBuilds {
-        self.builds.0.lock(|builds| builds.borrow().clone())
     }
 
     /// Start receiving `image`. This discards any image that was staged or
@@ -213,12 +174,6 @@ impl Handle {
         self.request(Request::Apply).await
     }
 
-    /// Start or stop offering the staged image to the boards on the network.
-    /// A board that takes the offer fetches the image and restarts into it.
-    pub async fn offer(&mut self, on: bool) -> UpdateResult {
-        self.request(Request::Offer(on)).await
-    }
-
     async fn request(&mut self, request: Request) -> UpdateResult {
         self.requests
             .call(request, REQUEST_TIMEOUT)
@@ -232,8 +187,6 @@ impl Handle {
 pub struct Service {
     requests: request::Server<Request, UpdateResult>,
     status: &'static Status,
-    progress: &'static Progress,
-    builds: &'static Builds,
 }
 
 impl Service {
@@ -254,16 +207,12 @@ impl Service {
             state: FirmwareState::new(state, &mut aligned.0),
             requests: self.requests,
             status: self.status,
-            progress: self.progress,
-            builds: self.builds,
             incoming: None,
             staged: None,
             socket,
             fetching: None,
-            offering: None,
             rolled_back: None,
             board: BoardId(embassy_stm32::uid::uid()),
-            fetchers: heapless::Vec::new(),
         };
 
         match updates.state.get_state().await {
@@ -306,18 +255,7 @@ struct Incoming {
     erased_to: u32,
 }
 
-/// A board that is fetching the staged image from this one, as far as its
-/// requests show.
-struct TrackedFetcher {
-    peer: thread::Peer,
-    /// The board's ID, once it has sent it.
-    board: Option<BoardId>,
-    /// How much of the image it has, judging by the last chunk it requested.
-    received: u32,
-    last_seen: Instant,
-}
-
-/// The state of fetching an image, chunk by chunk, from a board that offers
+/// The state of fetching an image, chunk by chunk, from the host that offers
 /// it.
 struct Fetch {
     from: thread::Peer,
@@ -337,24 +275,17 @@ struct Updates<'a, 'd> {
     state_page: Region<'a, 'd>,
     requests: request::Server<Request, UpdateResult>,
     status: &'static Status,
-    progress: &'static Progress,
-    builds: &'static Builds,
     incoming: Option<Incoming>,
     staged: Option<UpdateImage>,
     /// The UDP socket for [`UpdateMessage`]s.
     socket: thread::Socket,
-    /// Set while the image being received comes from a board on the network.
+    /// Set while the image being received comes from the network.
     fetching: Option<Fetch>,
-    /// When to offer the staged image next. `None` if it is not being
-    /// offered.
-    offering: Option<Instant>,
     /// The build of an update that was rolled back after its trial. It is
     /// not fetched again.
     rolled_back: Option<BuildId>,
     /// This board's ID.
     board: BoardId,
-    /// The boards that are fetching the staged image from this one.
-    fetchers: heapless::Vec<TrackedFetcher, { OfferProgress::MAX_FETCHERS }>,
 }
 
 impl Updates<'_, '_> {
@@ -403,7 +334,6 @@ impl Updates<'_, '_> {
     }
 
     async fn serve(&mut self) -> ! {
-        // Offers are multicast, so every board has to listen for them.
         if let Err(e) = self.socket.listen(true).await {
             defmt::warn!("update: no updates over the network: {}", e);
         }
@@ -413,7 +343,7 @@ impl Updates<'_, '_> {
             let next = select3(
                 self.requests.receive(),
                 self.socket.receive(),
-                until_earlier(fetch_due, self.offering),
+                until(fetch_due),
             );
             match next.await {
                 Either3::First((pending, request)) => self.handle_request(pending, request).await,
@@ -427,8 +357,8 @@ impl Updates<'_, '_> {
         let apply = matches!(request, Request::Apply);
         let outcome = match request {
             Request::Begin(image) => {
-                // An image from the host replaces one that is being fetched
-                // from a board on the network.
+                // An image from the host over USB replaces one that is being
+                // fetched from the network.
                 self.fetching = None;
                 self.begin(image)
             }
@@ -438,19 +368,6 @@ impl Updates<'_, '_> {
             Request::Finish if self.fetching.is_none() => self.finish().await,
             Request::Write(_) | Request::Finish => Err(UpdateError::OutOfSequence),
             Request::Apply => self.mark_for_swap().await,
-            Request::Offer(true) => match self.staged {
-                Some(image) => {
-                    defmt::info!("update: offering build {} to the network", image.build);
-                    self.offering = Some(Instant::now());
-                    Ok(())
-                }
-                None => Err(UpdateError::OutOfSequence),
-            },
-            Request::Offer(false) => {
-                self.offering = None;
-                self.forget_boards();
-                Ok(())
-            }
         };
         let applying = apply && outcome.is_ok();
         self.requests.respond(pending, outcome);
@@ -461,8 +378,7 @@ impl Updates<'_, '_> {
         }
     }
 
-    /// Handle the timers that are due: request the missing chunk again, and
-    /// offer the staged image again.
+    /// Request the missing chunk again, if that is due.
     async fn handle_timers(&mut self) {
         let now = Instant::now();
 
@@ -477,63 +393,39 @@ impl Updates<'_, '_> {
                 self.request_next_chunk().await;
             }
         }
-
-        if self.offering.is_some_and(|at| now >= at) {
-            self.offering = match self.staged {
-                Some(image) => {
-                    self.send(None, &UpdateMessage::Offer(image)).await;
-                    Some(now + OFFER_INTERVAL)
-                }
-                None => None,
-            };
-            // Publishing here removes fetchers that have gone quiet. Nothing
-            // else would, because the other calls follow a request.
-            self.publish_progress();
-        }
     }
 
     async fn handle_datagram(&mut self, received: thread::Received) {
         let thread::Received { from, datagram } = received;
         match UpdateMessage::decode(&datagram) {
             Some(UpdateMessage::Offer(image)) => self.handle_offer(image, from).await,
-            Some(UpdateMessage::ChunkRequest { build, offset }) => {
-                self.handle_chunk_request(build, offset, from).await
-            }
             Some(UpdateMessage::Chunk {
                 build,
                 offset,
                 data,
             }) => self.handle_chunk(build, offset, &data).await,
-            Some(UpdateMessage::Fetching { board }) => {
-                if self.offering.is_some() {
-                    self.fetcher(from).board = Some(board);
-                    self.publish_progress();
-                }
-            }
-            Some(UpdateMessage::Running { board, build }) => {
-                if self.offering.is_some() {
-                    self.record_build(board, build);
-                }
-            }
+            // For a board that offers an image, which this firmware doesn't:
+            // a board on an older firmware may still send them to one that
+            // does.
+            Some(
+                UpdateMessage::ChunkRequest { .. }
+                | UpdateMessage::Fetching { .. }
+                | UpdateMessage::Running { .. },
+            ) => {}
             // Not a message this firmware understands. A newer firmware may
             // have sent it.
             None => {}
         }
     }
 
-    /// Handle an offer of `image` from another board. Fetch the image,
-    /// unless this board already runs it, has it staged, or has rolled it
-    /// back.
+    /// Handle an offer of `image`. Fetch the image, unless this board already
+    /// runs it, has it staged, or has rolled it back.
     async fn handle_offer(&mut self, image: UpdateImage, from: thread::Peer) {
-        // A board also receives its own offers.
-        if self.offering.is_some() && self.staged == Some(image) {
-            return;
-        }
         let running = UpdateMessage::Running {
             board: self.board,
             build: build(),
         };
-        self.send(Some(from), &running).await;
+        self.send(from, &running).await;
 
         if image.build == build()
             || self.staged == Some(image)
@@ -574,11 +466,11 @@ impl Updates<'_, '_> {
         }
     }
 
-    /// Send this board's ID to the board that offers the image, so that it
-    /// can report whose progress it is tracking.
+    /// Send this board's ID to the host or board that offers the image, so
+    /// that it can report whose progress it is tracking.
     async fn send_board_id(&mut self, peer: thread::Peer) {
         let message = UpdateMessage::Fetching { board: self.board };
-        self.send(Some(peer), &message).await;
+        self.send(peer, &message).await;
     }
 
     async fn request_next_chunk(&mut self) {
@@ -591,7 +483,7 @@ impl Updates<'_, '_> {
         };
         let from = fetch.from;
         fetch.retry_at = Some(Instant::now() + CHUNK_TIMEOUT);
-        self.send(Some(from), &request).await;
+        self.send(from, &request).await;
     }
 
     async fn handle_chunk(&mut self, build: BuildId, offset: u32, data: &[u8]) {
@@ -626,114 +518,9 @@ impl Updates<'_, '_> {
         }
     }
 
-    /// Handle a chunk request from a board that is fetching the staged image.
-    async fn handle_chunk_request(&mut self, build: BuildId, offset: u32, from: thread::Peer) {
-        let Some(image) = self.staged else {
-            return;
-        };
-        if self.offering.is_none() || build != image.build || offset >= image.size.0 {
-            return;
-        }
-        let len = UpdateMessage::CHUNK_LEN.min((image.size.0 - offset) as usize);
-        // A board requests the chunk after the data it has, so `offset` is
-        // how much it has received. No request follows the last chunk, so
-        // that one is assumed to arrive.
-        let end = offset + len as u32;
-        self.fetcher(from).received = if end == image.size.0 { end } else { offset };
-        self.publish_progress();
-
-        let mut data = heapless::Vec::new();
-        // Cannot fail: `len` is at most the capacity.
-        let _ = data.resize_default(len);
-        if let Err(e) = self.staging_area.read(offset, &mut data).await {
-            defmt::error!("update: flash: {}", e);
-            return;
-        }
-        let chunk = UpdateMessage::Chunk {
-            build,
-            offset,
-            data,
-        };
-        self.send(Some(from), &chunk).await;
-    }
-
-    /// The record of the board at `peer` as a fetcher of the staged image.
-    /// Creates the record if there is none.
-    fn fetcher(&mut self, peer: thread::Peer) -> &mut TrackedFetcher {
-        let now = Instant::now();
-        let known = self.fetchers.iter().position(|f| f.peer == peer);
-        let index = known.unwrap_or_else(|| {
-            let new = TrackedFetcher {
-                peer,
-                board: None,
-                received: 0,
-                last_seen: now,
-            };
-            match self.fetchers.push(new) {
-                Ok(()) => self.fetchers.len() - 1,
-                // The list is full: replace the fetcher that has been quiet
-                // the longest.
-                Err(new) => {
-                    let oldest = (0..self.fetchers.len())
-                        .min_by_key(|&i| self.fetchers[i].last_seen)
-                        .unwrap_or(0);
-                    self.fetchers[oldest] = new;
-                    oldest
-                }
-            }
-        });
-        let fetcher = &mut self.fetchers[index];
-        fetcher.last_seen = now;
-        fetcher
-    }
-
-    /// Record that `board` runs `build`, as it has told this board in reply
-    /// to its offer.
-    fn record_build(&mut self, board: BoardId, build: BuildId) {
-        self.builds.0.lock(|builds| {
-            let boards = &mut builds.borrow_mut().boards;
-            match boards.iter_mut().find(|known| known.board == board) {
-                Some(known) => known.build = build,
-                None => {
-                    if boards.push(RunningBuild { board, build }).is_err() {
-                        defmt::debug!("update: no room for the build of {}", board);
-                    }
-                }
-            }
-        });
-    }
-
-    /// Forget the boards that fetch the staged image or have told their
-    /// build, because the offer has ended.
-    fn forget_boards(&mut self) {
-        self.fetchers.clear();
-        self.publish_progress();
-        self.builds
-            .0
-            .lock(|builds| builds.borrow_mut().boards.clear());
-    }
-
-    /// Publish the fetchers' progress, after dropping those that have gone
-    /// quiet because they finished or left.
-    fn publish_progress(&mut self) {
-        let now = Instant::now();
-        self.fetchers
-            .retain(|fetcher| now - fetcher.last_seen < FETCHER_TIMEOUT);
-        let fetchers = self.fetchers.iter().map(|fetcher| Fetcher {
-            board: fetcher.board,
-            received: fetcher.received,
-        });
-        let progress = OfferProgress {
-            fetchers: fetchers.collect(),
-        };
-        self.progress
-            .0
-            .lock(|published| published.replace(progress));
-    }
-
-    /// Send `message` to one board, or with `None` to every board. Delivery
-    /// is not confirmed: chunk requests are retried and offers are repeated.
-    async fn send(&mut self, to: Option<thread::Peer>, message: &UpdateMessage) {
+    /// Send `message` to `to`. Delivery is not confirmed: chunk requests are
+    /// retried, and offers are repeated.
+    async fn send(&mut self, to: thread::Peer, message: &UpdateMessage) {
         let mut datagram = thread::Datagram::new();
         // Cannot fail: a datagram has room for the longest message.
         let _ = datagram.resize_default(UpdateMessage::MAX_LEN);
@@ -742,11 +529,7 @@ impl Updates<'_, '_> {
         };
         datagram.truncate(len);
 
-        let sent = match to {
-            Some(peer) => self.socket.send_to(peer, datagram).await,
-            None => self.socket.broadcast(datagram).await,
-        };
-        if let Err(e) = sent {
+        if let Err(e) = self.socket.send_to(to, datagram).await {
             defmt::debug!("update: not sent: {}", e);
         }
     }
@@ -776,8 +559,6 @@ impl Updates<'_, '_> {
     fn begin(&mut self, image: UpdateImage) -> UpdateResult {
         self.incoming = None;
         self.staged = None;
-        self.offering = None;
-        self.forget_boards();
         // The bootloader swaps the staging area with a region that is one
         // page shorter, so an image can only be as long as that region.
         let room = self.staging_area.capacity() as u32 - PAGE;

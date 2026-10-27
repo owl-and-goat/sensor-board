@@ -11,16 +11,13 @@ use postcard_rpc::{
 };
 use protocol::{
     Addresses, ApplyUpdate, BeginInstall, BeginUpdate, BoardConfig, BoardDiscovered, BoardId,
-    BoardInfo, BuildCommit, CapacitanceChannel, CapacitanceResult, ConfigError, ConfigFor,
-    CoprocessorResult, CoprocessorStatus, Dataset, DeviceMode, DiscoverBoards, EnterBootloader,
-    FinishInstall, FinishUpdate, FirmwareStatus, GetBoardConfig, GetBoardInfo, GetBuildCommit,
-    GetCoprocessorStatus, GetDeviceMode, GetFirmwareStatus, GetMetrics, GetNetworkAddresses,
-    GetNetworkDataset, GetNetworkNeighbors, GetNetworkStatus, GetOfferProgress, GetRegistration,
-    GetRunningBuilds, ImageChunk, ImageSize, JoinNetwork, LeaveNetwork, MeasureTempRh, Member,
-    NeighborTable, NetworkError, NetworkStatus, OfferProgress, ReadCapacitance, Registration,
-    RunningBuilds, SLEEPY_POLL_PERIOD, SetBoardConfig, StartOffering, StopOffering, TempRhReq,
-    TempRhResult, USB_PID, USB_VID, UninstallStack, UpdateImage, UpdateResult, WriteInstall,
-    WriteUpdate,
+    BoardInfo, BuildCommit, ConfigError, ConfigFor, CoprocessorResult, CoprocessorStatus, Dataset,
+    DeviceMode, DiscoverBoards, EnterBootloader, FinishInstall, FinishUpdate, FirmwareStatus,
+    GetBoardConfig, GetBoardInfo, GetBuildCommit, GetCoprocessorStatus, GetDeviceMode,
+    GetFirmwareStatus, GetMetrics, GetNetworkAddresses, GetNetworkDataset, GetNetworkNeighbors,
+    GetNetworkStatus, GetRegistration, ImageChunk, ImageSize, JoinNetwork, LeaveNetwork, Member,
+    NeighborTable, NetworkError, NetworkStatus, Registration, SLEEPY_POLL_PERIOD, SetBoardConfig,
+    USB_PID, USB_VID, UninstallStack, UpdateImage, UpdateResult, WriteInstall, WriteUpdate,
 };
 
 /// Timeout for a call to a board. The slowest call is a configuration
@@ -244,14 +241,6 @@ impl Board {
         self.coprocessor_result(result)
     }
 
-    pub async fn read_capacitance(&self, channel: CapacitanceChannel) -> Result<CapacitanceResult> {
-        self.call::<ReadCapacitance>(&channel).await
-    }
-
-    pub async fn measure_temp_rh(&self, req: TempRhReq) -> Result<TempRhResult> {
-        self.call::<MeasureTempRh>(&req).await
-    }
-
     pub async fn firmware_status(&self) -> Result<FirmwareStatus> {
         self.call::<GetFirmwareStatus>(&()).await
     }
@@ -281,42 +270,6 @@ impl Board {
     pub async fn apply_update(&self) -> Result<()> {
         let result = self.call::<ApplyUpdate>(&()).await?;
         self.update_result(result)
-    }
-
-    /// Tell the board to offer its staged image to the boards on its
-    /// network, which fetch it and restart into it.
-    pub async fn start_offering(&self) -> Result<()> {
-        let result = self.call::<StartOffering>(&()).await?;
-        self.update_result(result)
-    }
-
-    pub async fn stop_offering(&self) -> Result<()> {
-        let result = self.call::<StopOffering>(&()).await?;
-        self.update_result(result)
-    }
-
-    /// The progress of the boards that are fetching the image this board
-    /// offers. `None` from a board whose firmware predates the endpoint.
-    pub async fn offer_progress(&self) -> Result<Option<OfferProgress>> {
-        let answer = self.client.send_resp::<GetOfferProgress>(&());
-        match tokio::time::timeout(TIMEOUT, answer).await {
-            Ok(Ok(progress)) => Ok(Some(progress)),
-            Ok(Err(HostErr::Wire(WireError::UnknownKey))) => Ok(None),
-            Ok(Err(e)) => bail!("board {}: could not tell: {e:?}", self.serial),
-            Err(_) => bail!("board {} did not answer", self.serial),
-        }
-    }
-
-    /// The builds that the boards which received this board's offer run.
-    /// `None` from a board whose firmware predates the endpoint.
-    pub async fn running_builds(&self) -> Result<Option<RunningBuilds>> {
-        let answer = self.client.send_resp::<GetRunningBuilds>(&());
-        match tokio::time::timeout(TIMEOUT, answer).await {
-            Ok(Ok(builds)) => Ok(Some(builds)),
-            Ok(Err(HostErr::Wire(WireError::UnknownKey))) => Ok(None),
-            Ok(Err(e)) => bail!("board {}: could not tell: {e:?}", self.serial),
-            Err(_) => bail!("board {} did not answer", self.serial),
-        }
     }
 
     fn update_result(&self, result: UpdateResult) -> Result<()> {

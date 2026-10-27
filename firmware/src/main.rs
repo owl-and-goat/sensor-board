@@ -374,8 +374,6 @@ async fn main(spawner: Spawner) {
         config: config_handle,
         metrics: metrics_handle,
         discovery: discovery_handle,
-        capacitance,
-        temp_rh,
     };
     let publisher = link.map(|link| {
         let (server, publisher) = rpc::server(spawner, link, context);

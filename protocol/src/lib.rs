@@ -39,17 +39,11 @@ endpoints! {
     | WriteInstall         | ImageChunk         | CoprocessorResult | "coprocessor/install/write"  |
     | FinishInstall        | ()                 | CoprocessorResult | "coprocessor/install/finish" |
     | UninstallStack       | ()                 | CoprocessorResult | "coprocessor/uninstall"      |
-    | ReadCapacitance      | CapacitanceChannel | CapacitanceResult | "sensor/capacitance"         |
-    | MeasureTempRh        | TempRhReq          | TempRhResult      | "sensor/temp-rh"             |
     | GetFirmwareStatus    | ()                 | FirmwareStatus    | "firmware/status"            |
     | BeginUpdate          | UpdateImage        | UpdateResult      | "firmware/update/begin"      |
     | WriteUpdate          | ImageChunk         | UpdateResult      | "firmware/update/write"      |
     | FinishUpdate         | ()                 | UpdateResult      | "firmware/update/finish"     |
     | ApplyUpdate          | ()                 | UpdateResult      | "firmware/update/apply"      |
-    | StartOffering        | ()                 | UpdateResult      | "firmware/offer/start"       |
-    | StopOffering         | ()                 | UpdateResult      | "firmware/offer/stop"        |
-    | GetOfferProgress     | ()                 | OfferProgress     | "firmware/offer/progress"    |
-    | GetRunningBuilds     | ()                 | RunningBuilds     | "firmware/offer/builds"      |
     | GetBoardConfig       | BoardId            | BoardConfigResult | "config/get"                 |
     | SetBoardConfig       | ConfigFor          | ConfigResult      | "config/set"                 |
     | GetNetworkAddresses  | ()                 | AddressesResult   | "network/addresses"          |
@@ -574,17 +568,6 @@ impl fmt::Display for FusError {
     }
 }
 
-/// A channel of the capacitance sensor.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Schema)]
-#[cfg_attr(feature = "defmt", derive(defmt::Format))]
-#[cfg_attr(feature = "clap", derive(clap::ValueEnum))]
-pub enum CapacitanceChannel {
-    Ch0,
-    Ch1,
-    Ch2,
-    Ch3,
-}
-
 /// A measurement of a capacitance channel.
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize, Schema)]
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]
@@ -597,8 +580,6 @@ pub struct Capacitance {
     /// than the value itself.
     pub picofarads: f32,
 }
-
-pub type CapacitanceResult = Result<Capacitance, SensorReadError>;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Schema, Error)]
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]
@@ -909,61 +890,17 @@ impl fmt::Display for UpdateError {
     }
 }
 
-/// The progress of the boards that are fetching the image a board offers,
-/// judging by the chunks they have requested.
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, Schema)]
-#[cfg_attr(feature = "defmt", derive(defmt::Format))]
-pub struct OfferProgress {
-    /// The boards that have requested a chunk in the last 30 seconds.
-    pub fetchers: heapless::Vec<Fetcher, { OfferProgress::MAX_FETCHERS }>,
-}
-
-impl OfferProgress {
-    pub const MAX_FETCHERS: usize = 8;
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Schema)]
-#[cfg_attr(feature = "defmt", derive(defmt::Format))]
-pub struct Fetcher {
-    /// The board's ID, if it has sent it. A board whose firmware predates
-    /// [`UpdateMessage::Fetching`] does not send it.
-    pub board: Option<BoardId>,
-    /// How many bytes of the image it has.
-    pub received: u32,
-}
-
-/// The builds that the boards which received the offer of a board run, as
-/// they have told it ([`UpdateMessage::Running`]) since it started to offer.
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, Schema)]
-#[cfg_attr(feature = "defmt", derive(defmt::Format))]
-pub struct RunningBuilds {
-    /// One entry for each board, with the build it last told. A board that
-    /// does not fit is left out.
-    pub boards: heapless::Vec<RunningBuild, { RunningBuilds::MAX_BOARDS }>,
-}
-
-impl RunningBuilds {
-    pub const MAX_BOARDS: usize = 16;
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Schema)]
-#[cfg_attr(feature = "defmt", derive(defmt::Format))]
-pub struct RunningBuild {
-    pub board: BoardId,
-    pub build: BuildId,
-}
-
 /// The UDP port of [`UpdateMessage`]. A board sends its requests to this port
 /// at the address an offer came from, so a host that offers an image has to
 /// send the offer from this port.
 pub const UPDATE_PORT: u16 = 61621;
 
-/// The messages boards exchange over the network for firmware updates. A
-/// board that has an image staged and has been told to offer it
-/// ([`StartOffering`]) multicasts an offer at intervals. A board that runs
-/// another build requests the image chunk by chunk, stages it, and restarts
-/// into it. A host can also offer an image itself, to each board's routable
-/// address through a border router.
+/// The messages for firmware updates over the network. A host offers an
+/// image to each board's routable address, through a border router. A board
+/// that runs another build requests the image chunk by chunk, stages it, and
+/// restarts into it. Until 2026-10-27 a board could offer its staged image
+/// too, by multicast, which is what `Fetching` and `Running` were for: the
+/// firmware since then still sends them, and no longer acts on them.
 ///
 /// The encoding of this type must never change: a board on an old firmware
 /// has to understand the offer of the firmware that replaces it. So do not

@@ -172,51 +172,57 @@ trial being confirmed, the rollback after a reset during the trial, and an
 update from the rolled-back state. Not tested: the five-minute timeout of a
 trial.
 
-An image reaches the staging area from the host over USB, or from another
-board over the network (`UpdateMessage` in `protocol`, on UDP port 61621,
-which every board listens on). Once the host tells a board with a staged
-image to offer it, that board multicasts an offer every ten seconds. A board
-that runs another build requests the image from the offering board 192 bytes
-at a time, stages it, and restarts into it. A board whose trial of a build
-failed finds that build in its staging area afterwards, and does not fetch
-it again.
+An image reaches the staging area from the host over USB, or over the
+network (`UpdateMessage` in `protocol`, on UDP port 61621, which every board
+listens on). `firmware push` offers an image to every board
+(`push_through_border_router` in `cli/src/firmware.rs`). It sends the offer
+from UDP port 61621 to the routable address of every device that the border
+router's REST API lists, and of every board it finds over mDNS (see "Boards
+on battery"), every ten seconds, and it answers the chunk requests. A board
+that runs another build requests the image 192 bytes at a time, stages it,
+and restarts into it. A board sends its requests to port 61621 at the
+address the offer came from, which is why the CLI binds that port. A board
+whose trial of a build failed finds that build in its staging area
+afterwards, and does not fetch it again.
 
-The offering board records the offset that each board last requested. That
-is the only progress information `firmware push` has (`GetOfferProgress`). A
-fetching board also sends its ID (`UpdateMessage::Fetching`) when it starts
-and at every offer it receives, so that its progress bar can show its serial
-number. The bars use indicatif, which draws nothing unless stderr is a
-terminal and `TERM` is not `dumb`.
+A fetching board sends its ID (`UpdateMessage::Fetching`) when it starts and
+at every offer it receives, and every board replies to every offer with its
+ID and the build it runs (`UpdateMessage::Running`). A board starts to
+listen for offers after its trial, so it replies with a new build only once
+it has kept it.
 
-Every board, whether it fetches or not, replies to every offer it receives
-with its ID and the build it runs (`UpdateMessage::Running`). The offering
-board keeps the last build of each board until the offer ends, and
-`firmware push` reads them (`GetRunningBuilds`) to learn which build each
-board runs. That includes boards on battery. A board starts to listen for
-offers after its trial, so it replies with a new build only once it has
-kept it. The push ends when every board it has heard from runs the image
-and no board is still fetching. A board whose firmware predates `Running`
-only shows up while it fetches.
-
-`firmware push` can also offer an image without an attached board
-(`push_through_border_router` in `cli/src/firmware.rs`). The CLI then does
-what an offering board does. It sends the offer from UDP port 61621 to the
-routable address of every device that the border router's REST API lists,
-and of every board it finds over mDNS (see "Boards on battery"), and it
-answers the chunk requests. A board sends its requests to port 61621
-at the address the offer came from, which is why the CLI binds that port.
+Until 2026-10-27 an attached board could offer its staged image to the
+others, by multicast, and `firmware push` went through it when one was
+attached. That took 2.2 K of flash for its endpoints and more for the code
+behind them, and was removed. What the attached board told the CLI, the
+CLI now learns from the boards' messages itself.
 
 - The offers are unicast. A multicast to `ff03::1` does not leave or enter
   the Thread network.
 - The offer goes to every listed device, not only to the boards that answer
   discovery. A board whose firmware predates discovery still has to get it.
-- The CLI ignores the builds that the boards reply with
-  (`UpdateMessage::Running`), so it does not know which build a board runs.
-  It ends when no board has asked for anything for 30 s, and it reports the
-  boards that fetched the image. It cannot tell a board that kept the image
-  from one that rolled it back.
-- A board gets a new address when it restarts into the image, so the device
-  list from before the push no longer reaches it.
+- The CLI shows a progress bar for each board that requests chunks, with its
+  serial number once the board has sent `Fetching`. The bars use indicatif,
+  which draws nothing unless stderr is a terminal and `TERM` is not `dumb`.
+- It records the build that each board replies with, and prints it when it
+  first hears from a board. A board that fetched the image and then replies
+  with the image's build has kept it. One that replies with another build
+  has rolled it back. A reply in the first 10 s after the fetch doesn't
+  count, because it may have been sent before the restart.
+- A board gets a new address when it restarts into the image, so the CLI
+  looks the boards up again every 30 s, at the border router and over mDNS,
+  and offers to the new addresses too.
+- It ends when no board has asked for anything for 30 s and every board
+  that fetched the image has come back, or has had seven minutes to: the
+  swap, a trial of up to five minutes, and a look-up. It then reports which
+  boards kept the image, rolled it back or didn't come back, and which run
+  another build without asking for the image (it failed on them before, or
+  doesn't fit their flash). It fails if a board rolled the image back or
+  didn't come back.
+- A board whose firmware predates `Running` only shows up while it fetches,
+  and the CLI doesn't wait for it to come back.
+
+Not tested on boards yet: the builds, the second look-up and the report.
 
 Tested on boards on 2026-10-11, with the two attached boards as the only
 targets: both fetched from the CLI at the same time (about 2 KiB/s each, a
@@ -228,8 +234,8 @@ The encoding of `UpdateMessage` is frozen, and tests in `protocol` pin its
 bytes, because a board on an old firmware has to understand the offer of the
 firmware that replaces it. Add new messages at the end of the enum: a
 firmware that does not know a message ignores it. Tested on boards on
-2026-10-04: a push to the whole network, with boards fetching from the
-attached one.
+2026-10-04: a push to the whole network, with boards fetching from an
+attached board, which could still offer then.
 
 Things learned the hard way:
 
@@ -881,16 +887,13 @@ been measured.
 
 ### Reaching it
 
-- The requests that a board multicasts (configuration, discovery, update
-  offers) go to the realm-local all-Thread-nodes address
+- The requests that a board multicasts (configuration, discovery) go to the
+  realm-local all-Thread-nodes address
   (`broadcast_address` in `thread/mod.rs`). A parent forwards that address
   to its sleepy children. It does not forward `ff03::1`.
 - Everything that waits for a reply allows for the poll period: the board
   that relays a configuration request, the CLI's own requests through a
   border router, and the CLI's timeout for a call to a board.
-- `firmware push` through an attached board learns the build of a board on
-  battery as it does for any other board: from the board's reply to the
-  offer, which takes up to a poll period.
 - A fetch needs no change of mode. The board polls fast for two seconds
   after every chunk request, which carries the whole fetch.
 - `network show` through an attached board collects replies for three

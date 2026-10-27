@@ -18,23 +18,17 @@ use postcard_rpc::{
 use postcard_rpc::server::impls::embassy_usb_v0_6::dispatch_impl::spawn_fn;
 use protocol::{
     AddressesResult, ApplyUpdate, BeginInstall, BeginUpdate, BoardConfigResult, BoardDiscovered,
-    BoardId, BoardInfo, BuildCommit, CapacitanceChannel, CapacitanceResult, ConfigFor,
-    ConfigResult, CoprocessorResult, CoprocessorStatus, Dataset, DeviceModeResult, DiscoverBoards,
-    ENDPOINT_LIST, EnterBootloader, FinishInstall, FinishUpdate, FirmwareStatus, GetBoardConfig,
-    GetBoardInfo, GetBuildCommit, GetCoprocessorStatus, GetDeviceMode, GetFirmwareStatus,
-    GetMetrics, GetNetworkAddresses, GetNetworkDataset, GetNetworkNeighbors, GetNetworkStatus,
-    GetOfferProgress, GetRegistration, GetRunningBuilds, ImageChunk, ImageSize, JoinNetwork,
-    LeaveNetwork, MeasureTempRh, Member, MetricsChunk, NeighborsResult, NetworkResult,
-    NetworkStatus, OfferProgress, ReadCapacitance, Registration, RunningBuilds, SensorReadError,
-    SetBoardConfig, StartOffering, StopOffering, TOPICS_IN_LIST, TOPICS_OUT_LIST, TempRhReq,
-    TempRhResult, UninstallStack, UpdateImage, UpdateResult, WriteInstall, WriteUpdate,
+    BoardId, BoardInfo, BuildCommit, ConfigFor, ConfigResult, CoprocessorResult, CoprocessorStatus,
+    Dataset, DeviceModeResult, DiscoverBoards, ENDPOINT_LIST, EnterBootloader, FinishInstall,
+    FinishUpdate, FirmwareStatus, GetBoardConfig, GetBoardInfo, GetBuildCommit,
+    GetCoprocessorStatus, GetDeviceMode, GetFirmwareStatus, GetMetrics, GetNetworkAddresses,
+    GetNetworkDataset, GetNetworkNeighbors, GetNetworkStatus, GetRegistration, ImageChunk,
+    ImageSize, JoinNetwork, LeaveNetwork, Member, MetricsChunk, NeighborsResult, NetworkResult,
+    NetworkStatus, Registration, SetBoardConfig, TOPICS_IN_LIST, TOPICS_OUT_LIST, UninstallStack,
+    UpdateImage, UpdateResult, WriteInstall, WriteUpdate,
 };
 
-use crate::{
-    board_config, coprocessor, dfu, discovery, metrics,
-    sensor::{self, capacitance, temp_rh},
-    thread, update, usb,
-};
+use crate::{board_config, coprocessor, dfu, discovery, metrics, thread, update, usb};
 
 /// The handles that the RPC handlers use.
 pub struct Context {
@@ -45,9 +39,6 @@ pub struct Context {
     pub config: board_config::Handle,
     pub metrics: metrics::Handle,
     pub discovery: discovery::Handle,
-    // TODO(aspen): Make nicer
-    pub capacitance: Option<&'static sensor::Shared<capacitance::CapacitanceSensor<'static>>>,
-    pub temp_rh: Option<&'static sensor::Shared<temp_rh::TempRhSensor<'static>>>,
 }
 
 define_dispatch! {
@@ -74,17 +65,11 @@ define_dispatch! {
         | WriteInstall         | async    | write_install      |
         | FinishInstall        | async    | finish_install     |
         | UninstallStack       | async    | uninstall_stack    |
-        | ReadCapacitance      | async    | read_capacitance   |
-        | MeasureTempRh        | async    | measure_temp_rh    |
         | GetFirmwareStatus    | blocking | firmware_status    |
         | BeginUpdate          | async    | begin_update       |
         | WriteUpdate          | async    | write_update       |
         | FinishUpdate         | async    | finish_update      |
         | ApplyUpdate          | async    | apply_update       |
-        | StartOffering        | async    | start_offering     |
-        | StopOffering         | async    | stop_offering      |
-        | GetOfferProgress     | blocking | offer_progress     |
-        | GetRunningBuilds     | blocking | running_builds     |
         | GetBoardConfig       | async    | board_config       |
         | SetBoardConfig       | async    | set_board_config   |
         | GetNetworkAddresses  | async    | network_addresses  |
@@ -263,22 +248,6 @@ async fn apply_update(context: &mut Context, _header: VarHeader, (): ()) -> Upda
     context.update.apply().await
 }
 
-async fn start_offering(context: &mut Context, _header: VarHeader, (): ()) -> UpdateResult {
-    context.update.offer(true).await
-}
-
-async fn stop_offering(context: &mut Context, _header: VarHeader, (): ()) -> UpdateResult {
-    context.update.offer(false).await
-}
-
-fn offer_progress(context: &mut Context, _header: VarHeader, (): ()) -> OfferProgress {
-    context.update.offer_progress()
-}
-
-fn running_builds(context: &mut Context, _header: VarHeader, (): ()) -> RunningBuilds {
-    context.update.running_builds()
-}
-
 async fn board_config(
     context: &mut Context,
     _header: VarHeader,
@@ -293,38 +262,4 @@ async fn set_board_config(
     config: ConfigFor,
 ) -> ConfigResult {
     context.config.set(config).await
-}
-
-async fn read_capacitance(
-    context: &mut Context,
-    _header: VarHeader,
-    channel: CapacitanceChannel,
-) -> CapacitanceResult {
-    let channel = match channel {
-        CapacitanceChannel::Ch0 => capacitance::Channel::Ch0,
-        CapacitanceChannel::Ch1 => capacitance::Channel::Ch1,
-        CapacitanceChannel::Ch2 => capacitance::Channel::Ch2,
-        CapacitanceChannel::Ch3 => capacitance::Channel::Ch3,
-    };
-    Ok(context
-        .capacitance
-        .ok_or(SensorReadError::NotInitialized)?
-        .lock()
-        .await
-        .read(channel)
-        .await?)
-}
-
-async fn measure_temp_rh(
-    context: &mut Context,
-    _header: VarHeader,
-    req: TempRhReq,
-) -> TempRhResult {
-    context
-        .temp_rh
-        .ok_or(SensorReadError::NotInitialized)?
-        .lock()
-        .await
-        .read(req)
-        .await
 }
