@@ -351,7 +351,8 @@ electrode attached.
 ## The motion sensor
 
 The motion sensor is an EKMB130711, a passive infrared sensor whose output
-goes high while it detects motion. It's on PA2. `firmware/src/sensor/motion.rs`
+goes high while it detects motion. Its datasheet is `doc/ekmb130711.pdf`. It
+draws 6 µA, and 12 µA at most. It's on PA2. `firmware/src/sensor/motion.rs`
 waits for the output with an interrupt instead of polling it, so a board on
 battery stays in Stop mode until there is motion. `motion_enabled` in
 `BoardConfig` turns it on (`config set --motion-sensor true`). It is not in
