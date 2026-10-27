@@ -33,6 +33,8 @@ defmt-rtt = "1.3.0"
 panic-probe = "1.0.0"
 
 protocol = { path = "../protocol", features = ["defmt"] }
+# For the Serialize bound of the RPC transmitter in usb.rs.
+serde = { version = "1.0", default-features = false }
 static_cell = "2.1"
 heapless = "0.9"
 # log10 for the sound level in dB SPL.

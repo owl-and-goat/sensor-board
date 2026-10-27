@@ -1792,6 +1792,7 @@ dependencies = [
  "panic-probe",
  "postcard-rpc",
  "protocol",
+ "serde",
  "sha2",
  "static_cell",
  "tinymetrics",
