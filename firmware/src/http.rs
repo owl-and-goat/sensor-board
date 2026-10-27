@@ -22,8 +22,11 @@ const CONTENT_TYPE: &str = "text/plain; version=0.0.4; charset=utf-8";
 const JSON: &str = "application/json";
 
 /// The longest body of a response. nanofish copies a response into one
-/// buffer before it sends it.
-pub const MAX_BODY: usize = 4096;
+/// buffer before it sends it. The help and type lines of the metrics alone
+/// take about 3.5 K. With 4 K, board 4C0045 (two capacitance channels,
+/// temperature and humidity) answered every scrape with a 500 on
+/// 2026-11-01, once the metrics had one more family.
+pub const MAX_BODY: usize = 6144;
 
 /// Room for the head of a message that is sent: the first line and the
 /// headers.
