@@ -164,6 +164,21 @@ pub async fn post_json(
     request(tcp, HttpMethod::POST, to, path, JSON, body).await
 }
 
+/// The value of the `Host` header for a request to `to`. The address isn't
+/// shortened, because core's formatting of an IPv6 address, which shortens
+/// it, took 1 K of flash.
+fn host(to: SocketAddrV6) -> heapless::String<48> {
+    let mut host = heapless::String::new();
+    // Cannot fail: the longest address and port take 47 characters.
+    let _ = write!(host, "[");
+    for (i, segment) in to.ip().segments().iter().enumerate() {
+        let separator = if i == 0 { "" } else { ":" };
+        let _ = write!(host, "{separator}{segment:x}");
+    }
+    let _ = write!(host, "]:{}", to.port());
+    host
+}
+
 /// Send `body` to `to` in a request for `path`. Returns the status code of
 /// the response.
 async fn request(
@@ -174,8 +189,7 @@ async fn request(
     content_type: &str,
     body: &str,
 ) -> Result<u16, Error> {
-    let mut host: heapless::String<64> = heapless::String::new();
-    write!(host, "{to}").map_err(|_| Error::Malformed)?;
+    let host = host(to);
     let request = HttpClientRequest {
         method,
         host: &host,
