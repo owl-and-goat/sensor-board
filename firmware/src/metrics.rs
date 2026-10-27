@@ -26,9 +26,7 @@ use fixed::{
     types::{I14F50, I16F16},
 };
 use nanofish::{HttpHandler, HttpMethod, HttpRequest, HttpResponse, StatusCode};
-use protocol::{
-    BoardConfig, BoardId, MetricsChunk, PowerMode, Precision, Sensor, TempRh, TempRhReq,
-};
+use protocol::{BoardConfig, BoardId, MetricsChunk, PowerMode, Precision, Sensor, TempRhReq};
 use static_cell::StaticCell;
 use tinymetrics::{Counter, FixedGauge, FmtLabels, IntGauge, MetricBuilder, MetricFamily};
 
@@ -1022,21 +1020,17 @@ impl Exporter {
         if let Some(poll) = &mut self.polls[sensor] {
             poll.due = Instant::now() + poll.interval;
         }
+        // One call for the four capacitance channels, and one for the two
+        // readings of the temperature and humidity sensor: each call of an
+        // async function in a `match` arm takes its own code.
         match SENSORS[sensor] {
-            Sensor::Capacitance0 => self.read_capacitance(0).await,
-            Sensor::Capacitance1 => self.read_capacitance(1).await,
-            Sensor::Capacitance2 => self.read_capacitance(2).await,
-            Sensor::Capacitance3 => self.read_capacitance(3).await,
+            Sensor::Capacitance0
+            | Sensor::Capacitance1
+            | Sensor::Capacitance2
+            | Sensor::Capacitance3 => self.read_capacitance(sensor).await,
             Sensor::Color => self.read_color().await,
-            Sensor::Temperature => {
-                self.read_temp_rh(
-                    |metrics| &metrics.temperature,
-                    |reading| reading.temperature,
-                )
-                .await
-            }
-            Sensor::Humidity => {
-                self.read_temp_rh(|metrics| &metrics.humidity, |reading| reading.humidity)
+            Sensor::Temperature | Sensor::Humidity => {
+                self.read_temp_rh(SENSORS[sensor] == Sensor::Temperature)
                     .await
             }
             Sensor::Sound => self.read_sound().await,
@@ -1095,14 +1089,10 @@ impl Exporter {
         }
     }
 
-    /// Measure with the temperature & humidity sensor, and set `gauge` to
-    /// `value` of the measurement. On a board without one, every measurement
-    /// fails.
-    async fn read_temp_rh(
-        &mut self,
-        gauge: impl FnOnce(&Metrics) -> &BoardFamily<FixedGauge<Decimal>>,
-        value: impl FnOnce(TempRh) -> f32,
-    ) {
+    /// Measure with the temperature & humidity sensor, and record the
+    /// temperature, or the humidity if `temperature` is false. On a board
+    /// without one, every measurement fails.
+    async fn read_temp_rh(&mut self, temperature: bool) {
         let reading = match self.temp_rh {
             Some(temp_rh) => {
                 let req = TempRhReq::Plain(Precision::High);
@@ -1115,8 +1105,15 @@ impl Exporter {
             usize::from(reading.is_none()),
         );
         self.metrics.with(|metrics| {
-            let gauge = gauge(metrics).register(BoardLabels(self.board));
-            let value = reading.and_then(|reading| fixed(value(reading)));
+            let gauge = match temperature {
+                true => &metrics.temperature,
+                false => &metrics.humidity,
+            };
+            let gauge = gauge.register(BoardLabels(self.board));
+            let value = reading.and_then(|reading| match temperature {
+                true => fixed(reading.temperature),
+                false => fixed(reading.humidity),
+            });
             if let (Some(value), Some(gauge)) = (value, gauge) {
                 gauge.set_value(value);
             }
