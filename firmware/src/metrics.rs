@@ -348,7 +348,7 @@ impl Metrics {
                 .with_help("Build time of the running firmware, as a Unix timestamp, labeled with its Git commit.")
                 .build_labeled(),
             battery_low: MetricBuilder::new("sensor_board_battery_low")
-                .with_help("1 if the supply voltage has been low since the board started, else 0.")
+                .with_help("1 if the supply voltage was below 2.64 V when the metrics were rendered, before a push or for a scrape, else 0.")
                 .build_labeled(),
             stops: MetricBuilder::new("sensor_board_stops")
                 .with_help("1 if the chip enters Stop mode while the firmware waits, else 0. Decided when the board starts.")

@@ -53,7 +53,6 @@ bind_interrupts!(struct Irqs {
     DMA1_CHANNEL1 => dma::InterruptHandler<DMA1_CH1>;
     DMA2_CHANNEL1 => dma::InterruptHandler<DMA2_CH1>;
     DMA1_CHANNEL2 => dma::InterruptHandler<DMA1_CH2>;
-    PVD_PVM => supply::InterruptHandler;
 });
 
 /// The clocks of a board that starts with the power mode `power`.
@@ -355,7 +354,7 @@ async fn main(spawner: Spawner) {
     let (metrics_task, metrics_handle) = metrics::Builder {
         tcp,
         config: metrics_config,
-        supply: supply::init(Irqs),
+        supply: supply::init(),
         capacitance,
         color,
         temp_rh,

@@ -300,28 +300,25 @@ sees the rail, which is its VDD, VDDA and VBAT.
   schematic and the regulator's datasheet. It has not been measured.
 
 `firmware/src/supply.rs` runs the chip's programmable voltage detector (PVD)
-on the rail. The detector raises an interrupt when VDD falls below 2.64 V
-(level 4, 2.59 V to 2.69 V), which is just under the 2.7 V that the
-capacitance sensor needs. The metrics export the outcome as
-`sensor_board_battery_low`.
+on the rail. Its output is high while VDD is below 2.64 V (level 4, 2.59 V
+to 2.69 V), which is just under the 2.7 V that the capacitance sensor
+needs. The metrics export the output as `sensor_board_battery_low`, read
+when they are rendered: on a board on battery, just before each push, with
+the board idle.
 
-- The metric goes from 0 to 1 and stays there until the board restarts. A
-  coin cell sags while the radio transmits and recovers afterwards, and the
-  metrics are rendered before a push is sent. The detector's output at that
-  moment would miss the sag.
-- The interrupt handler masks the detector's EXTI line (16) and leaves it
-  masked. The masked line is the record that the detector tripped, which is
-  also how embassy's EXTI code records an event. It keeps a supply that
-  hovers at the threshold from interrupting again.
-- The handler clears the line's pending bit, because a pending EXTI line
-  keeps the chip out of Stop mode (RM0434).
-- The interrupt reaches CPU1 without more setup. `PVDIM` in `SYSCFG_IMR2` is
-  0 after a reset, which forwards it.
+- A coin cell sags while the radio transmits and recovers afterwards. Until
+  2026-10-28 the detector raised an interrupt, and the metric stayed at 1
+  from the first time it tripped until the board restarted. On boards
+  4D0021 and 4B002E, both on a coin cell, it tripped within ten minutes of
+  every start, also on a fresh cell, and the alert in Grafana then repeated
+  every day. So the metric now shows the output at rest, which says whether
+  the cell is low, and no longer the sags.
 - The detector takes about 1 µA (datasheet).
 
-Not tested on a board: any of it. In particular, it is not known whether a
-fresh coin cell stays above the threshold while the radio transmits. If it
-does not, lower `LEVEL` in `supply.rs`.
+Not tested on a board: that the output at rest stays 0 on a fresh cell, and
+goes to 1 on a cell that is running out. A board on battery could sample at
+the moment CPU2 sends a data poll, but that takes a few milliseconds every
+10 s.
 
 ## The capacitance sensor
 
