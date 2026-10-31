@@ -255,6 +255,9 @@ impl SocketShared {
 /// device mode.
 struct Status {
     network: Mutex<ThreadModeRawMutex, RefCell<(NetworkStatus, Addresses)>>,
+    /// TCP callbacks that arrived after the board had closed its connection
+    /// (see `Network::tcp_event`).
+    late_tcp_events: Mutex<ThreadModeRawMutex, Cell<usize>>,
     /// Signalled when `network` is published, for [`Tcp::ready`].
     published: Signal<ThreadModeRawMutex, ()>,
     registration: Mutex<ThreadModeRawMutex, Cell<Registration>>,
@@ -359,6 +362,7 @@ pub fn init(power: PowerMode) -> (Handle, Sockets, Tcp, Service) {
                 NetworkStatus::Starting,
                 Addresses::default(),
             ))),
+            late_tcp_events: Mutex::new(Cell::new(0)),
             published: Signal::new(),
             registration: Mutex::new(Cell::new(Registration::Off)),
             // The stack starts as a full Thread device.
@@ -476,6 +480,11 @@ impl Socket {
 /// data to be acknowledged, and for data to arrive.
 const TCP_TIMEOUT: Duration = Duration::from_secs(10);
 
+/// A sleepy board polls fast while it has a TCP exchange: from each request
+/// on the connection until this long after it, or until the connection is
+/// closed. The requests of one exchange follow each other within seconds.
+const EXCHANGE_IDLE: Duration = Duration::from_secs(30);
+
 /// How often [`Tcp::accept`] renews its request while it waits. A connection
 /// that arrives between two requests is not lost.
 const ACCEPT_INTERVAL: Duration = Duration::from_secs(60);
@@ -489,6 +498,13 @@ pub struct Tcp {
 }
 
 impl Tcp {
+    /// How many TCP callbacks have arrived since the board started after it
+    /// had closed its connection. Each was for a connection that the board
+    /// had aborted.
+    pub fn late_events(&self) -> usize {
+        self.status.late_tcp_events.lock(|n| n.get())
+    }
+
     /// Wait until `peer` can answer the board: until the board has attached
     /// and has an address that `peer` can send to. The stack takes a
     /// [`Tcp::connect`] before that too, and the connection then times out.
@@ -768,6 +784,9 @@ struct TcpEndpoint {
     connection: Connection,
     /// When the connection started being established.
     opening_since: Instant,
+    /// Until when the exchange on the connection goes on, as far as the
+    /// board polls fast for it (see [`EXCHANGE_IDLE`]).
+    exchange_until: Instant,
     /// The number of bytes in the send buffer. The stack keeps all of them
     /// until the peer has acknowledged every one.
     queued: usize,
@@ -844,6 +863,7 @@ impl Service {
                 listening: None,
                 connection: Connection::Closed,
                 opening_since: Instant::now(),
+                exchange_until: Instant::now(),
                 queued: 0,
                 unsent: None,
                 end_of_stream: false,
@@ -931,7 +951,8 @@ impl Network<'_, '_> {
 
         loop {
             self.update_poll_period().await;
-            let answer_until = self.answer_until;
+            // The poll period changes when either of these ends.
+            let answer_until = self.answer_until.max(self.tcp.exchange_until);
             let answer_time_over = async {
                 if Instant::now() < answer_until {
                     Timer::at(answer_until).await
@@ -1016,9 +1037,16 @@ impl Network<'_, '_> {
     }
 
     /// Give the stack the data poll period that the board needs now.
+    ///
+    /// The TCP exchange counts, not the connection's state: a callback for
+    /// an aborted connection can arrive after `Tcp::close` and leave the
+    /// state open. The board then polled every 100 ms until its next
+    /// connection, hours later on a motion sensor, and a coin cell lasted
+    /// six days (4D0021, October 2026).
     async fn update_poll_period(&mut self) {
+        let now = Instant::now();
         let answer_expected =
-            self.tcp.connection != Connection::Closed || Instant::now() < self.answer_until;
+            now < self.tcp.exchange_until || self.tcp.waiting.is_some() || now < self.answer_until;
         let period = match self.mode {
             DeviceMode::Full => None,
             DeviceMode::Sleepy if answer_expected => Some(FAST_POLL_PERIOD),
@@ -1030,7 +1058,10 @@ impl Network<'_, '_> {
         // Zero selects the stack's own period.
         let millis = period.map_or(0, |period| period.as_millis() as u32);
         match self.ot.link_set_poll_period(millis).await {
-            Ok(()) => self.poll_period = period,
+            Ok(()) => {
+                defmt::debug!("thread: polling every {} ms", millis);
+                self.poll_period = period;
+            }
             Err(e) => defmt::warn!("thread: could not set the poll period: {}", e),
         }
     }
@@ -1111,6 +1142,14 @@ impl Network<'_, '_> {
             return Err(OtError::NotImplemented.into());
         }
         let done = Ok(TcpStep::Done(TcpChunk::new()));
+        match request {
+            TcpRequest::Connect(_)
+            | TcpRequest::Send(_)
+            | TcpRequest::Receive
+            | TcpRequest::Finish => self.tcp.exchange_until = Instant::now() + EXCHANGE_IDLE,
+            TcpRequest::Close => self.tcp.exchange_until = Instant::now(),
+            TcpRequest::Listen(_) | TcpRequest::Register(_) | TcpRequest::Accept => {}
+        }
 
         match request {
             TcpRequest::Listen(port) => {
@@ -1243,6 +1282,16 @@ impl Network<'_, '_> {
     /// Handle a TCP callback from the stack.
     async fn tcp_event(&mut self, event: ot::TcpEvent) {
         use ot::{TcpDisconnected, TcpEvent};
+
+        // On a board that doesn't listen, every connection is its own, so a
+        // callback after `Tcp::close` is for a connection it aborted.
+        let closed = Instant::now() >= self.tcp.exchange_until && self.tcp.waiting.is_none();
+        if closed && self.tcp.listening.is_none() && !matches!(event, TcpEvent::Incoming { .. }) {
+            defmt::debug!("thread: a TCP callback after the connection was closed");
+            self.status
+                .late_tcp_events
+                .lock(|n| n.set(n.get().wrapping_add(1)));
+        }
 
         match event {
             TcpEvent::Incoming { accepted: true } => {

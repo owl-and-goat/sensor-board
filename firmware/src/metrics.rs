@@ -337,6 +337,7 @@ struct Metrics {
     scrapes: BoardFamily<Counter>,
     pushes: BoardFamily<Counter>,
     push_failures: FailureFamily,
+    late_tcp_events: BoardFamily<Counter>,
     report_failures: FailureFamily,
     push_status: BoardFamily<IntGauge>,
 }
@@ -395,6 +396,9 @@ impl Metrics {
             push_failures: MetricBuilder::new("sensor_board_push_failures_total")
                 .with_help("Failed pushes to the Pushgateway, by why they failed.")
                 .build_labeled(),
+            late_tcp_events: MetricBuilder::new("sensor_board_late_tcp_events_total")
+                .with_help("TCP callbacks from CPU2 that arrived after the board had closed its connection.")
+                .build_labeled(),
             report_failures: MetricBuilder::new("sensor_board_report_failures_total")
                 .with_help("Failed reports to Home Assistant, by why they failed.")
                 .build_labeled(),
@@ -428,6 +432,7 @@ impl Metrics {
         self.scrapes.fmt_metric(&mut text)?;
         self.pushes.fmt_metric(&mut text)?;
         self.push_failures.fmt_metric(&mut text)?;
+        self.late_tcp_events.fmt_metric(&mut text)?;
         self.report_failures.fmt_metric(&mut text)?;
         self.push_status.fmt_metric(&mut text)
     }
@@ -536,6 +541,7 @@ impl Builder {
                 reported: None,
                 report_retry: None,
                 failed_reports: 0,
+                late_tcp_events: 0,
                 supply: self.supply,
                 board,
                 metrics: shared,
@@ -660,6 +666,9 @@ struct Exporter {
     report_retry: Option<Instant>,
     /// Failed reports in a row, for the delay before the next one.
     failed_reports: u32,
+    /// How many of the late TCP callbacks (`thread::Tcp::late_events`) the
+    /// metrics have counted.
+    late_tcp_events: usize,
     supply: supply::Monitor,
     /// This board's ID.
     board: BoardId,
@@ -788,6 +797,7 @@ impl Exporter {
 
     /// Handle the HTTP request on the accepted connection.
     async fn handle_scrape(&mut self) {
+        self.count_late_tcp_events();
         let mut scrape = Scrape {
             board: self.board,
             supply: self.supply,
@@ -874,6 +884,7 @@ impl Exporter {
     /// Push the metrics to `gateway`. Returns whether it accepted them.
     async fn push_to(&mut self, gateway: SocketAddrV6) -> bool {
         self.count(|metrics| &metrics.pushes, 1);
+        self.count_late_tcp_events();
 
         let pushed = async {
             let rendered = self
@@ -1136,6 +1147,14 @@ impl Exporter {
     /// Add `n` to a per-board counter.
     fn count(&self, counter: impl FnOnce(&Metrics) -> &BoardFamily<Counter>, n: usize) {
         self.metrics.count(self.board, counter, n);
+    }
+
+    /// Count the late TCP callbacks since the last call.
+    fn count_late_tcp_events(&mut self) {
+        let total = self.tcp.late_events();
+        let new = total.wrapping_sub(self.late_tcp_events);
+        self.late_tcp_events = total;
+        self.count(|metrics| &metrics.late_tcp_events, new);
     }
 }
 
