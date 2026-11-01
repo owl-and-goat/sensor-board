@@ -391,9 +391,39 @@ pub async fn set(mut route: Route, target: BoardId, changes: &Changes) -> Result
         Ok(config) => config,
         Err(e) => bail!("board {target}: {e}"),
     };
+    match where_readings_go(&config) {
+        Ok(None) => {}
+        Ok(Some(warning)) => eprintln!("Warning: board {target} {warning}."),
+        Err(problem) => bail!("board {target} {problem}"),
+    }
     route.set(target, &config).await?;
     print!("Board {target} now has\n{}", DescribeBoardConfig(&config));
     Ok(())
+}
+
+/// Whether a board with `config` sends what it measures anywhere. A board on
+/// battery has no scrape endpoint, so it only pushes to its Pushgateway and
+/// reports to Home Assistant. With neither, nothing leaves it: an error.
+/// With only Home Assistant, the motion sensor's state does, and the
+/// metrics don't: a warning. Board 4C0045 was on battery without a
+/// Pushgateway for a while on 2026-11-01 before anyone noticed.
+fn where_readings_go(config: &BoardConfig) -> Result<Option<&'static str>, &'static str> {
+    match (
+        config.power_mode,
+        &config.pushgateway,
+        &config.home_assistant,
+    ) {
+        (PowerMode::Aux, _, _) | (PowerMode::Battery, Some(_), _) => Ok(None),
+        (PowerMode::Battery, None, Some(_)) => Ok(Some(
+            "is on battery without a Pushgateway: only its motion sensor's state reaches Home \
+             Assistant, and its metrics go nowhere. Give it one with --pushgateway",
+        )),
+        (PowerMode::Battery, None, None) => Err(
+            "would be on battery with neither a Pushgateway nor Home Assistant, so nothing it \
+             measures would leave it. Give it one with --pushgateway '[address]:9091' in the \
+             same command",
+        ),
+    }
 }
 
 struct DescribeBoardConfig<'a>(&'a BoardConfig);
@@ -581,6 +611,24 @@ mod tests {
             let params = Params::parse_from(["cmd", "--home-assistant=none"]);
             assert!(!params.args.is_empty());
         }
+    }
+
+    #[test]
+    fn a_board_on_battery_has_to_send_its_readings_somewhere() {
+        let address = "[fd94::1]:9091".parse().ok();
+        let mut config = config();
+        assert_eq!(where_readings_go(&config), Ok(None));
+
+        config.power_mode = PowerMode::Battery;
+        assert!(where_readings_go(&config).is_err());
+
+        config.home_assistant = "[fd94::1]:8123".parse().ok();
+        assert!(matches!(where_readings_go(&config), Ok(Some(_))));
+
+        config.pushgateway = address;
+        assert_eq!(where_readings_go(&config), Ok(None));
+        config.home_assistant = None;
+        assert_eq!(where_readings_go(&config), Ok(None));
     }
 
     fn config() -> BoardConfig {
