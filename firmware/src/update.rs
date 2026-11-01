@@ -434,6 +434,23 @@ impl Updates<'_, '_> {
             return;
         }
 
+        // A fetch of another image that has given up, because the host that
+        // offered it stopped answering, gives way to this one. Until
+        // 2026-11-01 the stalled image blocked every other offer until the
+        // board restarted: two boards ignored a push that way, after the
+        // push before it had been stopped partway.
+        if let (Some(incoming), Some(fetch)) = (&self.incoming, &self.fetching)
+            && incoming.image != image
+            && fetch.retry_at.is_none()
+        {
+            defmt::info!(
+                "update: giving up the stalled fetch of build {}",
+                incoming.image.build
+            );
+            self.incoming = None;
+            self.fetching = None;
+        }
+
         match (&self.incoming, &mut self.fetching) {
             (None, _) => {
                 if self.begin(image).is_err() {
@@ -461,7 +478,8 @@ impl Updates<'_, '_> {
                     self.request_next_chunk().await;
                 }
             }
-            // Another image is being received, from the host or from a board.
+            // Another image is being received, from the host over USB, or
+            // fetched from the network.
             (Some(_), _) => {}
         }
     }

@@ -394,7 +394,8 @@ struct Report {
     /// Those that did not tell their build again in time.
     not_back: Vec<String>,
     /// The boards that run another build and did not fetch the image: it
-    /// failed on them before, or does not fit their flash.
+    /// failed on them before, does not fit their flash, or they are still
+    /// fetching another image.
     declined: Vec<(BoardId, BuildId)>,
     /// The boards that ran the image already.
     current: usize,
@@ -432,7 +433,9 @@ impl Report {
         for (board, runs) in &self.declined {
             lines.push(format!(
                 "{board} runs build {runs} and did not ask for build {build}: it failed on that \
-                 board before, or does not fit there."
+                 board before, does not fit there, or the board is still fetching another build. \
+                 A firmware from before 2026-11-01 keeps waiting for a build whose push was \
+                 stopped, until it restarts."
             ));
         }
         if self.current > 0 {
