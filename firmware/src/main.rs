@@ -196,6 +196,11 @@ async fn motion(task: motion::Task) -> ! {
 }
 
 #[embassy_executor::task]
+async fn supply(task: supply::Task) -> ! {
+    task.run().await
+}
+
+#[embassy_executor::task]
 async fn watchdog(iwdg: Peri<'static, peripherals::IWDG>) -> ! {
     // 32 s because this chip pins the IWDG prescaler at /256 whatever is written, and that is the
     // period /256 expresses with the driver's reload maths (measurements in AGENTS.md).
@@ -351,10 +356,16 @@ async fn main(spawner: Spawner) {
     }
     .init();
 
+    let (supply_task, supply_monitor) = supply::Builder {
+        network: thread_handle.monitor(),
+    }
+    .init();
+    spawner.spawn(supply(supply_task).unwrap());
+
     let (metrics_task, metrics_handle) = metrics::Builder {
         tcp,
         config: metrics_config,
-        supply: supply::init(),
+        supply: supply_monitor,
         capacitance,
         color,
         temp_rh,

@@ -258,6 +258,9 @@ struct Status {
     /// TCP callbacks that arrived after the board had closed its connection
     /// (see `Network::tcp_event`).
     late_tcp_events: Mutex<ThreadModeRawMutex, Cell<usize>>,
+    /// Until when the board has an exchange of its own over the radio, or
+    /// waits for an answer (see `Monitor::busy_until`).
+    busy_until: Mutex<ThreadModeRawMutex, Cell<Instant>>,
     /// Signalled when `network` is published, for [`Tcp::ready`].
     published: Signal<ThreadModeRawMutex, ()>,
     registration: Mutex<ThreadModeRawMutex, Cell<Registration>>,
@@ -363,6 +366,7 @@ pub fn init(power: PowerMode) -> (Handle, Sockets, Tcp, Service) {
                 Addresses::default(),
             ))),
             late_tcp_events: Mutex::new(Cell::new(0)),
+            busy_until: Mutex::new(Cell::new(Instant::from_ticks(0))),
             published: Signal::new(),
             registration: Mutex::new(Cell::new(Registration::Off)),
             // The stack starts as a full Thread device.
@@ -600,6 +604,15 @@ impl Monitor {
     /// published. Empty unless the board is configured for a network.
     pub fn addresses(&self) -> Addresses {
         self.status.addresses()
+    }
+
+    /// Until when the board has an exchange of its own over the radio: a
+    /// TCP exchange, or the fast polls for the answer to a datagram that it
+    /// sent. Until then the radio may transmit, and a coin cell sags. The
+    /// stack's own traffic, such as the data polls of a sleepy board, isn't
+    /// counted.
+    pub fn busy_until(&self) -> Instant {
+        self.status.busy_until.lock(|until| until.get())
     }
 }
 
@@ -1047,6 +1060,13 @@ impl Network<'_, '_> {
         let now = Instant::now();
         let answer_expected =
             now < self.tcp.exchange_until || self.tcp.waiting.is_some() || now < self.answer_until;
+        // A pending request may still need the radio, however long it
+        // waits.
+        let busy_until = match self.tcp.waiting {
+            Some(_) => now + EXCHANGE_IDLE,
+            None => self.tcp.exchange_until.max(self.answer_until),
+        };
+        self.status.busy_until.lock(|until| until.set(busy_until));
         let period = match self.mode {
             DeviceMode::Full => None,
             DeviceMode::Sleepy if answer_expected => Some(FAST_POLL_PERIOD),

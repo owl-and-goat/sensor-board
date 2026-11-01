@@ -302,23 +302,29 @@ sees the rail, which is its VDD, VDDA and VBAT.
 `firmware/src/supply.rs` runs the chip's programmable voltage detector (PVD)
 on the rail. Its output is high while VDD is below 2.64 V (level 4, 2.59 V
 to 2.69 V), which is just under the 2.7 V that the capacitance sensor
-needs. The metrics export the output as `sensor_board_battery_low`, read
-when they are rendered: on a board on battery, just before each push, with
-the board idle.
+needs. The metrics export it as `sensor_board_battery_low`.
 
-- A coin cell sags while the radio transmits and recovers afterwards. Until
-  2026-10-28 the detector raised an interrupt, and the metric stayed at 1
-  from the first time it tripped until the board restarted. On boards
-  4D0021 and 4B002E, both on a coin cell, it tripped within ten minutes of
-  every start, also on a fresh cell, and the alert in Grafana then repeated
-  every day. So the metric now shows the output at rest, which says whether
-  the cell is low, and no longer the sags.
+- A coin cell sags while the radio transmits, and takes seconds to recover.
+  So the supply task reads the detector only 5 s after the board's last
+  exchange over the radio (`thread::Monitor::busy_until`: a TCP exchange,
+  or the fast polls after a datagram), and at most every 30 s. The supply
+  counts as low once every reading for 10 minutes has been low. One reading
+  that isn't starts that over.
+- How that came about: until 2026-10-28 the detector raised an interrupt,
+  and the metric stayed at 1 from the first trip until a restart. On
+  boards 4D0021 and 4B002E, both on a coin cell, it tripped within ten
+  minutes of every start, also on a fresh cell. Then the metric read the
+  detector when the metrics were rendered, but on 4D0021 that comes right
+  after its report to Home Assistant, and it read low on a cell that
+  measured 2.91 V on a meter afterwards (2026-10-31).
+- The stack's own traffic isn't counted as busy: the data polls of a
+  sleepy board, SRP renewals, and relaying for other devices. A data poll
+  is a few milliseconds every 10 s.
+- A board that never has 5 s without an exchange never counts as low.
 - The detector takes about 1 µA (datasheet).
 
-Not tested on a board: that the output at rest stays 0 on a fresh cell, and
-goes to 1 on a cell that is running out. A board on battery could sample at
-the moment CPU2 sends a data poll, but that takes a few milliseconds every
-10 s.
+Not tested on a board: whether the readings at rest stay high on a cell
+like the one from 4D0021, and go low on one that is running out.
 
 ## The capacitance sensor
 
