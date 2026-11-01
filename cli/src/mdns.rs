@@ -9,7 +9,9 @@
 //!
 //! The lookup runs `avahi-browse`, so it needs avahi's tools and its daemon.
 
-use std::{net::Ipv6Addr, process::Command};
+use std::{net::Ipv6Addr, time::Duration};
+
+use tokio::process::Command;
 
 use anyhow::{Context, Result, bail};
 use protocol::{BOARD_SERVICE, HOST_NAME_PREFIX, SCRAPE_SERVICE};
@@ -28,25 +30,30 @@ pub struct Advertised {
 /// its registrations from before stay until they run out, with addresses
 /// that it no longer has.
 pub async fn boards() -> Result<Vec<Advertised>> {
-    let lookups = [SCRAPE_SERVICE, BOARD_SERVICE]
-        .map(|kind| tokio::task::spawn_blocking(move || browse(kind)));
+    let (scrape, board) = tokio::join!(browse(SCRAPE_SERVICE), browse(BOARD_SERVICE));
     let mut boards = Vec::new();
-    for lookup in lookups {
-        for board in lookup.await?? {
-            if !boards.contains(&board) {
-                boards.push(board);
-            }
+    for found in scrape?.into_iter().chain(board?) {
+        if !boards.contains(&found) {
+            boards.push(found);
         }
     }
     Ok(boards)
 }
 
-/// The boards that advertise a service of type `kind`. Blocks for about a
-/// second, until avahi has no more answers.
-fn browse(kind: &'static str) -> Result<Vec<Advertised>> {
+/// How long `avahi-browse` may take. It usually takes a few seconds, until
+/// avahi has no more answers, but sometimes it hangs for minutes.
+const BROWSE_TIMEOUT: Duration = Duration::from_secs(20);
+
+/// The boards that advertise a service of type `kind`.
+async fn browse(kind: &'static str) -> Result<Vec<Advertised>> {
     let output = Command::new("avahi-browse")
         .args(["--resolve", "--parsable", "--terminate", kind])
-        .output()
+        // A hung avahi-browse is killed when the timeout drops it.
+        .kill_on_drop(true)
+        .output();
+    let output = tokio::time::timeout(BROWSE_TIMEOUT, output)
+        .await
+        .with_context(|| format!("avahi-browse did not finish in {BROWSE_TIMEOUT:?}"))?
         .context("could not run avahi-browse")?;
     if !output.status.success() {
         let error = String::from_utf8_lossy(&output.stderr);

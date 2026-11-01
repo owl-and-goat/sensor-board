@@ -21,6 +21,7 @@ use tokio::net::UdpSocket;
 use crate::{
     board::Board,
     border_router::{self, BorderRouter},
+    mdns,
 };
 
 /// How long to wait for a board to come back running the new build. Its
@@ -187,18 +188,53 @@ async fn restart_into_staged(board: Board, image: &Image) -> Result<()> {
 /// build they run, which shows which of them kept the image.
 pub async fn push_through_border_router(address: &str, image: &Image) -> Result<()> {
     eprintln!("Pushing through the border router at {address}.");
-    let targets = look_up(address.to_owned()).await?;
-    if targets.is_empty() {
+    let found = look_up(address.to_owned()).await;
+    for problem in &found.problems {
+        eprintln!("{problem}");
+    }
+    if found.addresses.is_empty() {
         bail!("found no other device with a routable address on the Thread network");
     }
-    offer_to(address, targets, image).await
+    offer_to(address, found.addresses, image).await
+}
+
+/// What a look-up of the boards found.
+struct Found {
+    addresses: Vec<Ipv6Addr>,
+    /// Why a source of addresses failed.
+    problems: Vec<String>,
 }
 
 /// The addresses of the devices on the network of the border router at
-/// `address`, and of the boards advertised over mDNS.
-async fn look_up(address: String) -> Result<Vec<Ipv6Addr>> {
-    let (node, devices) = BorderRouter::at(&address).network().await?;
-    Ok(border_router::targets(&node, &devices).await.addresses)
+/// `address`, and of the boards advertised over mDNS. The two are looked up
+/// separately, so that one failing doesn't lose what the other found: the
+/// boards on battery are only advertised over mDNS, and the border router's
+/// `/diagnostics` is slow while routers restart.
+async fn look_up(address: String) -> Found {
+    let (listed, advertised) = tokio::join!(BorderRouter::at(&address).network(), mdns::boards());
+    let mut found = Found {
+        addresses: Vec::new(),
+        problems: Vec::new(),
+    };
+    match listed {
+        Ok((node, devices)) => found.addresses = border_router::routable_addresses(&node, &devices),
+        Err(e) => found
+            .problems
+            .push(format!("Could not ask the border router: {e:#}.")),
+    }
+    match advertised {
+        Ok(boards) => {
+            for board in boards {
+                if !found.addresses.contains(&board.address) {
+                    found.addresses.push(board.address);
+                }
+            }
+        }
+        Err(e) => found
+            .problems
+            .push(format!("Could not look for boards over mDNS: {e:#}.")),
+    }
+    found
 }
 
 /// Offer `image` to the devices at `targets`, and to those that the border
@@ -227,7 +263,7 @@ async fn offer_to(address: &str, mut targets: Vec<Ipv6Addr>, image: &Image) -> R
     refresh_due.reset();
     // The look-up in progress. It runs on its own, so that the boards are
     // served meanwhile.
-    let mut looking_up: Option<tokio::task::JoinHandle<Result<Vec<Ipv6Addr>>>> = None;
+    let mut looking_up: Option<tokio::task::JoinHandle<Found>> = None;
     let mut progress_due = tokio::time::interval(PROGRESS_INTERVAL);
     progress_due.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
     let interrupted = tokio::signal::ctrl_c();
@@ -258,10 +294,19 @@ async fn offer_to(address: &str, mut targets: Vec<Ipv6Addr>, image: &Image) -> R
             }
             found = async { looking_up.as_mut().expect("guarded").await }, if looking_up.is_some() => {
                 looking_up = None;
-                // A failed look-up leaves the targets as they were.
-                if let Ok(Ok(found)) = found {
+                // What the look-up doesn't find stays in the targets.
+                if let Ok(found) = found {
+                    for problem in &found.problems {
+                        progress.println(problem);
+                    }
                     let new: Vec<Ipv6Addr> =
-                        found.into_iter().filter(|a| !targets.contains(a)).collect();
+                        found.addresses.into_iter().filter(|a| !targets.contains(a)).collect();
+                    if !new.is_empty() {
+                        progress.println(&match new.len() {
+                            1 => "Found another address, and offering to it too.".to_owned(),
+                            n => format!("Found {n} more addresses, and offering to them too."),
+                        });
+                    }
                     targets.extend(new);
                 }
             }
