@@ -420,8 +420,8 @@ board reaches port 8123 directly.
   `sensor_board_push_failures_total`, with an `error` label), so that a
   board on battery shows why without a probe. The next failure was
   `out_of_sequence`: the Thread service still had a connection recorded,
-  and refused the connect (see "Things learned about the TCP API"). A
-  connect now aborts such a leftover. The short first retry stays, for
+  and refused the connect (see "Things learned about the TCP API"). Every
+  connect now aborts first. The short first retry stays, for
   failures with other causes.
 - After a configuration change, the board reports the current state. After
   a restart, it reports at the first motion, or after 20 s without any.
@@ -670,13 +670,22 @@ Things learned about the TCP API:
 - An endpoint that closed its side first stays in TIME-WAIT and accepts no
   connection until it is aborted. For that reason every exchange ends with
   `Tcp::close`.
-- The Thread service can still have a connection recorded at the next
-  connect, although the last exchange ended with `Tcp::close`. It refused
-  the connect (`OutOfSequence`) until 2026-10-26, which failed the first
-  report after hours of quiet on 4D0021. Most likely a callback for the
-  aborted connection arrived after the abort and overwrote `Closed`, but
-  which one isn't known. A connect now aborts the leftover first. Not
-  tested on a board yet.
+- The Thread service's record of the connection can be wrong either way,
+  because CPU2 can send a callback for a connection after the firmware has
+  aborted it. A late `Established` recorded the connection as open (caught
+  on 4D0021 on 2026-10-27, once in five starts), and the next connect was
+  refused (`OutOfSequence`), which failed the first report after hours of
+  quiet on 2026-10-26. A stray disconnect recorded it as closed while CPU2
+  still had a connection, and every later connect then failed with
+  `InvalidState`: 4D0021 stopped pushing for hours on 2026-10-27, while it
+  still answered pings and `config show`. Temporary counters on 4D0021 saw
+  the record and CPU2 disagree about 40 times in 2.5 hours. So
+  `Tcp::close` aborts whatever is recorded, and a connect closes first. An
+  abort of an endpoint that is already closed does nothing, and sends no
+  callback.
+- How fast a sleepy board polls depends on the exchange, not on the record
+  (`update_poll_period`), and `sensor_board_late_tcp_events_total` counts
+  the callbacks that arrive after a close.
 - CPU2 reads sent data from the send buffer until the peer has acknowledged
   all of it. The firmware passes its 4 K send buffer to the stack with
   `otTcpSendByReference`, and adds later data after it with

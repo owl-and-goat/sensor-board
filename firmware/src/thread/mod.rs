@@ -1187,17 +1187,16 @@ impl Network<'_, '_> {
                 }
             }
             TcpRequest::Connect(peer) => {
-                // Every exchange ends with `Tcp::close`, so a connection
-                // that is still recorded here is left over from an earlier
-                // one. A callback for it can arrive after the abort and
-                // overwrite `Closed`. Refusing the connect then failed the
-                // first report after hours of quiet (seen on 4D0021 on
-                // 2026-10-26). Abort the leftover, as `Accept` does with a
-                // connection that never opened.
-                if self.tcp.connection != Connection::Closed {
-                    defmt::debug!("thread: aborting a leftover TCP connection before connecting");
-                    self.tcp_close().await?;
-                }
+                // Start from a closed endpoint, whatever the firmware has
+                // recorded. The record can be wrong either way: a late
+                // callback for an aborted connection can say it's open, and
+                // a stray disconnect can say it's closed while CPU2 still
+                // has a connection. In the second case the connect failed
+                // with InvalidState, and so did every later one, because
+                // nothing aborted the connection that CPU2 still had (seen
+                // on 4D0021 on 2026-10-27, where the board stopped pushing
+                // and reporting for hours).
+                self.tcp_close().await?;
                 self.ot.tcp_connect(buffer, peer).await?;
                 self.tcp.connection = Connection::Opening;
                 self.tcp.opening_since = Instant::now();
@@ -1243,16 +1242,17 @@ impl Network<'_, '_> {
         }
     }
 
-    /// Abort the endpoint's connection, whatever state it is in.
+    /// Abort the endpoint's connection, whatever state it is in. This
+    /// aborts even when no connection is recorded, in case the record is
+    /// wrong. The stack does nothing for an endpoint that is already
+    /// closed, and sends no callback.
     async fn tcp_close(&mut self) -> ot::Result<()> {
-        if self.tcp.connection != Connection::Closed {
-            let (aborted, changed) =
-                ot::tcp_abort(&mut self.notif_rx, &mut self.ot, &self.buffers.tcp).await;
-            if changed {
-                self.publish_status().await;
-            }
-            aborted?;
+        let (aborted, changed) =
+            ot::tcp_abort(&mut self.notif_rx, &mut self.ot, &self.buffers.tcp).await;
+        if changed {
+            self.publish_status().await;
         }
+        aborted?;
         self.tcp.connection = Connection::Closed;
         self.tcp.queued = 0;
         self.tcp.unsent = None;
