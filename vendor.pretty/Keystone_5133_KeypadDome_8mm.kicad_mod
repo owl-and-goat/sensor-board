@@ -1,0 +1,164 @@
+(footprint "Keystone_5133_KeypadDome_8mm"
+	(version 20241229)
+	(generator "pcbnew")
+	(generator_version "9.0")
+	(layer "F.Cu")
+	(descr "Keystone 5133 mini four-leg keypad dome, 8.4 mm, 0.45 mm high. The dome is placed on the pads, not soldered: no paste. Pad 1 is the center contact, pad 2 the legs. https://www.irwin-ind.com/articlebanner/pdfs/keystone/5133TR.PDF")
+	(tags "keypad dome snap metal switch tactile keystone 5133")
+	(property "Reference" "REF**"
+		(at 0 -6.75 0)
+		(layer "F.SilkS")
+		(uuid "5d9801b7-fa80-4e80-adee-f63ccfe2fecf")
+		(effects
+			(font
+				(size 1 1)
+				(thickness 0.15)
+			)
+		)
+	)
+	(property "Value" "Keystone_5133_KeypadDome_8mm"
+		(at 0 6.75 0)
+		(layer "F.Fab")
+		(uuid "fac25847-039c-4368-9bcb-b17c441bca85")
+		(effects
+			(font
+				(size 1 1)
+				(thickness 0.15)
+			)
+		)
+	)
+	(property "Datasheet" "https://www.irwin-ind.com/articlebanner/pdfs/keystone/5133TR.PDF"
+		(at 0 0 0)
+		(layer "F.Fab")
+		(hide yes)
+		(uuid "ba0ce7bf-ccfe-42b8-9070-4921b0a456c0")
+		(effects
+			(font
+				(size 1 1)
+				(thickness 0.15)
+			)
+		)
+	)
+	(property "Description" "Keystone 5133 keypad dome contact pattern"
+		(at 0 0 0)
+		(layer "F.Fab")
+		(hide yes)
+		(uuid "f99b7a9c-d704-4ac7-9019-2a44c026f14f")
+		(effects
+			(font
+				(size 1 1)
+				(thickness 0.15)
+			)
+		)
+	)
+	(attr smd exclude_from_pos_files)
+	(fp_circle
+		(center 0 0)
+		(end 5.5 0)
+		(stroke
+			(width 0.12)
+			(type solid)
+		)
+		(fill no)
+		(layer "F.SilkS")
+		(uuid "070dcf19-dd5f-4a32-85f5-b52bcfe0c34e")
+	)
+	(fp_circle
+		(center 0 0)
+		(end 5.5 0)
+		(stroke
+			(width 0.05)
+			(type solid)
+		)
+		(fill no)
+		(layer "F.CrtYd")
+		(uuid "8cd0d21f-ef07-44fa-8cfe-68b5dbb6f7f0")
+	)
+	(fp_circle
+		(center 0 0)
+		(end 3.5 0)
+		(stroke
+			(width 0.1)
+			(type solid)
+		)
+		(fill no)
+		(layer "F.Fab")
+		(uuid "b5e26042-de86-4f8d-86f7-1c7927b3f7fc")
+	)
+	(fp_circle
+		(center 0 0)
+		(end 4.2 0)
+		(stroke
+			(width 0.1)
+			(type solid)
+		)
+		(fill no)
+		(layer "F.Fab")
+		(uuid "7ff72491-acc4-4a8b-a6c9-5b429a9e500f")
+	)
+	(fp_text user "${REFERENCE}"
+		(at 0 0 0)
+		(layer "F.Fab")
+		(uuid "650c9496-414f-44e9-a6ec-cd15b1666730")
+		(effects
+			(font
+				(size 0.8 0.8)
+				(thickness 0.12)
+			)
+		)
+	)
+	(pad "1" smd circle
+		(at 0 0)
+		(size 2.5 2.5)
+		(layers "F.Cu" "F.Mask")
+		(uuid "dede5ce9-f602-471a-98bc-1b5fadf7ea6d")
+	)
+	(pad "2" smd custom
+		(at -2.8284 -2.8284)
+		(size 2.5 2.5)
+		(layers "F.Cu" "F.Mask")
+		(options
+			(clearance outline)
+			(anchor circle)
+		)
+		(primitives
+				(gr_circle
+					(center 5.6569 0)
+					(end 6.9069 0)
+					(width 0)
+					(fill yes)
+				)
+				(gr_circle
+					(center 0 5.6569)
+					(end 1.25 5.6569)
+					(width 0)
+					(fill yes)
+				)
+				(gr_circle
+					(center 5.6569 5.6569)
+					(end 6.9069 5.6569)
+					(width 0)
+					(fill yes)
+				)
+				(gr_arc
+					(start 0 5.6569)
+					(mid -1.1716 2.8284)
+					(end 0 0)
+					(width 0.5)
+				)
+				(gr_arc
+					(start 0 0)
+					(mid 2.8284 -1.1716)
+					(end 5.6569 0)
+					(width 0.5)
+				)
+				(gr_arc
+					(start 5.6569 0)
+					(mid 6.8284 2.8284)
+					(end 5.6569 5.6569)
+					(width 0.5)
+				)
+		)
+		(uuid "829acb05-449e-47ce-963f-370116992d3b")
+	)
+)

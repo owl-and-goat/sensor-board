@@ -1,0 +1,168 @@
+(footprint "Keystone_110_112_CoinCell_20mm"
+	(version 20241229)
+	(generator "pcbnew")
+	(generator_version "9.0")
+	(layer "F.Cu")
+	(descr "Keystone 110 (positive) and 112 (negative) SMT coin cell contacts, 20 mm cell, mounting layout from Keystone's catalog. The enclosure has to hold the cell. Origin at the center of the cell. https://www.keyelco.com/userAssets/file/M65p8.pdf")
+	(tags "coin cell battery contact CR2032 2032 keystone 110 112")
+	(property "Reference" "REF**"
+		(at 0 -11.5 0)
+		(layer "F.SilkS")
+		(uuid "a6481acd-915b-4494-9cc3-81a5c469a9d6")
+		(effects
+			(font
+				(size 1 1)
+				(thickness 0.15)
+			)
+		)
+	)
+	(property "Value" "Keystone_110_112_CoinCell_20mm"
+		(at 0 11.5 0)
+		(layer "F.Fab")
+		(uuid "c1975e21-e633-4c52-9cbe-44d1987801f2")
+		(effects
+			(font
+				(size 1 1)
+				(thickness 0.15)
+			)
+		)
+	)
+	(property "Datasheet" "https://www.keyelco.com/userAssets/file/M65p8.pdf"
+		(at 0 0 0)
+		(layer "F.Fab")
+		(hide yes)
+		(uuid "546a108e-99a3-478c-aa90-9294c92ead8d")
+		(effects
+			(font
+				(size 1 1)
+				(thickness 0.15)
+			)
+		)
+	)
+	(property "Description" "Keystone 110 positive and 112 negative SMT contacts for a 20 mm coin cell held by the enclosure"
+		(at 0 0 0)
+		(layer "F.Fab")
+		(hide yes)
+		(uuid "73582651-2302-494f-be1a-c5b99249d5d4")
+		(effects
+			(font
+				(size 1 1)
+				(thickness 0.15)
+			)
+		)
+	)
+	(attr smd exclude_from_pos_files)
+	(fp_circle
+		(center 0 0)
+		(end 10 0)
+		(stroke
+			(width 0.1)
+			(type solid)
+		)
+		(fill no)
+		(layer "F.Fab")
+		(uuid "37e1b6f3-a719-4984-8f93-4b9428f690c2")
+	)
+	(fp_rect
+		(start -4.9 -2)
+		(end 4.9 2)
+		(stroke
+			(width 0.1)
+			(type solid)
+		)
+		(fill no)
+		(layer "F.Fab")
+		(uuid "7dbca1fd-fdc1-4287-9681-f3585a8beff9")
+	)
+	(fp_rect
+		(start -14.7 -1.6)
+		(end -11.2 1.6)
+		(stroke
+			(width 0.1)
+			(type solid)
+		)
+		(fill no)
+		(layer "F.Fab")
+		(uuid "4d86314e-0d4c-47e2-80ca-e3a6e8b0f198")
+	)
+	(fp_text user "${REFERENCE}"
+		(at 0 -4 0)
+		(layer "F.Fab")
+		(uuid "f3a9d70c-92d4-4f33-ada3-a5d911b66087")
+		(effects
+			(font
+				(size 1 1)
+				(thickness 0.15)
+			)
+		)
+	)
+	(fp_text user "cell side"
+		(at -9.95 2.8 0)
+		(layer "F.Fab")
+		(uuid "61718152-7c26-4283-8217-108753dae890")
+		(effects
+			(font
+				(size 0.6 0.6)
+				(thickness 0.09)
+			)
+		)
+	)
+	(fp_circle
+		(center 0 0)
+		(end 10.15 0)
+		(stroke
+			(width 0.12)
+			(type solid)
+		)
+		(fill no)
+		(layer "F.SilkS")
+		(uuid "a16d81ae-97dd-4c6f-9d2b-2ffddd209022")
+	)
+	(fp_text user "+"
+		(at -12.95 -3 0)
+		(layer "F.SilkS")
+		(uuid "e8c22da2-13b4-41e0-be0c-596d9400c482")
+		(effects
+			(font
+				(size 1 1)
+				(thickness 0.15)
+			)
+		)
+	)
+	(fp_circle
+		(center 0 0)
+		(end 10.25 0)
+		(stroke
+			(width 0.05)
+			(type solid)
+		)
+		(fill no)
+		(layer "F.CrtYd")
+		(uuid "3f8fbb37-c961-4590-95b2-245242fccef6")
+	)
+	(fp_rect
+		(start -15.05 -2.1)
+		(end -9.5 2.1)
+		(stroke
+			(width 0.05)
+			(type solid)
+		)
+		(fill no)
+		(layer "F.CrtYd")
+		(uuid "c3c14f94-67fc-4358-81e1-ecadf036f5b6")
+	)
+	(pad "1" smd roundrect
+		(at -12.95 0)
+		(size 3.7 3.7)
+		(layers "F.Cu" "F.Paste" "F.Mask")
+		(roundrect_rratio 0.1)
+		(uuid "226e3d3f-a3db-45c0-b7a9-9370be6d3ba0")
+	)
+	(pad "2" smd roundrect
+		(at 0 0)
+		(size 3.8 4.2)
+		(layers "F.Cu" "F.Paste" "F.Mask")
+		(roundrect_rratio 0.1)
+		(uuid "fd6e3743-ceac-4888-ad29-854bc70d17ed")
+	)
+)

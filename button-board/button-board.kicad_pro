@@ -39,9 +39,9 @@
         "other_text_thickness": 0.15,
         "other_text_upright": false,
         "pads": {
-          "drill": 0.2032,
-          "height": 0.499999,
-          "width": 0.499999
+          "drill": 0.0,
+          "height": 17.8,
+          "width": 17.8
         },
         "silk_line_width": 0.1,
         "silk_text_italic": false,
@@ -76,60 +76,7 @@
           "width": 0.0
         }
       ],
-      "drc_exclusions": [
-        [
-          "clearance|167095200|55242000|a6fdfd83-ede7-451f-b559-546363a41039|ce5c2578-eaaf-4d73-9e6b-7c1a5571fd55",
-          ""
-        ],
-        [
-          "hole_clearance|183258000|57912000|5091a033-9fff-4a10-aaf8-389d3b4e25ac|a63a19d3-7424-4532-884d-7c08c4f9eba0",
-          ""
-        ],
-        [
-          "hole_clearance|183258000|57912000|eb5388b4-c35a-4d00-adad-2cf5a10be7a1|a63a19d3-7424-4532-884d-7c08c4f9eba0",
-          ""
-        ],
-        [
-          "hole_clearance|183258000|64012000|4133b43d-0af1-4006-acaf-7a7ab16863a7|2226095f-37d3-44e2-8541-bbcd85e99160",
-          ""
-        ],
-        [
-          "hole_clearance|183258000|64012000|85b31a70-b20a-4413-bf50-e14cb5bedfa9|2226095f-37d3-44e2-8541-bbcd85e99160",
-          ""
-        ],
-        [
-          "hole_to_hole|175244000|51054000|1299eecc-e404-4b10-a4dc-bc34119deda0|36b3315c-f621-4969-a729-55abc97c4fb0",
-          ""
-        ],
-        [
-          "items_not_allowed|170446700|39878000|e87c735c-925c-470a-b809-888bc3a707ce|00000000-0000-0000-0000-000000000000",
-          ""
-        ],
-        [
-          "lib_footprint_mismatch|169025501|55648000|2c823dba-f805-4534-9a78-880b5e8c2138|00000000-0000-0000-0000-000000000000",
-          ""
-        ],
-        [
-          "lib_footprint_mismatch|180086498|68701999|91d66f11-9d85-4d1c-b321-27adec0294c0|00000000-0000-0000-0000-000000000000",
-          ""
-        ],
-        [
-          "shorting_items|167095200|60042600|ce5c2578-eaaf-4d73-9e6b-7c1a5571fd55|d286ac45-b2f7-42fc-81f7-c7f6433575f3",
-          ""
-        ],
-        [
-          "shorting_items|175006000|42926000|3ac46759-ba94-4c92-8548-13a2de2283ca|7b4bd984-9a62-4fe6-b571-caa0ef8ac2dd",
-          ""
-        ],
-        [
-          "shorting_items|175006000|42926000|3ac46759-ba94-4c92-8548-13a2de2283ca|c9fe78f8-5076-4b83-9b91-b2d5981cb46b",
-          ""
-        ],
-        [
-          "track_dangling|176744900|44157900|75e77e84-bc54-497e-b6f0-43ff84688958|00000000-0000-0000-0000-000000000000",
-          ""
-        ]
-      ],
+      "drc_exclusions": [],
       "meta": {
         "version": 2
       },
@@ -637,11 +584,20 @@
     },
     "net_colors": null,
     "netclass_assignments": {
+      "+3V0": [
+        "power"
+      ],
       "/antenna-rf": [
         "50R"
       ],
       "/board rf": [
         "62R"
+      ],
+      "GND": [
+        "power"
+      ],
+      "GNDPWR": [
+        "power"
       ],
       "Net-(AE1-A)": [
         "50R"
@@ -807,7 +763,7 @@
         "uuid": "51c2f14d-61ea-40ae-9b85-8b2a49be52ac"
       }
     ],
-    "used_designators": "R1-17,R20-21,JP1-2,#PWR1-81,Y1-2,J1-12,K1,#FLG1-3,MIC1,TP1-13,H1-2,BT1,C1-35,U1-11,D1-2,AE1,SW1-2,L1-8,Q1-3",
+    "used_designators": "U1-11,D1-3,C1-35,BT1-2,H1-2,Q1-4,L1-8,SW1-2,AE1,R1-17,R20-23,JP1-3,TP1-13,#PWR1-83,Y1-2,J1-12,K1,#FLG1-4,MIC1",
     "variants": []
   },
   "sheets": [
