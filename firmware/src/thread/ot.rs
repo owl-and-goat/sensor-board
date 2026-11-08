@@ -12,6 +12,7 @@ use embassy_futures::{
     select::{Either, select},
 };
 use embassy_stm32_wpan::sub::thread::{OtNotification, ThreadNotifRx, ThreadOt};
+use embassy_time::{Duration, with_timeout};
 use protocol::{
     Address, AddressKind, Addresses, Dataset, ExtAddress, Neighbor, NeighborKind, OtError,
     RegistrationError, Role,
@@ -1423,9 +1424,28 @@ pub unsafe trait OpenThread {
     // TODO: the rest of the OpenThread API
 }
 
+/// How long CPU2 has to answer a call. Its answers usually take
+/// milliseconds. On 2026-11-08, board 4D0021 had been waiting 12 hours for
+/// the answer to an `otTcpAbort`. CPU2 was awake the whole time, and nothing
+/// was waiting for CPU1 to acknowledge. Until the call returns, the Thread
+/// service handles no other request, and CPU2 doesn't poll its parent or
+/// renew the board's registration. The watchdog doesn't notice, because
+/// CPU1 still runs.
+const CALL_TIMEOUT: Duration = Duration::from_secs(30);
+
 unsafe impl OpenThread for ThreadOt<'_> {
+    /// Restarts the board if CPU2 doesn't answer within [`CALL_TIMEOUT`].
+    /// Only a system reset restarts CPU2, and the reset counts as a failed
+    /// boot.
+    ///
     /// TODO: propagate (un)safety down into `ThreadOt`.
     async unsafe fn ffi_call(&mut self, cmd: ffi_command::Type, args: &[u32]) -> u32 {
-        self.call(cmd as u32, args).await
+        match with_timeout(CALL_TIMEOUT, self.call(cmd as u32, args)).await {
+            Ok(answer) => answer,
+            Err(_) => {
+                defmt::error!("thread: CPU2 did not answer call {}, restarting", cmd);
+                crate::dfu::reset_after_failure()
+            }
+        }
     }
 }

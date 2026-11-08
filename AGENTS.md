@@ -562,6 +562,31 @@ later. `network show` through the border router did not list it. A power
 cycle brought it back at 11:22. Nothing was read from the board while it was
 silent.
 
+Seen on 2026-11-08 on board 4D0021, on battery, and read through the probe
+this time: CPU2 had not answered an `otTcpAbort` for 12 hours. The board
+had not restarted since an update a week before. The IPCC showed the OT
+command channel from CPU1 to CPU2 occupied, and no notification waiting for
+CPU1. CPU2's deep-sleep flag (`C2DS` in `PWR_EXTSCR`) was clear every time
+it was read, so CPU2 was awake and not sleeping between data polls. The
+Thread service handles one request at a time, so every push and every
+report to Home Assistant timed out. The board had dropped out of its
+parent's child table and its registration had run out, but CPU1 ran
+normally and fed the watchdog. Whether the boards in 2026-10 hung the same
+way is not known. Since then, a call that CPU2 doesn't answer within 30 s
+restarts the board (`CALL_TIMEOUT` in `thread/ot.rs`), and the restart
+counts as a failed boot. Not tested on a board: the restart itself.
+
+To see a hang like this without halting the chip, read these over the
+probe:
+
+- `IPCC_C1TOC2SR` (0x58000C0C). Bit 2 set means CPU2 hasn't taken a
+  command on channel 3 yet.
+- `IPCC_C2TOC1SR` (0x58000C1C). A bit set there means a notification is
+  waiting for CPU1.
+- The command in the OT command buffer. That's the third word of the
+  thread table, which is the third word of the table at 0x20030000. The
+  command ID is 12 bytes into the buffer.
+
 ## Board discovery
 
 `firmware/src/discovery.rs` replies to a `protocol::DiscoveryMessage::Request`
