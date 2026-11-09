@@ -576,6 +576,18 @@ way is not known. Since then, a call that CPU2 doesn't answer within 30 s
 restarts the board (`CALL_TIMEOUT` in `thread/ot.rs`), and the restart
 counts as a failed boot. Not tested on a board: the restart itself.
 
+The first version of that timeout (5b5fb0f) also covered the calls that
+read a received UDP datagram. Those are made with `block_on`, outside the
+executor, and an embassy timer polled there panics ("Found waker not
+created by the Embassy executor"). So every datagram that a board received
+restarted it. On 2026-11-08 a `just push` sent 5b5fb0f to all four boards,
+and each one dropped off the network a minute or two after it restarted
+into it. The offers that came every 10 s gave each board three failed boots
+in a row. The calls inside `block_on` now go through `Blocking`, without a
+timeout. If CPU2 hangs during one of them, no task runs, and the watchdog
+resets the chip. A board that runs 5b5fb0f can't be updated over the
+network, because the offer itself restarts it.
+
 To see a hang like this without halting the chip, read these over the
 probe:
 

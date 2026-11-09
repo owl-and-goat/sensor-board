@@ -461,7 +461,7 @@ pub async fn notification(
                 // ST's receive callbacks read it in place. Every field is an
                 // integer, and the address is a union of integers.
                 let from = read_volatile(info).mPeerAddr.mFields.m8;
-                (from, block_on(udp_read(ot, buffer, message)))
+                (from, block_on(udp_read(&mut Blocking(ot), buffer, message)))
             };
             match payload {
                 Some(payload) => Notification::UdpReceived {
@@ -1447,5 +1447,23 @@ unsafe impl OpenThread for ThreadOt<'_> {
                 crate::dfu::reset_after_failure()
             }
         }
+    }
+}
+
+/// Calls made with `block_on`, outside the executor, while a notification
+/// is handled. They can't have a timeout: an embassy timer only works in a
+/// task, and the executor panics when a timer is polled from anywhere else.
+/// They don't need one either. While a call waits, no task runs, so nothing
+/// feeds the watchdog, and the watchdog resets the chip if CPU2 never
+/// answers.
+///
+/// From 2026-11-08 until this existed, the calls here had the timeout, and
+/// every UDP datagram that a board received made it panic and restart.
+/// Three in a row put a board in the ROM bootloader.
+struct Blocking<'a, 'b>(&'a mut ThreadOt<'b>);
+
+unsafe impl OpenThread for Blocking<'_, '_> {
+    async unsafe fn ffi_call(&mut self, cmd: ffi_command::Type, args: &[u32]) -> u32 {
+        self.0.call(cmd as u32, args).await
     }
 }
