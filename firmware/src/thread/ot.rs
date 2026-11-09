@@ -7,11 +7,8 @@ use core::mem::{MaybeUninit, transmute_copy};
 use core::net::{Ipv6Addr, SocketAddrV6};
 use core::ptr::{copy_nonoverlapping, null, null_mut, read_volatile, write_volatile};
 
-use embassy_futures::{
-    block_on,
-    select::{Either, select},
-};
-use embassy_stm32_wpan::sub::thread::{OtNotification, ThreadNotifRx, ThreadOt};
+use embassy_futures::select::{Either, select};
+use embassy_stm32_wpan::sub::thread::{OtInCallback, OtNotification, ThreadNotifRx, ThreadOt};
 use embassy_time::{Duration, with_timeout};
 use protocol::{
     Address, AddressKind, Addresses, Dataset, ExtAddress, Neighbor, NeighborKind, OtError,
@@ -419,8 +416,9 @@ unsafe fn set_callback_result(value: u32) {
 /// CPU2 stays inside the callback until its notification is acknowledged,
 /// and the message that holds a received datagram is only valid until then.
 /// So the payload is read before the acknowledgement, which is why this
-/// takes `ot`. Those calls block, because nothing can be awaited at that
-/// point. CPU2 answers them in well under a millisecond.
+/// takes `ot`. Those calls go through [`OtInCallback`], which only has a
+/// blocking call: nothing can be awaited at that point. CPU2 answers them in
+/// well under a millisecond.
 pub async fn notification(
     notif_rx: &mut ThreadNotifRx<'_>,
     ot: &mut ThreadOt<'_>,
@@ -439,7 +437,7 @@ pub async fn notification(
     const TCP_DISCONNECTED: u32 = ffi_notification::MSG_M0TOM4_TCP_DISCONNECTED_CALLBACK as u32;
     const SRP_CLIENT: u32 = ffi_notification::MSG_M0TOM4_SRP_CLIENT_CB as u32;
 
-    let handle = |raw: OtNotification| match raw.id {
+    let handle = |raw: OtNotification, ot: &mut OtInCallback| match raw.id {
         STATE_CHANGE => Notification::StateChanged,
         UDP_RECEIVE => {
             // The arguments of a socket's receive callback: its context, the
@@ -461,7 +459,7 @@ pub async fn notification(
                 // ST's receive callbacks read it in place. Every field is an
                 // integer, and the address is a union of integers.
                 let from = read_volatile(info).mPeerAddr.mFields.m8;
-                (from, block_on(udp_read(&mut Blocking(ot), buffer, message)))
+                (from, udp_read(ot, buffer, message))
             };
             match payload {
                 Some(payload) => Notification::UdpReceived {
@@ -521,7 +519,7 @@ pub async fn notification(
         }
         other => Notification::Other(other),
     };
-    notif_rx.receive_with(handle).await
+    notif_rx.receive_with(ot, handle).await
 }
 
 /// Whether a `T` at `pointer` would be aligned and entirely in RAM.
@@ -592,8 +590,8 @@ pub async fn tcp_abort(
 ///
 /// SAFETY: `message` must still be valid on CPU2: it has to be the argument
 /// of a receive callback whose notification has not been acknowledged yet.
-async unsafe fn udp_read(
-    ot: &mut impl OpenThread,
+unsafe fn udp_read(
+    ot: &mut OtInCallback,
     buffer: &'static UdpBuffer,
     message: u32,
 ) -> Option<Datagram> {
@@ -601,12 +599,14 @@ async unsafe fn udp_read(
     unsafe {
         // SAFETY: both expect a pointer to an otMessage. The message is the
         // whole packet, and its offset is where the UDP payload starts.
-        let length = ot
-            .ffi_call(ffi_command::MSG_M4TOM0_OT_MESSAGE_GET_LENGTH, &[message])
-            .await as u16;
-        let offset = ot
-            .ffi_call(ffi_command::MSG_M4TOM0_OT_MESSAGE_GET_OFFSET, &[message])
-            .await as u16;
+        let length = ot.call(
+            ffi_command::MSG_M4TOM0_OT_MESSAGE_GET_LENGTH as u32,
+            &[message],
+        ) as u16;
+        let offset = ot.call(
+            ffi_command::MSG_M4TOM0_OT_MESSAGE_GET_OFFSET as u32,
+            &[message],
+        ) as u16;
         let len = usize::from(length.checked_sub(offset)?);
         if len > MAX_DATAGRAM_LEN {
             return None;
@@ -617,12 +617,10 @@ async unsafe fn udp_read(
         // written. The payload buffer has room for `len` bytes. CPU1
         // accesses it only here and in `udp_send`, never through a
         // reference, and never while a call to CPU2 is in progress.
-        let read = ot
-            .ffi_call(
-                ffi_command::MSG_M4TOM0_OT_MESSAGE_READ,
-                &[message, offset as u32, payload as u32, len as u32],
-            )
-            .await as usize;
+        let read = ot.call(
+            ffi_command::MSG_M4TOM0_OT_MESSAGE_READ as u32,
+            &[message, offset as u32, payload as u32, len as u32],
+        ) as usize;
 
         let mut datagram = Datagram::new();
         datagram.resize_default(read.min(len)).ok()?;
@@ -1445,23 +1443,5 @@ unsafe impl OpenThread for ThreadOt<'_> {
                 crate::dfu::reset_after_cpu2_timeout(cmd as u32)
             }
         }
-    }
-}
-
-/// Calls made with `block_on`, outside the executor, while a notification
-/// is handled. They can't have a timeout: an embassy timer only works in a
-/// task, and the executor panics when a timer is polled from anywhere else.
-/// They don't need one either. While a call waits, no task runs, so nothing
-/// feeds the watchdog, and the watchdog resets the chip if CPU2 never
-/// answers.
-///
-/// From 2026-11-08 until this existed, the calls here had the timeout, and
-/// every UDP datagram that a board received made it panic and restart.
-/// Three in a row put a board in the ROM bootloader.
-struct Blocking<'a, 'b>(&'a mut ThreadOt<'b>);
-
-unsafe impl OpenThread for Blocking<'_, '_> {
-    async unsafe fn ffi_call(&mut self, cmd: ffi_command::Type, args: &[u32]) -> u32 {
-        self.0.call(cmd as u32, args).await
     }
 }

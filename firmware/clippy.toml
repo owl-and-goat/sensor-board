@@ -1,0 +1,3 @@
+disallowed-methods = [
+    { path = "embassy_futures::block_on", reason = "it polls futures outside the executor, where an embassy timer panics. That restarted every board that received a datagram on 2026-11-08. Make the code async, or, while a notification from CPU2 is handled, call through `OtInCallback`." },
+]

@@ -8,6 +8,8 @@
 //! 16 times the size (48 KiB); the sums are the same. After it come a first-order high-pass (10 Hz)
 //! and a first-order low-pass (Fs / 2), then the gain.
 
+use core::f32::consts::PI;
+
 /// PDM samples per PCM sample.
 const DECIMATION: usize = 128;
 /// Bytes of the bitstream per PCM sample.
@@ -72,8 +74,8 @@ impl Filter {
         debug_assert_eq!(sinc.iter().map(|&c| c as i64).sum::<i64>(), SINC_SUM);
         Self {
             lut,
-            lp_alfa: (LP_HZ * 256.0 / (LP_HZ + FS / (2.0 * 3.14159))) as i64,
-            hp_alfa: (FS * 256.0 / (2.0 * 3.14159 * HP_HZ + FS)) as i64,
+            lp_alfa: (LP_HZ * 256.0 / (LP_HZ + FS / (2.0 * PI))) as i64,
+            hp_alfa: (FS * 256.0 / (2.0 * PI * HP_HZ + FS)) as i64,
             coef: [0; 2],
             old_out: 0,
             old_in: 0,
