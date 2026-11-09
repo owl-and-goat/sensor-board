@@ -593,6 +593,9 @@
       "/board rf": [
         "62R"
       ],
+      "/rf_match": [
+        "50R"
+      ],
       "GND": [
         "power"
       ],
@@ -763,7 +766,7 @@
         "uuid": "51c2f14d-61ea-40ae-9b85-8b2a49be52ac"
       }
     ],
-    "used_designators": "#PWR1-83,Y1-2,TP1-13,JP1-3,R1-17,R20-23,MIC1,#FLG1-4,K1,J1-12,Q1-4,U1-11,D1-3,C1-35,BT1-2,H1-2,L1-8,AE1,SW1-2",
+    "used_designators": "C1-35,D1-3,U1-11,Q1-4,SW1-2,AE1,L1-8,H1-2,BT1-2,#PWR1-83,Y1-2,TP1-13,JP1-3,R1-17,R20-23,MIC1,#FLG1-4,J1-12,K1",
     "variants": []
   },
   "sheets": [

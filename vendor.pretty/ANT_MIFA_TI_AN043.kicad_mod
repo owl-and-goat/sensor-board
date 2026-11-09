@@ -8,7 +8,7 @@
 		(unlocked yes)
 		(layer "F.SilkS")
 		(hide yes)
-		(uuid "ef29428c-4581-4f11-82ca-3429015b381b")
+		(uuid "45dc88b6-7f30-4a8e-a0ff-0829b7b01ee0")
 		(effects
 			(font
 				(size 1 1)
@@ -21,7 +21,7 @@
 		(unlocked yes)
 		(layer "F.Fab")
 		(hide yes)
-		(uuid "b57d73f9-0b01-4459-a96d-53b8596ec3fb")
+		(uuid "5e22fbdc-8d02-4256-b2f5-52e3dd99b583")
 		(effects
 			(font
 				(size 1 1)
@@ -33,7 +33,7 @@
 		(at 0 0 0)
 		(layer "F.Fab")
 		(hide yes)
-		(uuid "9a37edfa-8abe-4bff-aea7-f212810343be")
+		(uuid "9b24ab2c-0e7e-42f7-8000-40af70b356c1")
 		(effects
 			(font
 				(size 1.27 1.27)
@@ -44,14 +44,15 @@
 		(at 0 0 0)
 		(layer "F.Fab")
 		(hide yes)
-		(uuid "ea0ce08c-ac96-4fc6-afae-f9a2ac9a247d")
+		(uuid "dd4924f0-3461-4500-9927-d32af8803f3d")
 		(effects
 			(font
 				(size 1.27 1.27)
 			)
 		)
 	)
-	(attr smd)
+	(attr smd exclude_from_pos_files exclude_from_bom)
+	(net_tie_pad_groups "1,2")
 	(duplicate_pad_numbers_are_jumpers no)
 	(fp_poly
 		(pts
@@ -68,7 +69,7 @@
 		)
 		(fill yes)
 		(layer "F.Cu")
-		(uuid "1a83e750-9881-4138-970b-fd8fe5a777b4")
+		(uuid "2c9eb2c6-1ede-42ab-9c97-2efa2410de71")
 	)
 	(fp_line
 		(start -4 0)
@@ -78,7 +79,7 @@
 			(type solid)
 		)
 		(layer "Dwgs.User")
-		(uuid "3fab6d9d-ad0e-4f70-bdd1-43f011ab1966")
+		(uuid "6c79acdd-4a72-4df7-a3f4-3dc8de21ffc9")
 	)
 	(fp_line
 		(start -4 5.2)
@@ -88,7 +89,7 @@
 			(type solid)
 		)
 		(layer "Dwgs.User")
-		(uuid "d5e52890-0cb1-459d-869b-790620cee8cf")
+		(uuid "06240a4e-03dd-417f-980d-37a798a31134")
 	)
 	(fp_line
 		(start -3.05 5.2)
@@ -98,7 +99,7 @@
 			(type solid)
 		)
 		(layer "Dwgs.User")
-		(uuid "623137c4-4103-43e2-a70f-368e87b7f3f0")
+		(uuid "57da66c2-8341-4094-b559-9c9511f7a7c1")
 	)
 	(fp_line
 		(start 12.15 -0.8)
@@ -108,23 +109,26 @@
 			(type solid)
 		)
 		(layer "Dwgs.User")
-		(uuid "dd309b98-f665-48c6-91b8-8b6b661f3dc8")
+		(uuid "26106dda-3c53-48b8-8a93-e1d309c17101")
 	)
 	(pad "1" smd rect
 		(at 0 4.95)
 		(size 0.5 0.5)
 		(layers "F.Cu")
-		(uuid "72bc29df-fbb1-4f78-a104-f94ad4916c77")
+		(uuid "147376f0-90b3-4ccf-b39b-8b9a6a195cd3")
 	)
 	(pad "2" smd rect
 		(at -2.1 4.95)
 		(size 0.9 0.5)
 		(layers "F.Cu")
-		(uuid "d6c4a345-a45d-483c-8dad-e57e2a44f69f")
+		(zone_connect 2)
+		(thermal_bridge_width 0)
+		(thermal_gap 0)
+		(uuid "49de6d11-996d-4232-b14d-68c0fa1f88a5")
 	)
 	(zone
 		(layer "F.Cu")
-		(uuid "49e0df42-40a9-453e-8913-c99d5523027e")
+		(uuid "139a41ff-2564-485b-9626-80ba8351bf7b")
 		(hatch edge 0.508)
 		(connect_pads
 			(clearance 0)
@@ -160,7 +164,7 @@
 			"In23.Cu" "In24.Cu" "In25.Cu" "In26.Cu" "In27.Cu" "In28.Cu" "In29.Cu"
 			"In30.Cu"
 		)
-		(uuid "dc4b5673-0426-4ab7-9ebb-092cb4267027")
+		(uuid "5e4f2bb6-4e56-42d8-a2b2-96c6aa6a35cb")
 		(hatch edge 0.508)
 		(connect_pads
 			(clearance 0)
