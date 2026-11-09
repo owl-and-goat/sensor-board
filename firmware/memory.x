@@ -26,6 +26,10 @@ MEMORY
   RAM              : ORIGIN = 0x20000000, LENGTH = 144K
 }
 
+/* Where the firmware is, for update.rs. */
+__sfirmware = ORIGIN(FLASH);
+__efirmware = ORIGIN(FLASH) + LENGTH(FLASH);
+
 /* The two regions that update.rs writes, as offsets into flash. */
 __bootloader_state_start = ORIGIN(BOOTLOADER_STATE) - ORIGIN(BOOTLOADER);
 __bootloader_state_end = ORIGIN(BOOTLOADER_STATE) + LENGTH(BOOTLOADER_STATE) - ORIGIN(BOOTLOADER);

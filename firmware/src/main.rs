@@ -227,7 +227,7 @@ async fn button(task: button::Task) -> ! {
 )]
 async fn main(spawner: Spawner) {
     // Must run before any clock or peripheral setup.
-    dfu::enter_bootloader_if_requested();
+    let last_boot = dfu::after_reset();
     dfu::reset_if_launched_by_bootloader();
 
     // The configuration is read first, because the clocks depend on the
@@ -372,6 +372,7 @@ async fn main(spawner: Spawner) {
         mic,
         motion: motion_monitor,
         stops: power::stops(power_mode),
+        last_boot,
     }
     .init();
     spawner.spawn(metrics(metrics_task).unwrap());

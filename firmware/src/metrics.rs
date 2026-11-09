@@ -31,7 +31,7 @@ use static_cell::StaticCell;
 use tinymetrics::{Counter, FixedGauge, FmtLabels, IntGauge, MetricBuilder, MetricFamily};
 
 use crate::{
-    board_config, http,
+    board_config, dfu, http,
     sensor::{
         self,
         capacitance::{self, CapacitanceSensor},
@@ -145,6 +145,35 @@ impl FmtLabels for BuildLabels {
             self.0,
             env!("BUILD_COMMIT")
         )
+    }
+}
+
+/// Labels of the metric for how the last boot ended: the board, the cause,
+/// and what is known about it.
+struct ResetLabels {
+    board: BoardId,
+    end: dfu::End,
+}
+
+// Every board has one sample, so tinymetrics never compares two.
+impl PartialEq for ResetLabels {
+    fn eq(&self, other: &Self) -> bool {
+        self.board == other.board
+    }
+}
+
+impl FmtLabels for ResetLabels {
+    fn fmt_labels(&self, writer: &mut impl fmt::Write) -> fmt::Result {
+        write!(writer, "board=\"{}\",cause=", self.board)?;
+        match self.end {
+            dfu::End::PowerUp => write!(writer, "\"power_up\""),
+            dfu::End::ResetPin => write!(writer, "\"reset_pin\""),
+            dfu::End::Restart => write!(writer, "\"restart\""),
+            dfu::End::Watchdog => write!(writer, "\"watchdog\""),
+            dfu::End::Fault { pc } => write!(writer, "\"fault\",pc=\"{pc:#010x}\""),
+            dfu::End::Panic => write!(writer, "\"panic\""),
+            dfu::End::Cpu2 { command } => write!(writer, "\"cpu2\",command=\"{command}\""),
+        }
     }
 }
 
@@ -323,6 +352,8 @@ struct Metrics {
     firmware_build: MetricFamily<'static, IntGauge, 1, BuildLabels>,
     battery_low: BoardFamily<IntGauge>,
     stops: BoardFamily<IntGauge>,
+    last_reset: MetricFamily<'static, IntGauge, 1, ResetLabels>,
+    failed_boots: BoardFamily<IntGauge>,
     capacitance: CapacitanceFamily<FixedGauge<Farads>>,
     capacitance_errors: CapacitanceFamily<Counter>,
     color: ColorFamily<IntGauge>,
@@ -353,6 +384,12 @@ impl Metrics {
                 .build_labeled(),
             stops: MetricBuilder::new("sensor_board_stops")
                 .with_help("1 if the chip enters Stop mode while the firmware waits, else 0. Decided when the board starts.")
+                .build_labeled(),
+            last_reset: MetricBuilder::new("sensor_board_last_reset")
+                .with_help("Always 1. The labels say how the board's last boot ended.")
+                .build_labeled(),
+            failed_boots: MetricBuilder::new("sensor_board_failed_boots")
+                .with_help("Boots in a row that ended in a failure, up to the last one. Read when the board started.")
                 .build_labeled(),
             capacitance: MetricBuilder::new("sensor_board_capacitance_farads")
                 .with_help("Capacitance on the electrode of a channel, in farads.")
@@ -418,6 +455,8 @@ impl Metrics {
         self.firmware_build.fmt_metric(&mut text)?;
         self.battery_low.fmt_metric(&mut text)?;
         self.stops.fmt_metric(&mut text)?;
+        self.last_reset.fmt_metric(&mut text)?;
+        self.failed_boots.fmt_metric(&mut text)?;
         self.capacitance.fmt_metric(&mut text)?;
         self.capacitance_errors.fmt_metric(&mut text)?;
         self.color.fmt_metric(&mut text)?;
@@ -515,6 +554,8 @@ pub struct Builder {
     /// Whether the chip enters Stop mode while the firmware waits
     /// (`power::stops`).
     pub stops: bool,
+    /// How the last boot ended (`dfu::after_reset`).
+    pub last_boot: dfu::LastBoot,
 }
 
 impl Builder {
@@ -536,6 +577,7 @@ impl Builder {
                 mic: self.mic,
                 motion: self.motion,
                 stops: self.stops,
+                last_boot: self.last_boot,
                 motion_enabled: false,
                 home_assistant: None,
                 reported: None,
@@ -654,6 +696,7 @@ struct Exporter {
     motion: motion::Monitor,
     /// Whether the chip enters Stop mode while the firmware waits.
     stops: bool,
+    last_boot: dfu::LastBoot,
     /// Whether the configuration enables the motion sensor.
     motion_enabled: bool,
     /// The Home Assistant server to report the motion sensor's state to.
@@ -693,6 +736,16 @@ impl Exporter {
             }
             if let Some(stops) = metrics.stops.register(BoardLabels(self.board)) {
                 stops.set_value(usize::from(self.stops));
+            }
+            let reset = ResetLabels {
+                board: self.board,
+                end: self.last_boot.end,
+            };
+            if let Some(reset) = metrics.last_reset.register(reset) {
+                reset.set_value(1);
+            }
+            if let Some(failed) = metrics.failed_boots.register(BoardLabels(self.board)) {
+                failed.set_value(self.last_boot.failed_in_a_row as usize);
             }
         });
 

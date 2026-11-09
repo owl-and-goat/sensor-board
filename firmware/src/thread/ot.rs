@@ -1435,8 +1435,6 @@ const CALL_TIMEOUT: Duration = Duration::from_secs(30);
 
 unsafe impl OpenThread for ThreadOt<'_> {
     /// Restarts the board if CPU2 doesn't answer within [`CALL_TIMEOUT`].
-    /// Only a system reset restarts CPU2, and the reset counts as a failed
-    /// boot.
     ///
     /// TODO: propagate (un)safety down into `ThreadOt`.
     async unsafe fn ffi_call(&mut self, cmd: ffi_command::Type, args: &[u32]) -> u32 {
@@ -1444,7 +1442,7 @@ unsafe impl OpenThread for ThreadOt<'_> {
             Ok(answer) => answer,
             Err(_) => {
                 defmt::error!("thread: CPU2 did not answer call {}, restarting", cmd);
-                crate::dfu::reset_after_failure()
+                crate::dfu::reset_after_cpu2_timeout(cmd as u32)
             }
         }
     }

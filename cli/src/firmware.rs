@@ -53,9 +53,9 @@ const TARGET_REFRESH: Duration = Duration::from_secs(30);
 const SWAP_TIME: Duration = Duration::from_secs(10);
 
 /// How long a board that has fetched the image has to tell its build again:
-/// the swap, its trial, which ends once it is back on its network and gives
-/// up after five minutes (`TRIAL_TIMEOUT` in `firmware/src/update.rs`), and
-/// a look-up of its new address.
+/// the swap, its trial, which takes at least three minutes and gives up
+/// after five (`TRIAL_MIN` and `TRIAL_TIMEOUT` in `firmware/src/update.rs`),
+/// and a look-up of its new address.
 const COME_BACK_AFTER: Duration = Duration::from_secs(420);
 
 /// A board that has not requested a chunk for this long is no longer shown
@@ -855,7 +855,9 @@ pub fn describe(status: &UpdateStatus) -> String {
             image.build, received, image.size.0
         ),
         UpdateStatus::Staged(image) => format!("build {} is staged", image.build),
-        UpdateStatus::OnTrial => "on trial, and kept once the board is back on its network".into(),
+        UpdateStatus::OnTrial => {
+            "on trial, and kept once the board has run for three minutes on its network".into()
+        }
         UpdateStatus::RolledBack => {
             "the last update did not work out, and the firmware before it is back".into()
         }

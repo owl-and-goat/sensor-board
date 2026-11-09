@@ -846,9 +846,9 @@ pub enum UpdateStatus {
     /// switches to it.
     Staged(UpdateImage),
     /// The running firmware is an update that is not confirmed yet. It is
-    /// confirmed once the board is back on its network. If the board
-    /// restarts before that, or takes too long, the previous firmware is
-    /// restored.
+    /// confirmed once the board is back on its network, has received a
+    /// datagram, and has run for three minutes. If the board restarts
+    /// before that, or takes too long, the previous firmware is restored.
     OnTrial,
     /// The last update failed its trial, and the previous firmware has been
     /// restored. The board can take another update.

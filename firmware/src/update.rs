@@ -2,8 +2,11 @@
 //! region after the running firmware (`DFU` in memory.x), and checked
 //! against its digest. At the next reset the bootloader (`bootloader/`)
 //! swaps the two. The update then runs on trial. It is confirmed once the
-//! board is back on its network. If the board resets before that, or does
-//! not rejoin in time, the bootloader swaps the old firmware back.
+//! board is back on its network, has received a datagram, and has run for
+//! three minutes. If the board resets before that, or doesn't get there in
+//! time, the bootloader swaps the old firmware back. A board whose firmware
+//! fails several times in a row after the trial goes back to the old
+//! firmware too ([`go_back_to_previous_firmware`]).
 //!
 //! An image comes from the host over USB, or from the network: a host offers
 //! it to each board through a border router, and a board that runs another
@@ -18,7 +21,7 @@ use core::ptr::read_volatile;
 
 use embassy_boot::{AlignedBuffer, FirmwareState, FirmwareUpdaterConfig, State};
 use embassy_embedded_hal::flash::partition::Partition;
-use embassy_futures::select::{Either, Either3, select, select3};
+use embassy_futures::select::{Either3, select3};
 use embassy_sync::blocking_mutex::{
     Mutex,
     raw::{NoopRawMutex, ThreadModeRawMutex},
@@ -36,6 +39,90 @@ use crate::{
     radio_flash::{self, PAGE, RadioFlash},
     request, thread,
 };
+
+unsafe extern "C" {
+    static __sfirmware: u8;
+    static __efirmware: u8;
+    static __bootloader_state_start: u32;
+    static __bootloader_dfu_start: u32;
+}
+
+/// The magic number that tells the bootloader to swap, as embassy-boot
+/// 0.7 writes it at the start of the state page (`SWAP_MAGIC`).
+const SWAP_MAGIC: u8 = 0xF0;
+
+/// Have the bootloader put back the firmware that the last update replaced,
+/// and restart. Returns if the board doesn't have that firmware any more,
+/// or if the state page can't be written.
+///
+/// After a swap, the staging area holds the firmware that was replaced, one
+/// page in. Its first page still holds a copy of the first page of the
+/// running firmware, and whatever writes the staging area afterwards starts
+/// with that page. So the old firmware is still there for as long as the
+/// two first pages match. The bootloader puts it back when the state page
+/// says that a swap is complete but wasn't confirmed: the swap magic
+/// number, followed by a progress word for each step of the swap, two for
+/// each page. That is what this writes.
+///
+/// Runs at the start, before CPU2 does, so it writes flash directly instead
+/// of through `RadioFlash`.
+pub fn go_back_to_previous_firmware() {
+    const WORD: u32 = embassy_stm32::flash::WRITE_SIZE as u32;
+    let base = embassy_stm32::flash::FLASH_BASE as u32;
+    let firmware = (&raw const __sfirmware) as u32;
+    let len = (&raw const __efirmware) as u32 - firmware;
+    // The linker gives the offsets as the addresses of the symbols.
+    let state = (&raw const __bootloader_state_start) as u32;
+    let staging = base + (&raw const __bootloader_dfu_start) as u32;
+
+    // SAFETY: both are in CPU1's flash, which nothing writes while this
+    // reads it.
+    let (running, staged, previous) = unsafe {
+        let flash = |at: u32, len: u32| core::slice::from_raw_parts(at as *const u8, len as usize);
+        (
+            flash(firmware, PAGE),
+            flash(staging, PAGE),
+            flash(staging + PAGE, len),
+        )
+    };
+    if running != staged || !is_firmware(previous) {
+        return;
+    }
+
+    // SAFETY: nothing else uses the flash controller this early.
+    let p = unsafe { embassy_stm32::Peripherals::steal() };
+    // See `main`: FUS and the ROM bootloader leave this flag set, and the
+    // first flash operation fails while it is.
+    embassy_stm32::pac::FLASH
+        .sr()
+        .write(|w| w.set_optverr(true));
+    let mut flash = embassy_stm32::flash::Flash::new_blocking(p.FLASH);
+    let written = (|| {
+        flash.blocking_erase(state, state + PAGE)?;
+        // The first progress word is at the third word of the page.
+        for step in 0..2 * len / PAGE {
+            flash.blocking_write(state + (2 + step) * WORD, &[0; WORD as usize])?;
+        }
+        // Last, so that the page means nothing until it is complete.
+        flash.blocking_write(state, &[SWAP_MAGIC; WORD as usize])
+    })();
+    if written.is_ok() {
+        cortex_m::peripheral::SCB::sys_reset()
+    }
+}
+
+/// Whether `image` looks like a firmware for this board, other than the
+/// running one: its vector table starts the stack in RAM and the code in
+/// the firmware's region, and it has a build marker.
+fn is_firmware(image: &[u8]) -> bool {
+    let word =
+        |at: usize| u32::from_le_bytes([image[at], image[at + 1], image[at + 2], image[at + 3]]);
+    let firmware = (&raw const __sfirmware) as u32..(&raw const __efirmware) as u32;
+    let ram = 0x2000_0000..=0x2003_0000;
+    ram.contains(&word(0))
+        && firmware.contains(&word(4))
+        && BuildMarker::find(image).is_some_and(|found| found != build())
+}
 
 static MARKER: BuildMarker = BuildMarker::new(BuildId(decimal(env!("BUILD_ID"))));
 
@@ -70,12 +157,24 @@ pub fn staging_end() -> u32 {
 /// Timeout for a request. The longest one checks the digest of a whole image.
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(5);
 
-/// How long an update on trial has to get the board back on its network. A
-/// board that finds no network forms its own after about two minutes.
+/// How long an update on trial has to pass it: to get the board back on its
+/// network and receive a datagram. A board that finds no network forms its
+/// own after about two minutes.
 const TRIAL_TIMEOUT: Duration = Duration::from_secs(300);
+
+/// How long an update stays on trial at least. Until 2026-11-08 an update
+/// was confirmed as soon as the board was back on its network, a few
+/// seconds after it started. That day an update that crashed at the first
+/// datagram it received was confirmed on every board, and only then crashed
+/// them: they started to listen for offers after the trial.
+const TRIAL_MIN: Duration = Duration::from_secs(180);
 
 /// How often a board on trial checks its network status.
 const TRIAL_POLL: Duration = Duration::from_secs(1);
+
+/// How often a board on trial sends a datagram to every board, itself
+/// included, until it has received a datagram.
+const TRIAL_DATAGRAM_INTERVAL: Duration = Duration::from_secs(30);
 
 /// Delay between an apply and the reset, to let the response reach the
 /// caller.
@@ -210,6 +309,7 @@ impl Service {
             incoming: None,
             staged: None,
             socket,
+            listening: false,
             fetching: None,
             rolled_back: None,
             board: BoardId(embassy_stm32::uid::uid()),
@@ -279,6 +379,8 @@ struct Updates<'a, 'd> {
     staged: Option<UpdateImage>,
     /// The UDP socket for [`UpdateMessage`]s.
     socket: thread::Socket,
+    /// Whether the socket receives datagrams.
+    listening: bool,
     /// Set while the image being received comes from the network.
     fetching: Option<Fetch>,
     /// The build of an update that was rolled back after its trial. It is
@@ -293,28 +395,64 @@ impl Updates<'_, '_> {
     /// just swapped in. Returns once the update is confirmed. If the trial
     /// fails, this resets the board, and the bootloader restores the old
     /// firmware.
+    ///
+    /// The update has to get the board back on its network, receive a
+    /// datagram, and keep running for [`TRIAL_MIN`]. The datagram can be an
+    /// offer, or the board's own message to every board, which it sends
+    /// every [`TRIAL_DATAGRAM_INTERVAL`] until one arrives. Offers are not
+    /// answered until the update is kept: the host takes an answer with the
+    /// new build to mean that.
     async fn run_trial(&mut self, network: thread::Monitor) {
         defmt::info!("update: on trial as build {}", build());
         self.status.publish(UpdateStatus::OnTrial);
-        let deadline = Instant::now() + TRIAL_TIMEOUT;
+        let start = Instant::now();
+        let mut received = false;
+        let mut next_datagram = start;
 
         loop {
-            match network.status() {
-                NetworkStatus::Configured(link) if link.role.is_attached() => break,
-                // There is no network to rejoin, so starting up is the only
-                // test.
+            let now = Instant::now();
+            let attached = match network.status() {
+                NetworkStatus::Configured(link) => Some(link.role.is_attached()),
+                // There is no network to rejoin or to receive from, so
+                // running is the only test.
                 NetworkStatus::Unconfigured
-                | NetworkStatus::Unavailable(NetworkError::NoThreadStack) => break,
-                _ if Instant::now() > deadline => {
-                    defmt::warn!("update: not back on the network; giving it up");
-                    cortex_m::peripheral::SCB::sys_reset()
-                }
-                _ => {}
+                | NetworkStatus::Unavailable(NetworkError::NoThreadStack) => None,
+                _ => Some(false),
+            };
+            let passed = match attached {
+                Some(attached) => attached && received,
+                None => true,
+            };
+            if passed && now >= start + TRIAL_MIN {
+                break;
             }
-            if let Either::First((pending, _)) =
-                select(self.requests.receive(), Timer::after(TRIAL_POLL)).await
-            {
-                self.requests.respond(pending, Err(UpdateError::OnTrial));
+            if now > start + TRIAL_TIMEOUT {
+                defmt::warn!("update: did not pass its trial; giving it up");
+                cortex_m::peripheral::SCB::sys_reset()
+            }
+
+            if attached == Some(true) && !received && now >= next_datagram {
+                next_datagram = now + TRIAL_DATAGRAM_INTERVAL;
+                if self.listen().await {
+                    let running = UpdateMessage::Running {
+                        board: self.board,
+                        build: build(),
+                    };
+                    self.broadcast(&running).await;
+                }
+            }
+
+            let next = select3(
+                self.requests.receive(),
+                self.socket.receive(),
+                Timer::after(TRIAL_POLL),
+            );
+            match next.await {
+                Either3::First((pending, _)) => {
+                    self.requests.respond(pending, Err(UpdateError::OnTrial));
+                }
+                Either3::Second(_) => received = true,
+                Either3::Third(()) => {}
             }
         }
 
@@ -334,8 +472,8 @@ impl Updates<'_, '_> {
     }
 
     async fn serve(&mut self) -> ! {
-        if let Err(e) = self.socket.listen(true).await {
-            defmt::warn!("update: no updates over the network: {}", e);
+        if !self.listen().await {
+            defmt::warn!("update: no updates over the network");
         }
 
         loop {
@@ -536,18 +674,32 @@ impl Updates<'_, '_> {
         }
     }
 
+    /// Start receiving update messages, unless the socket already does.
+    /// Returns whether it does.
+    async fn listen(&mut self) -> bool {
+        if !self.listening {
+            self.listening = self.socket.listen(true).await.is_ok();
+        }
+        self.listening
+    }
+
     /// Send `message` to `to`. Delivery is not confirmed: chunk requests are
     /// retried, and offers are repeated.
     async fn send(&mut self, to: thread::Peer, message: &UpdateMessage) {
-        let mut datagram = thread::Datagram::new();
-        // Cannot fail: a datagram has room for the longest message.
-        let _ = datagram.resize_default(UpdateMessage::MAX_LEN);
-        let Some(len) = message.encode(&mut datagram).map(<[u8]>::len) else {
+        let Some(datagram) = encode(message) else {
             return;
         };
-        datagram.truncate(len);
-
         if let Err(e) = self.socket.send_to(to, datagram).await {
+            defmt::debug!("update: not sent: {}", e);
+        }
+    }
+
+    /// Send `message` to every board on the network, this one included.
+    async fn broadcast(&mut self, message: &UpdateMessage) {
+        let Some(datagram) = encode(message) else {
+            return;
+        };
+        if let Err(e) = self.socket.broadcast(datagram).await {
             defmt::debug!("update: not sent: {}", e);
         }
     }
@@ -697,6 +849,15 @@ impl Updates<'_, '_> {
         let marked = self.state.mark_updated().await;
         marked.map_err(flash_error)
     }
+}
+
+fn encode(message: &UpdateMessage) -> Option<thread::Datagram> {
+    let mut datagram = thread::Datagram::new();
+    // Cannot fail: a datagram has room for the longest message.
+    let _ = datagram.resize_default(UpdateMessage::MAX_LEN);
+    let len = message.encode(&mut datagram).map(<[u8]>::len)?;
+    datagram.truncate(len);
+    Some(datagram)
 }
 
 /// Log a flash error and convert it to the error returned to the caller.

@@ -105,12 +105,14 @@ probe-rs attach --chip STM32WB55CG --no-catch-reset target/thumbv7em-none-eabihf
 A board on battery that a probe has been attached to since it was powered up
 does not enter Stop mode, so that its log can be read (see "Stop mode").
 
-panic-probe handles a panic: it raises a HardFault. It does not log the
-panic message, because its `print-defmt` feature is off. With the feature,
-every panic message and source location stays in the image, which took 27 K
-of flash (measured on 2026-10-11). To find a panic, read the backtrace that
-probe-rs prints. That has not been tried on a board since the feature was
-turned off.
+The panic handler in `fault.rs` records that the board panicked, and then
+raises a HardFault, as panic-probe did until 2026-11-08. It keeps neither
+the panic message nor where the panic happened. panic-probe's
+`print-defmt` feature, which logged the message and the location, took 27 K
+of flash (measured on 2026-10-11), and recording only the location took
+21 K (2026-11-08), because the image then keeps the location of every place
+that can panic. To find a panic, read the backtrace that probe-rs prints.
+That has not been tried on a board since the messages were left out.
 
 What happens next depends on the probe. The first and the last case were
 measured on 2026-10-03, with the firmware of that day:
@@ -124,12 +126,24 @@ measured on 2026-10-03, with the firmware of that day:
   armed until a power cycle. The core stays halted until the watchdog resets
   it, 32 s later.
 
-A watchdog reset also counts as a failed boot. A restart after a failure
-rolls back a firmware update that is on trial. After three failed boots in a
-row the board enters the ROM bootloader (`MAX_FAILED_BOOTS` in `dfu.rs`), so
-that a firmware that cannot stay up can still be replaced over USB. One
-minute of running clears the count. The failed-boot counting has not been
-tested on hardware yet.
+A watchdog reset also counts as a failed boot, and so does a restart after
+CPU2 didn't answer a call (see "CPU2: FUS and the Thread stack"). A restart
+after a failure rolls back a firmware update that is on trial. After three
+failed boots in a row (`MAX_FAILED_BOOTS` in `dfu.rs`), the board goes back
+to the firmware it ran before its last update, if the staging area still
+holds it (`go_back_to_previous_firmware` in `update.rs`). Otherwise it
+enters the ROM bootloader, so that a firmware that cannot stay up can still
+be replaced over USB. One minute of running clears the count. Neither the
+counting nor going back has been tested on hardware yet.
+
+How a board's last boot ended is recorded in an `.uninit` word in `dfu.rs`,
+and read at the next start together with the chip's reset flags. The
+metrics export it as `sensor_board_last_reset`, whose `cause` label is
+`power_up`, `reset_pin`, `restart` (on purpose, by the firmware or by FUS),
+`watchdog`, `panic`, `fault` (with the `pc` label), or `cpu2` (with the
+`command` it was waiting for). `sensor_board_failed_boots` is the number of
+failed boots in a row up to the last one. A board on battery pushes both, so
+a restart loop shows up in Prometheus without a probe.
 
 ## The ROM bootloader
 
@@ -172,6 +186,20 @@ trial being confirmed, the rollback after a reset during the trial, and an
 update from the rolled-back state. Not tested: the five-minute timeout of a
 trial.
 
+Since 2026-11-08 an update is only kept once the board is back on its
+network, has received a datagram, and has run for three minutes
+(`run_trial` in `update.rs`). Until then it was kept as soon as the board
+was back on its network, a few seconds after it started. That day a build
+that crashed at the first datagram it received was kept by every board,
+and then crashed them all (see "CPU2: FUS and the Thread stack"). With
+these conditions it would have been rolled back. A board on trial sends
+`UpdateMessage::Running` to every board every 30 s, until a datagram
+arrives. That one comes back to the board itself, so the trial doesn't
+depend on a host sending anything. While an update is on trial, the board
+refuses every update request over USB. A change of the power mode restarts
+the board, and so rolls back an update that's on trial. Not tested on a
+board: any of this.
+
 An image reaches the staging area from the host over USB, or over the
 network (`UpdateMessage` in `protocol`, on UDP port 61621, which every board
 listens on). `firmware push` offers an image to every board
@@ -187,9 +215,9 @@ afterwards, and does not fetch it again.
 
 A fetching board sends its ID (`UpdateMessage::Fetching`) when it starts and
 at every offer it receives, and every board replies to every offer with its
-ID and the build it runs (`UpdateMessage::Running`). A board starts to
-listen for offers after its trial, so it replies with a new build only once
-it has kept it.
+ID and the build it runs (`UpdateMessage::Running`). A board receives
+offers during its trial, but only answers them after the trial, so it
+replies with a new build only once it has kept it.
 
 Until 2026-10-27 an attached board could offer its staged image to the
 others, by multicast, and `firmware push` went through it when one was
@@ -987,8 +1015,8 @@ The board had been power-cycled with the probe taken off, and had a
 multimeter in its supply lead. Reading the configuration and pushing
 worked, for nine hours that night. If this happens on every write, such a
 board cannot be configured, reset with the button or updated, and an update
-would hang it at every attempt: three in a row put it in the ROM
-bootloader.
+would hang it at every attempt: three in a row would put it back on its
+previous firmware, or in the ROM bootloader.
 
 It did not happen again on 2026-10-12, with the probe connected and not
 used: 17 `config set` through the border router were all stored and
@@ -1166,9 +1194,10 @@ push:
   IPCC, I2C1 and the DMA controllers are not in use at all.
 - The sensors are not put in a low-power state when they are not polled.
   Only the microphone is: it powers down when its clock stops.
-- After three failed boots in a row a board enters the ROM bootloader (see
-  "Logs and panics"). A board on battery cannot be reached there, and stays
-  in it until its cell is taken out.
+- After three failed boots in a row a board goes back to its previous
+  firmware, and enters the ROM bootloader if it no longer has that (see
+  "Logs and panics"). A board on battery cannot be reached in the ROM
+  bootloader, and stays in it until its cell is taken out.
 
 ### Things learned
 

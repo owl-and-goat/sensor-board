@@ -26,11 +26,6 @@ cortex-m-rt = { version = "0.7.5", features = ["set-vtor"] }
 
 defmt = "1.1.1"
 defmt-rtt = "1.3.0"
-# Raises the HardFault that probe-rs (or fault.rs, with no probe attached)
-# catches. Without print-defmt, so the panic message is not logged: with it,
-# every panic message and source location stays in the image, which took
-# 27 K of flash.
-panic-probe = "1.0.0"
 
 protocol = { path = "../protocol", features = ["defmt"] }
 # For the Serialize bound of the RPC transmitter in usb.rs.
