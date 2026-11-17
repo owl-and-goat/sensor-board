@@ -40,8 +40,8 @@
         "other_text_upright": false,
         "pads": {
           "drill": 0.0,
-          "height": 0.5,
-          "width": 0.9
+          "height": 0.62,
+          "width": 0.56
         },
         "silk_line_width": 0.1,
         "silk_text_italic": false,
@@ -76,7 +76,40 @@
           "width": 0.0
         }
       ],
-      "drc_exclusions": [],
+      "drc_exclusions": [
+        [
+          "items_not_allowed|118346915|45099311|7d2e2598-df6d-4000-b48b-dc07edb043a7|00000000-0000-0000-0000-000000000000",
+          ""
+        ],
+        [
+          "npth_inside_courtyard|121219666|65971377|dbaf2fd1-99fb-4859-a103-669c6d8ea401|7d2e2598-df6d-4000-b48b-dc07edb043a7",
+          ""
+        ],
+        [
+          "npth_inside_courtyard|126191783|64516492|e01dccdf-f158-4eeb-af86-0adcf246afae|7d2e2598-df6d-4000-b48b-dc07edb043a7",
+          ""
+        ],
+        [
+          "silk_over_copper|113830000|49098526|da881e79-085d-4d90-b42f-e85e2fd20716|82b9ca0b-da0c-4959-a578-a21f2b2eb3f6",
+          ""
+        ],
+        [
+          "silk_overlap|132310000|53352500|18228f08-3f02-41f6-a8a3-180af49bd313|40b5ffe9-3058-46be-a68e-caf9b3732345",
+          ""
+        ],
+        [
+          "silk_overlap|132310000|56037500|18228f08-3f02-41f6-a8a3-180af49bd313|8174f511-08e1-4926-8d42-e0c4a5710782",
+          ""
+        ],
+        [
+          "silk_overlap|132390000|53352500|40b5ffe9-3058-46be-a68e-caf9b3732345|fa74258d-396b-4139-bb33-0f21f9d918e8",
+          ""
+        ],
+        [
+          "silk_overlap|132390000|53352500|8174f511-08e1-4926-8d42-e0c4a5710782|fa74258d-396b-4139-bb33-0f21f9d918e8",
+          ""
+        ]
+      ],
       "meta": {
         "version": 2
       },
@@ -766,7 +799,7 @@
         "uuid": "51c2f14d-61ea-40ae-9b85-8b2a49be52ac"
       }
     ],
-    "used_designators": "C1-35,D1-3,U1-11,Q1-4,SW1-2,AE1,L1-8,H1-2,BT1-2,#PWR1-83,Y1-2,TP1-13,JP1-3,R1-17,R20-23,MIC1,#FLG1-4,J1-12,K1",
+    "used_designators": "U1-11,D1-3,C1-35,MIC1,#FLG1-4,H1-2,BT1-2,L1-8,SW1-2,AE1,Q1-4,JP1-3,TP1-13,R1-17,R20-23,Y1-2,#PWR1-83,K1,J1-12",
     "variants": []
   },
   "sheets": [

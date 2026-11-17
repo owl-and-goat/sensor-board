@@ -6988,7 +6988,7 @@
 				(justify left)
 			)
 		)
-		(property "Value" "1K"
+		(property "Value" "220"
 			(at 176.53 160.0199 0)
 			(show_name no)
 			(do_not_autoplace no)
@@ -7043,7 +7043,7 @@
 				)
 			)
 		)
-		(property "LCSC" "C11702"
+		(property "LCSC" "C25091"
 			(at 173.99 158.75 0)
 			(hide yes)
 			(show_name no)
@@ -7075,9 +7075,9 @@
 		(unit 1)
 		(body_style 1)
 		(exclude_from_sim no)
-		(in_bom yes)
+		(in_bom no)
 		(on_board yes)
-		(in_pos_files yes)
+		(in_pos_files no)
 		(dnp yes)
 		(uuid "49ef9644-9695-4eb8-9a9e-06e0cf721018")
 		(property "Reference" "C15"
@@ -7624,7 +7624,7 @@
 				)
 			)
 		)
-		(property "Value" "10k"
+		(property "Value" "10K"
 			(at 177.8 106.68 90)
 			(show_name no)
 			(do_not_autoplace no)
@@ -7710,9 +7710,9 @@
 		(unit 1)
 		(body_style 1)
 		(exclude_from_sim no)
-		(in_bom yes)
+		(in_bom no)
 		(on_board yes)
-		(in_pos_files yes)
+		(in_pos_files no)
 		(dnp yes)
 		(uuid "6e0c68dc-a2d7-4b0a-9d60-aeead612f8fc")
 		(property "Reference" "C14"
@@ -9364,7 +9364,7 @@
 				(justify left)
 			)
 		)
-		(property "Value" "1K"
+		(property "Value" "330"
 			(at 152.4 160.0199 0)
 			(show_name no)
 			(do_not_autoplace no)
@@ -9419,7 +9419,7 @@
 				)
 			)
 		)
-		(property "LCSC" "C11702"
+		(property "LCSC" "C25104"
 			(at 149.86 158.75 0)
 			(hide yes)
 			(show_name no)
@@ -9639,7 +9639,7 @@
 				(justify right)
 			)
 		)
-		(property "Value" "1.0k"
+		(property "Value" "1K"
 			(at 220.98 189.2299 0)
 			(show_name no)
 			(do_not_autoplace no)
@@ -9730,7 +9730,6 @@
 		(on_board yes)
 		(in_pos_files yes)
 		(dnp no)
-		(fields_autoplaced yes)
 		(uuid "b8ee1495-70df-42d5-9537-22098cdb0eb5")
 		(property "Reference" "D2"
 			(at 168.5925 156.21 0)
@@ -9742,8 +9741,8 @@
 				)
 			)
 		)
-		(property "Value" "LED1"
-			(at 168.5925 158.75 0)
+		(property "Value" "NCD0805R1"
+			(at 166.37 159.258 0)
 			(show_name no)
 			(do_not_autoplace no)
 			(effects
@@ -11032,10 +11031,9 @@
 		(on_board yes)
 		(in_pos_files yes)
 		(dnp no)
-		(fields_autoplaced yes)
 		(uuid "e329c32d-3627-436b-b030-8b70eaf79920")
 		(property "Reference" "D1"
-			(at 144.4625 156.21 0)
+			(at 144.526 156.21 0)
 			(show_name no)
 			(do_not_autoplace no)
 			(effects
@@ -11044,8 +11042,8 @@
 				)
 			)
 		)
-		(property "Value" "LED1"
-			(at 144.4625 158.75 0)
+		(property "Value" "XL-2012SYGC"
+			(at 139.7 159.004 0)
 			(show_name no)
 			(do_not_autoplace no)
 			(effects
@@ -11109,7 +11107,7 @@
 				)
 			)
 		)
-		(property "LCSC" "C84256"
+		(property "LCSC" "C965816"
 			(at 146.05 162.56 0)
 			(hide yes)
 			(show_name no)
@@ -11377,9 +11375,9 @@
 		(unit 1)
 		(body_style 1)
 		(exclude_from_sim no)
-		(in_bom yes)
+		(in_bom no)
 		(on_board yes)
-		(in_pos_files yes)
+		(in_pos_files no)
 		(dnp no)
 		(fields_autoplaced yes)
 		(uuid "f33a022b-5d30-41fa-8115-4b1dead3a567")
@@ -11436,7 +11434,7 @@
 				)
 			)
 		)
-		(property "LCSC" "C720477"
+		(property "LCSC" ""
 			(at 144.78 176.53 0)
 			(hide yes)
 			(show_name no)
